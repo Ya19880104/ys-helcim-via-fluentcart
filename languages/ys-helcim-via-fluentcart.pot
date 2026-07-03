@@ -1,0 +1,538 @@
+msgid ""
+msgstr ""
+"Project-Id-Version: YS Helcim via FluentCart 1.0.0\n"
+"Report-Msgid-Bugs-To: https://yangsheep.com.tw\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Language-Team: YANGSHEEP DESIGN\n"
+"X-Domain: ys-helcim-via-fluentcart\n"
+
+#: src/HelcimPay/YSHelcimPayGateway.php:281
+msgid "A network error occurred. Please try again shortly."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:333
+msgid "API token for your developer test account"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:369
+msgid "API token for your live account"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:111
+msgid "Accept credit card payments through the secure HelcimPay.js checkout window (USD and CAD only)."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:80
+msgid "Accept credit cards with the Helcim.js inline form. Card numbers are tokenized directly in the browser, so card data never passes through your server. USD / CAD only."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:288
+msgid "Card number"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:293
+msgid "Card verification failed. Please check your card details and try again."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:438 src/HelcimPay/YSHelcimPayGateway.php:656
+msgid "Checkout button text"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:275
+msgid "Confirming your payment…"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:149
+msgid "Could not initialize the Helcim payment: %s"
+msgstr ""
+
+#: src/Support/YSHelcimApiClient.php:118
+msgid "Could not reach Helcim. Please try again shortly."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:75
+msgid "Credit card (Helcim inline form)"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:106
+msgid "Credit card (Helcim)"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:585
+msgid "Currency restriction: Helcim supports only USD and CAD. When the store currency does not match, this payment method is hidden at checkout."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:662
+msgid "Debug logging"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:440
+msgid "Default: Pay with credit card"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:666
+msgid "Disabled"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:444
+msgid "Enable debug logging (secret values are masked automatically)"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:670
+msgid "Enabled"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:289
+msgid "Expiry (MM/YY)"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:519
+msgid "Failed to update the order status."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:328
+msgid "Failed to update the order status. Please contact the site administrator."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:632
+msgid "Helcim API token for your developer test account"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:614
+msgid "Helcim API token for your live account"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:614
+msgid "Helcim did not approve the refund."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:611
+msgid "Helcim did not approve the refund: %s"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:374
+msgid "Helcim did not approve this refund. Please check your Helcim dashboard."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:161
+msgid "Helcim does not support the %s currency (USD and CAD only)."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:183
+msgid "Helcim does not support the %s currency. Please use a different payment method."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:222
+msgid "Helcim does not support the current store currency (USD and CAD only)."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:317
+msgid "Helcim has no separate sandbox environment: to test, request a \"developer test account\" from Helcim and enter that credential set on the Test tab, using the official test card numbers."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:583
+msgid "Helcim has no separate sandbox environment: to test, request a \"developer test account\" from Helcim and use that account's API token together with the official test card numbers."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:358
+msgid "Helcim refund failed: %s"
+msgstr ""
+
+#: src/Support/YSHelcimApiClient.php:192
+msgid "Helcim reported an unknown error."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:165
+msgid "Helcim returned an incomplete response, so the payment window cannot open."
+msgstr ""
+
+#: src/Support/YSHelcimApiClient.php:154
+msgid "Helcim returned an unexpected response. Please try again shortly."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:492
+msgid "Helcim.js settings verified."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:592
+msgid "In your Helcim dashboard, go to All Tools → Integrations → Webhooks and set the URL above (HTTPS only), then paste the Verifier Token into the field below."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:325
+msgid "In your Helcim dashboard, go to All Tools → Integrations → Webhooks and set the URL above (must be HTTPS), then paste the generated Verifier Token into the field below. Webhook reconciliation is not enabled until the Verifier Token is set."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:367 src/HelcimPay/YSHelcimPayGateway.php:612
+msgid "Live API Token"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:389
+msgid "Live Helcim.js Secret Key"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:378
+msgid "Live Helcim.js Token"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:413 src/HelcimPay/YSHelcimPayGateway.php:607
+msgid "Live credentials"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:667
+msgid "Log errors only (recommended for production)."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:671
+msgid "Log the full API request and response (sensitive data is masked automatically)."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:319
+msgid "Only USD / CAD are supported. The Helcim.js Configuration must be created as a Verify type in your Helcim dashboard (tokenization only; the charge is executed server-side)."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsSettings.php:201
+msgid "Pay with credit card"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:658 src/HelcimPay/YSHelcimPaySettings.php:154
+msgid "Pay with credit card (Helcim)"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsProcessor.php:117
+msgid "Payment already completed. Redirecting to the receipt page…"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:246
+msgid "Payment already completed. Taking you to the order confirmation…"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:277
+msgid "Payment canceled. You can try again."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:278
+msgid "Payment failed. Please try again shortly or use a different payment method."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:228 src/HelcimPay/YSHelcimPayGateway.php:206
+msgid "Payment information retrieved."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:142
+msgid "Payment initialization failed. Please refresh the page and try again."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsProcessor.php:176
+msgid "Payment successful! Redirecting to the receipt page…"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:276 src/HelcimPay/YSHelcimPayProcessor.php:335
+msgid "Payment successful! Taking you to the order confirmation…"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:281
+msgid "Payment verification failed. Please contact the site administrator."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:292
+msgid "Please check that your card details are complete."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:470
+msgid "Please enter the API token for %s mode."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:486
+msgid "Please enter the Helcim.js Secret Key for %s mode."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:478
+msgid "Please enter the Helcim.js Token for %s mode."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:296
+msgid "Processing payment, please wait…"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:274
+msgid "Processing payment…"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:297
+msgid "Redirecting to the receipt page…"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:290
+msgid "Security code"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:699
+msgid "Settings saved."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:405 src/HelcimPay/YSHelcimPayGateway.php:599
+msgid "Store mode notice"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:331 src/HelcimPay/YSHelcimPayGateway.php:630
+msgid "Test API Token"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:353
+msgid "Test Helcim.js Secret Key"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:342
+msgid "Test Helcim.js Token"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:419 src/HelcimPay/YSHelcimPayGateway.php:625
+msgid "Test credentials"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:460
+msgid "The API token has not been configured."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:569 src/HelcimPay/YSHelcimPayGateway.php:332
+msgid "The Helcim API token has not been configured, so refunds are not possible."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsProcessor.php:267
+msgid "The Helcim API token has not been configured."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:122
+msgid "The Helcim API token has not been configured. Please contact the site administrator."
+msgstr ""
+
+#: src/Support/YSHelcimApiClient.php:60
+msgid "The Helcim API token has not been configured. Please enter it in the payment settings first."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:186
+msgid "The Helcim credentials are incomplete. Please contact the site administrator."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:150
+msgid "The Helcim payment method does not currently support subscription products. Please use a different payment method."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:552
+msgid "The Helcim transaction ID could not be found, so a remote refund is not possible."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:355 src/HelcimJs/YSHelcimJsGateway.php:391
+msgid "The Helcim.js Configuration Secret Key"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:344 src/HelcimJs/YSHelcimJsGateway.php:380
+msgid "The Helcim.js Configuration Token (Verify type)"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:434
+msgid "The Verifier Token from the Helcim Webhooks settings page"
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:652
+msgid "The Verifier Token from the Helcim webhook settings page"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsProcessor.php:149
+msgid "The card data verification did not match. Please try again."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsProcessor.php:137
+msgid "The card token is missing. Please re-enter your card details."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsProcessor.php:129
+msgid "The card verification response is invalid. Please try again."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsProcessor.php:111
+msgid "The matching transaction could not be found. Please check out again."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:240
+msgid "The matching transaction could not be found. Please contact the site administrator."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:282
+msgid "The order could not be created. Please check your checkout details and try again."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:294
+msgid "The order could not be created. Please refresh the page and try again."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsProcessor.php:276
+msgid "The order for this transaction could not be found."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:314
+msgid "The payment amount does not match the order."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:171
+msgid "The payment amount is invalid."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsProcessor.php:159
+msgid "The payment could not be completed. Please check your card details or use a different card."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:300
+msgid "The payment currency does not match the order."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsProcessor.php:169
+msgid "The payment result check failed. Please contact the site administrator."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:275
+msgid "The payment verification data is invalid. Please place your order again."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:270
+msgid "The payment verification data is missing. Please place your order again."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:289
+msgid "The payment was not approved."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:280
+msgid "The payment window could not load. Please refresh the page and try again."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:544
+msgid "The refund amount is invalid."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:307
+msgid "The refund amount must be greater than zero."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:693
+msgid "The store is currently in live mode. Please enter the live API token."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:692
+msgid "The store is currently in test mode. Please enter the test API token."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:114
+msgid "The transaction amount is invalid, so the payment cannot proceed."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:513
+msgid "The transaction amount or currency does not match."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:172 src/HelcimPay/YSHelcimPayProcessor.php:105
+msgid "The transaction could not be found. Please refresh the page and try again."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:259
+msgid "The transaction data is malformed."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:254
+msgid "The transaction data is missing."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsProcessor.php:100 src/HelcimPay/YSHelcimPayProcessor.php:230
+msgid "The transaction identifier is missing."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:561 src/HelcimPay/YSHelcimPayGateway.php:324
+msgid "The transaction mode does not match the current store mode. Please switch the store order mode before refunding."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:293
+msgid "The transaction type does not match."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:264
+msgid "The transaction verification code is missing."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:444
+msgid "The webhook is missing a transaction ID."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:593
+msgid "The webhook is used to reconcile and confirm payments — payments still work normally when it is not configured."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:433
+msgid "The webhook payload is malformed."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:422
+msgid "The webhook verification component is missing."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:650 src/HelcimPay/YSHelcimPayGateway.php:415
+msgid "The webhook verifier token has not been configured."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:315
+msgid "This transaction has no Helcim transaction ID, so it cannot be refunded online."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:472
+msgid "Transaction verification failed."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:279
+msgid "We could not confirm your payment. Please contact the site administrator."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:295
+msgid "We could not confirm your payment. Please try again shortly."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:645
+msgid "Webhook URL"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:323 src/HelcimPay/YSHelcimPayGateway.php:590
+msgid "Webhook URL:"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:432 src/HelcimPay/YSHelcimPayGateway.php:650
+msgid "Webhook Verifier Token"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:427
+msgid "Webhook settings"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:667 src/HelcimPay/YSHelcimPayGateway.php:428
+msgid "Webhook signature verification failed."
+msgstr ""
+
+#: src/YSHelcimFctBootstrap.php:129
+msgid "YS Helcim via FluentCart requires the FluentCart plugin (1.5.2 or later) to be installed and activated."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:193
+msgid "Your order has been created. Please complete the credit card payment in the payment window."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:197
+msgid "Your order has been created. Please complete the credit card payment."
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:464
+msgid "live"
+msgstr ""
+
+#: src/HelcimJs/YSHelcimJsGateway.php:463
+msgid "test"
+msgstr ""
+

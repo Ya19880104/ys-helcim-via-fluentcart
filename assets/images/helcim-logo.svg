@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 32" width="120" height="32" role="img" aria-labelledby="ysHelcimLogoTitle">
+  <!-- YS 自繪 Helcim 標誌：深紫圓角方塊白 H + 右側無襯線 helcim 字樣（非官方版權圖） -->
+  <title id="ysHelcimLogoTitle">Helcim</title>
+  <rect x="0" y="0" width="32" height="32" rx="7" fill="#5B4FE9"/>
+  <g fill="#FFFFFF">
+    <rect x="9" y="8" width="3.5" height="16" rx="1.2"/>
+    <rect x="19.5" y="8" width="3.5" height="16" rx="1.2"/>
+    <rect x="9" y="14.25" width="14" height="3.5" rx="1.2"/>
+  </g>
+  <text x="40" y="22" font-family="Arial, 'Helvetica Neue', Helvetica, sans-serif" font-size="17" font-weight="600" letter-spacing="0.3" fill="#2B2753">helcim</text>
+</svg>

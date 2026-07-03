@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-labelledby="ysHelcimIconTitle">
+  <!-- YS 自繪 Helcim 付款圖示：深紫圓角方塊 + 白色 H 字母（非官方版權圖） -->
+  <title id="ysHelcimIconTitle">Helcim</title>
+  <rect x="0" y="0" width="32" height="32" rx="7" fill="#5B4FE9"/>
+  <g fill="#FFFFFF">
+    <rect x="9" y="8" width="3.5" height="16" rx="1.2"/>
+    <rect x="19.5" y="8" width="3.5" height="16" rx="1.2"/>
+    <rect x="9" y="14.25" width="14" height="3.5" rx="1.2"/>
+  </g>
+</svg>

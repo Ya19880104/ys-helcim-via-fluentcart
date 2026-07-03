@@ -1,0 +1,24 @@
+# Dependencies
+# NOTE: vendor/ IS shipped — it carries the YS Plugin Hub Client (auto-update).
+# Only the vendored test suites are excluded to keep the package lean.
+node_modules/
+vendor/**/tests/
+vendor/**/Tests/
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Build artifacts & logs
+*.zip
+*.log
+outputs/
+
+# Editors / tooling
+.idea/
+.vscode/
+.claude/
+
+# Internal development files (kept locally, not published to the public repo)
+/DEVELOPMENT.md
+/docs/

@@ -1,0 +1,167 @@
+/**
+ * YS Helcim via FluentCart — 結帳前端樣式
+ *
+ * 設計原則：低調中性、不干擾主題（Blocksy／一般主題皆適用）。
+ * 全部 class 以 .ys-helcim- 前綴；以具體選擇器取代 !important。
+ *
+ * @package YangSheep\Helcim\FluentCart
+ */
+
+/* ---- 容器 ---- */
+
+.ys-helcim-pay-wrapper,
+.ys-helcim-js-form {
+    display: block;
+    padding: 4px 0;
+}
+
+.ys-helcim-loading-text {
+    margin: 8px 0;
+    color: #6b7280;
+    font-size: 14px;
+}
+
+/* ---- 付款按鈕 ---- */
+
+.ys-helcim-pay-wrapper .ys-helcim-pay-button,
+.ys-helcim-js-form .ys-helcim-pay-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    padding: 12px 20px;
+    background: #5B4FE9;
+    border: 1px solid #5B4FE9;
+    border-radius: 6px;
+    color: #ffffff;
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.4;
+    cursor: pointer;
+    text-align: center;
+    transition: background-color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease;
+    -webkit-appearance: none;
+    appearance: none;
+    box-shadow: none;
+    text-decoration: none;
+}
+
+.ys-helcim-pay-wrapper .ys-helcim-pay-button:hover,
+.ys-helcim-js-form .ys-helcim-pay-button:hover {
+    background: #4638c9;
+    border-color: #4638c9;
+    color: #ffffff;
+}
+
+.ys-helcim-pay-wrapper .ys-helcim-pay-button:focus-visible,
+.ys-helcim-js-form .ys-helcim-pay-button:focus-visible {
+    outline: 2px solid #4638c9;
+    outline-offset: 2px;
+}
+
+.ys-helcim-pay-wrapper .ys-helcim-pay-button:disabled,
+.ys-helcim-js-form .ys-helcim-pay-button:disabled,
+.ys-helcim-pay-wrapper .ys-helcim-pay-button.is-busy,
+.ys-helcim-js-form .ys-helcim-pay-button.is-busy {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+/* ---- 卡片表單欄位 ---- */
+
+.ys-helcim-js-form .ys-helcim-field {
+    margin: 0 0 14px;
+}
+
+.ys-helcim-js-form .ys-helcim-field label {
+    display: block;
+    margin: 0 0 6px;
+    font-size: 14px;
+    font-weight: 500;
+    color: #374151;
+}
+
+.ys-helcim-js-form .ys-helcim-field input[type="text"] {
+    display: block;
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    background: #ffffff;
+    color: #111827;
+    font-size: 15px;
+    line-height: 1.4;
+    box-sizing: border-box;
+    box-shadow: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ys-helcim-js-form .ys-helcim-field input[type="text"]:focus {
+    border-color: #5B4FE9;
+    box-shadow: 0 0 0 3px rgba(91, 79, 233, 0.18);
+    outline: none;
+}
+
+.ys-helcim-js-form .ys-helcim-field input::placeholder {
+    color: #9ca3af;
+}
+
+/* 到期日 + 安全碼 並排 */
+.ys-helcim-js-form .ys-helcim-field-row {
+    display: flex;
+    gap: 12px;
+}
+
+.ys-helcim-js-form .ys-helcim-field-row .ys-helcim-field {
+    flex: 1 1 0;
+    min-width: 0;
+}
+
+/* ---- 錯誤與狀態 ---- */
+
+.ys-helcim-error {
+    display: none;
+    margin: 10px 0 0;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #b91c1c;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.ys-helcim-status {
+    margin: 10px 0 0;
+    color: #374151;
+    font-size: 14px;
+}
+
+/* ---- 小型 spinner ---- */
+
+.ys-helcim-spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid rgba(255, 255, 255, 0.45);
+    border-top-color: #ffffff;
+    border-radius: 50%;
+    animation: ys-helcim-spin 0.8s linear infinite;
+    flex: 0 0 auto;
+}
+
+@keyframes ys-helcim-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* ---- 窄螢幕 ---- */
+
+@media (max-width: 480px) {
+    .ys-helcim-js-form .ys-helcim-field-row {
+        flex-direction: column;
+        gap: 0;
+    }
+}
