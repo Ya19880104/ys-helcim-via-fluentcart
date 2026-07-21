@@ -15,8 +15,9 @@
 namespace YangSheep\Helcim\FluentCart\HelcimJs;
 
 use FluentCart\Api\StoreSettings;
-use FluentCart\App\Helpers\Helper;
 use FluentCart\App\Modules\PaymentMethods\Core\BaseGatewaySettings;
+use YangSheep\Helcim\FluentCart\Settings\YSHelcimModeApiSettings;
+use YangSheep\Helcim\FluentCart\Settings\YSHelcimSecretStorage;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -29,7 +30,7 @@ if (!defined('ABSPATH')) {
  * and live credential sets are stored independently; which set is actually used
  * is decided by FluentCart's store-wide mode (StoreSettings order_mode).
  */
-class YSHelcimJsSettings extends BaseGatewaySettings
+class YSHelcimJsSettings extends BaseGatewaySettings implements YSHelcimModeApiSettings
 {
     /**
      * @var array The currently effective settings values (merged with defaults).
@@ -63,8 +64,11 @@ class YSHelcimJsSettings extends BaseGatewaySettings
             'live_api_token'         => '',
             'live_js_token'          => '',
             'live_js_secret_key'     => '',
-            // Webhook signing token (provided on the Helcim dashboard Webhooks page, base64).
-            'webhook_verifier_token' => '',
+            // Mode-specific webhook signing tokens (provided on the Helcim dashboard Webhooks page, base64).
+            'test_webhook_verifier_token' => '',
+            'live_webhook_verifier_token' => '',
+            // Historical pre-mode setting. Read only as a current-mode migration fallback.
+            'webhook_verifier_token'      => '',
             // Checkout button text (a default is used when empty).
             'checkout_button_text'   => '',
             // Debug logging switch.
@@ -133,7 +137,18 @@ class YSHelcimJsSettings extends BaseGatewaySettings
      */
     public function getApiToken(): string
     {
-        return (string) Helper::decryptKey($this->get($this->getModePrefix() . 'api_token'));
+        return $this->getApiTokenForMode((string) $this->getMode());
+    }
+
+    /** Get the credential that belongs to an existing transaction's mode. */
+    public function getApiTokenForMode(string $mode): string
+    {
+        $mode = strtolower(trim($mode));
+        if (!in_array($mode, ['test', 'live'], true)) {
+            return '';
+        }
+
+        return YSHelcimSecretStorage::decrypt($this->get($mode . '_api_token'));
     }
 
     /**
@@ -160,11 +175,22 @@ class YSHelcimJsSettings extends BaseGatewaySettings
      */
     public function getJsSecretKey(): string
     {
-        return (string) Helper::decryptKey($this->get($this->getModePrefix() . 'js_secret_key'));
+        return $this->getJsSecretKeyForMode((string) $this->getMode());
+    }
+
+    /** Get the hash-verification secret bound to an existing transaction mode. */
+    public function getJsSecretKeyForMode(string $mode): string
+    {
+        $mode = strtolower(trim($mode));
+        if (!in_array($mode, ['test', 'live'], true)) {
+            return '';
+        }
+
+        return YSHelcimSecretStorage::decrypt($this->get($mode . '_js_secret_key'));
     }
 
     /**
-     * Get the webhook verifier token (decrypted; a base64 string).
+     * Get the webhook verifier token for the current store mode.
      *
      * Provided on the Helcim dashboard Webhooks page and used for HMAC-SHA256 verification.
      *
@@ -172,7 +198,27 @@ class YSHelcimJsSettings extends BaseGatewaySettings
      */
     public function getWebhookVerifierToken(): string
     {
-        return (string) Helper::decryptKey($this->get('webhook_verifier_token'));
+        return $this->getWebhookVerifierTokenForMode((string) $this->getMode());
+    }
+
+    /**
+     * Get the verifier token that belongs to a specific store mode.
+     *
+     * Historical global tokens are migrated once during plugin initialization.
+     * Runtime reads are strictly mode-specific so a later store-mode switch can
+     * never reinterpret one account's verifier as belonging to another account.
+     *
+     * @param string $mode Requested mode.
+     * @return string Decrypted verifier token, or an empty string when unavailable.
+     */
+    public function getWebhookVerifierTokenForMode(string $mode): string
+    {
+        $mode = strtolower(trim($mode));
+        if (!in_array($mode, ['test', 'live'], true)) {
+            return '';
+        }
+
+        return YSHelcimSecretStorage::decrypt($this->get($mode . '_webhook_verifier_token'));
     }
 
     /**

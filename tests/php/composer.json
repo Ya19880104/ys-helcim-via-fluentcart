@@ -1,0 +1,21 @@
+{
+  "name": "yangsheep/ys-helcim-via-fluentcart-tests",
+  "description": "Isolated development test harness for YS Helcim via FluentCart.",
+  "license": "proprietary",
+  "type": "project",
+  "require-dev": {
+    "phpunit/phpunit": "^10.5"
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "YangSheep\\Helcim\\FluentCart\\": "../../src/",
+      "YangSheep\\Helcim\\FluentCart\\Tests\\": "./"
+    }
+  },
+  "scripts": {
+    "test": "phpunit --configuration phpunit.xml"
+  },
+  "config": {
+    "sort-packages": true
+  }
+}

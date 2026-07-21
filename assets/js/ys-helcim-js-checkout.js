@@ -5,8 +5,8 @@
  * 1. Listen for `fluent_cart_load_payments_ys_helcim_js` -> render the card form inside the container
  *    (fields carry an id only, never a name attribute — sensitive values must not enter FluentCart's form serialization)
  * 2. On pay click -> basic client-side validation -> await orderHandler() to create the order
- *    -> read payment_data.{transaction_uuid, confirm_nonce, js_token, test_mode}
- * 3. Populate #token / #test -> call helcimProcess() (helcim.js SDK tokenize)
+ *    -> read payment_data.{transaction_uuid, confirm_nonce, confirm_token, js_token}
+ * 3. Populate #token and normalize SDK fields -> call helcimProcess() (helcim.js SDK tokenize)
  * 4. Completion detection: poll for input#response appearing inside #helcimResults (primary) plus window.helcimJsCallback (secondary)
  * 5. response != 1 -> show an error; success -> collect every hidden input inside #helcimResults
  *    -> AJAX confirm (server captures via /v2/payment/purchase using the cardToken) -> redirect to the receipt page
@@ -33,7 +33,9 @@
         processing: false,       // Whether a payment flow is currently in progress (guards against double clicks)
         resultHandled: false,    // Whether the tokenize result has been handled (single gate shared by callback and polling)
         pollTimer: null,         // Polling timer
-        expiryDisplayValue: ''   // The expiry display value from before helcimProcess (used to restore on failure)
+        expiryDisplayValue: '',  // The expiry display value from before helcimProcess (used to restore on failure)
+        reloadRequired: false,   // An unresolved provider request permits no same-page retry
+        reloadMessage: ''        // Preserve the exact safe recovery instruction across fragment reloads
     };
 
     /** The result handler for the current flow (delegated to by the global helcimJsCallback) */
@@ -65,9 +67,9 @@
             redirecting: 'Payment complete. Redirecting to your receipt…',
             tokenize_failed_prefix: 'Payment failed: ',
             tokenize_failed: 'We couldn\'t verify your card. Please check your card details and try again.',
-            timeout: 'The payment timed out. Please try again in a moment.',
+            timeout: 'The payment timed out. To prevent an incorrect charge, refresh the page before trying again.',
             confirm_failed: 'We couldn\'t confirm your payment. Please contact the store for help.',
-            network_error: 'Connection error. Please try again in a moment.'
+            network_error: 'The payment result could not be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.'
         };
         var translations = (cfg && cfg.translations) || {};
         return translations[key] || defaults[key] || key;
@@ -154,6 +156,8 @@
         stopPolling();
         activeResultHandler = null;
         state.processing = false;
+        state.reloadRequired = false;
+        state.reloadMessage = '';
         setButtonBusy(false);
 
         // Restore the expiry display format (it was converted to MMYY before helcimProcess)
@@ -170,6 +174,43 @@
             detail.paymentLoader.hideLoader();
             detail.paymentLoader.enableCheckoutButton();
         }
+    }
+
+    /**
+     * Enter a terminal same-page state after the SDK wait limit expires.
+     *
+     * Helcim's SDK request cannot be aborted by this integration and may still
+     * write a valid result into the shared #helcimResults element. Allowing a
+     * second attempt in this document could therefore bind that stale result
+     * to the next order. A full page reload is the only safe retry boundary.
+     *
+     * @param {Object} detail e.detail from the load_payments event
+     */
+    function requireReload(detail, message) {
+        stopPolling();
+        activeResultHandler = null;
+        state.resultHandled = true;
+        state.processing = true;
+        state.reloadRequired = true;
+        state.reloadMessage = message || t('network_error');
+        state.expiryDisplayValue = '';
+        setButtonBusy(false);
+        var button = document.querySelector(CONTAINER_SELECTOR + ' .ys-helcim-pay-button');
+        if (button) {
+            button.disabled = true;
+        }
+        showError(state.reloadMessage);
+
+        if (detail && detail.paymentLoader) {
+            detail.paymentLoader.hideLoader();
+            if (typeof detail.paymentLoader.disableCheckoutButton === 'function') {
+                detail.paymentLoader.disableCheckoutButton();
+            }
+        }
+    }
+
+    function requireReloadAfterSdkTimeout(detail) {
+        requireReload(detail, t('timeout'));
     }
 
     /**
@@ -308,7 +349,6 @@
     function renderForm(container, detail, info) {
         var customer = extractCustomerInfo(info);
         var buttonText = (info && info.payment_args && info.payment_args.button_text) || t('button_text');
-        var initialTestMode = !!(info && info.payment_args && (info.payment_args.mode === 'test' || info.payment_args.test_mode));
 
         container.innerHTML = '';
 
@@ -370,9 +410,8 @@
         wrapper.appendChild(cardName.row);
 
         // --- Hidden fields (helcim.js SDK contract) ---
-        // token: filled from payment_data.js_token after the order is created; test: overwritten from payment_data.test_mode after order creation
+        // token: filled from payment_data.js_token after the order is created
         wrapper.appendChild(createHidden('token', ''));
-        wrapper.appendChild(createHidden('test', initialTestMode ? '1' : '0'));
         wrapper.appendChild(createHidden('dontSubmit', '1'));
         // Belt-and-suspenders for the SDK field contract (Code Review 🟡-8): provide both the combined field cardExpiry(MMYY)
         // and the split fields cardExpiryMonth / cardExpiryYear (the Woo build was verified to use the split fields)
@@ -479,12 +518,20 @@
      * @param {Object} fields      helcim.js response fields (includes cardToken, masked cardNumber, etc.)
      */
     function confirmPayment(detail, paymentData, fields) {
+        var proofFields = {};
+        var proofFieldNames = ['response', 'cardNumber', 'cardToken', 'hash', 'xmlHash'];
+        proofFieldNames.forEach(function (name) {
+            if (Object.prototype.hasOwnProperty.call(fields, name)) {
+                proofFields[name] = fields[name];
+            }
+        });
         var body = new URLSearchParams();
         body.append('action', cfg.confirm_action);
         body.append('transaction_uuid', paymentData.transaction_uuid || '');
         body.append('nonce', paymentData.confirm_nonce || '');
+        body.append('confirm_token', paymentData.confirm_token || '');
         body.append('card_token', fields.cardToken || '');
-        body.append('response_fields', JSON.stringify(fields));
+        body.append('response_fields', JSON.stringify(proofFields));
 
         fetch(cfg.ajax_url, {
             method: 'POST',
@@ -510,9 +557,13 @@
                 return;
             }
             var message = (resp && (resp.message || (resp.data && resp.data.message))) || t('confirm_failed');
-            resetUi(detail, message);
+            if (resp && resp.retry_allowed === true) {
+                resetUi(detail, message);
+                return;
+            }
+            requireReload(detail, message);
         }).catch(function () {
-            resetUi(detail, t('network_error'));
+            requireReload(detail, t('network_error'));
         });
     }
 
@@ -570,8 +621,7 @@
                 return;
             }
             if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
-                stopPolling();
-                resetUi(detail, t('timeout'));
+                requireReloadAfterSdkTimeout(detail);
             }
         }, POLL_INTERVAL_MS);
     }
@@ -612,7 +662,7 @@
      * @param {Object} detail e.detail from the load_payments event
      */
     function onPayClick(detail) {
-        if (state.processing) {
+        if (state.processing || state.reloadRequired) {
             return;
         }
         showError('');
@@ -625,6 +675,13 @@
 
         if (typeof detail.orderHandler !== 'function') {
             showError(t('init_failed'));
+            return;
+        }
+
+        // Do not create a pending FluentCart order when the PCI SDK is blocked
+        // or unavailable in this browser.
+        if (typeof window.helcimProcess !== 'function') {
+            showError(t('sdk_missing'));
             return;
         }
 
@@ -646,19 +703,17 @@
                 return;
             }
 
-            if (typeof window.helcimProcess !== 'function') {
-                resetUi(detail, t('sdk_missing'));
-                return;
-            }
-
             // Populate the hidden values the helcim.js SDK needs (the order-creation response is authoritative for token / test)
             var tokenInput = document.getElementById('token');
-            var testInput = document.getElementById('test');
             if (tokenInput) {
                 tokenInput.value = paymentData.js_token;
             }
-            if (testInput) {
-                testInput.value = paymentData.test_mode ? '1' : '0';
+
+            // helcim.js rejects formatted PANs. The visible field is grouped for readability,
+            // but the SDK contract requires digits only at invocation time.
+            var numberInput = document.getElementById('cardNumber');
+            if (numberInput) {
+                numberInput.value = validation.cardDigits;
             }
 
             // Convert expiry to MMYY before submitting (keep the display value so we can restore it on failure)
@@ -695,8 +750,16 @@
             startPolling(detail, paymentData);
 
             try {
-                window.helcimProcess();
+                Promise.resolve(window.helcimProcess()).catch(function (err) {
+                    if (state.resultHandled) {
+                        return;
+                    }
+                    state.resultHandled = true;
+                    console.error('[YS Helcim.js FCT] helcimProcess rejected:', err);
+                    resetUi(detail, t('tokenize_failed_prefix') + (err && err.message ? err.message : t('tokenize_failed')));
+                });
             } catch (err) {
+                state.resultHandled = true;
                 console.error('[YS Helcim.js FCT] helcimProcess failed:', err);
                 resetUi(detail, t('tokenize_failed_prefix') + (err && err.message ? err.message : t('tokenize_failed')));
             }
@@ -719,13 +782,25 @@
             return;
         }
 
-        // Reset flow state; while a payment flow is in progress (e.g. a background fragments swap) do not tear down the active poller
-        if (!state.processing) {
-            stopPolling();
-            activeResultHandler = null;
-            state.resultHandled = false;
-            state.expiryDisplayValue = '';
+        if (state.reloadRequired) {
+            renderContainerError(container, state.reloadMessage || t('network_error'));
+            if (detail.paymentLoader && typeof detail.paymentLoader.disableCheckoutButton === 'function') {
+                detail.paymentLoader.disableCheckoutButton();
+            }
+            return;
         }
+
+        // A FluentCart fragment event can fire while helcim.js owns the active
+        // result container. Re-rendering here would disconnect #helcimResults
+        // and make a valid SDK response look like a two-minute timeout.
+        if (state.processing) {
+            return;
+        }
+
+        stopPolling();
+        activeResultHandler = null;
+        state.resultHandled = false;
+        state.expiryDisplayValue = '';
 
         dispatchLoadingEvent('loading');
         container.innerHTML = '<p class="ys-helcim-loading-text">' + t('loading') + '</p>';

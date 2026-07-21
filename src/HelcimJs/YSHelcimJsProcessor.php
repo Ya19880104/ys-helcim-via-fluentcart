@@ -5,8 +5,7 @@
  * Responsibilities:
  * 1. The fail-closed validation chain for the AJAX confirm (ys_helcim_fct_confirm_js):
  *    nonce → load the transaction → idempotency check → validateResponseHash →
- *    server-side v2 purchase (charge with cardToken) → response check (APPROVED/amount/currency) → markPaid.
- * 2. Webhook reconciliation (reconcileCardTransaction): confirm a pending transaction using the Helcim transaction lookup result.
+ *    durable server-side v2 purchase (charge with cardToken) → strict provider proof → local aggregate binding.
  *
  * Security principles:
  * - If any validation step fails, the request is rejected and the payment is never marked successful (fail-closed).
@@ -21,11 +20,10 @@
 namespace YangSheep\Helcim\FluentCart\HelcimJs;
 
 use FluentCart\App\Helpers\Status;
-use FluentCart\App\Helpers\StatusHelper;
 use FluentCart\App\Models\Order;
 use FluentCart\App\Models\OrderTransaction;
-use YangSheep\Helcim\FluentCart\Support\YSHelcimApiClient;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimLogger;
+use YangSheep\Helcim\FluentCart\Support\YSHelcimTransactionId;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -38,6 +36,10 @@ if (!defined('ABSPATH')) {
  */
 class YSHelcimJsProcessor
 {
+	private const MAX_RESPONSE_FIELDS_BYTES = 65536;
+
+	private const MAX_RESPONSE_JSON_DEPTH = 16;
+
     /**
      * Gateway slug (used to match transaction.payment_method).
      */
@@ -54,14 +56,28 @@ class YSHelcimJsProcessor
      */
     private YSHelcimJsSettings $settings;
 
+    /** Durable production purchase runtime. */
+    private YSHelcimJsPurchaseRuntime $purchaseRuntime;
+
+    /** Transaction-bound server confirmation signature. */
+    private YSHelcimPurchaseConfirmationToken $confirmationTokens;
+
     /**
      * Constructor.
      *
-     * @param YSHelcimJsSettings $settings The gateway settings object.
+     * @param YSHelcimJsSettings             $settings        The gateway settings object.
+     * @param YSHelcimJsPurchaseRuntime|null       $purchaseRuntime    Injectable production runtime.
+     * @param YSHelcimPurchaseConfirmationToken|null $confirmationTokens Injectable confirmation signer.
      */
-    public function __construct(YSHelcimJsSettings $settings)
+    public function __construct(
+        YSHelcimJsSettings $settings,
+        ?YSHelcimJsPurchaseRuntime $purchaseRuntime = null,
+        ?YSHelcimPurchaseConfirmationToken $confirmationTokens = null
+    )
     {
         $this->settings = $settings;
+        $this->purchaseRuntime = $purchaseRuntime ?? YSHelcimJsPurchaseRuntime::forSettings($settings);
+        $this->confirmationTokens = $confirmationTokens ?? new YSHelcimPurchaseConfirmationToken();
     }
 
     /**
@@ -80,21 +96,14 @@ class YSHelcimJsProcessor
      */
     public function handleConfirmRequest(): void
     {
-        // ---- 1. Soft nonce check (log only, does not block) ----
-        // Architectural decision: on the OrderPaid event FluentCart automatically creates an account and logs it in (AuthService::makeLogin),
-        // so the session changes after a successful confirm — a legitimate retry with the old nonce is guaranteed to be invalid, and a hard check would kill it.
-        // Platform precedents (the Stripe/PayPal confirm endpoints) do not verify a WP nonce either. The real anti-forgery guard here is the
-        // js_secret_key response hash (step 4) + the unguessable uuid + the charge-response check (step 6).
-        $nonce = isset($_POST['nonce']) ? sanitize_text_field(wp_unslash($_POST['nonce'])) : '';
-
-        if (!$nonce || !wp_verify_nonce($nonce, self::NONCE_ACTION)) {
-            YSHelcimLogger::info('helcim.js confirm: nonce mismatch (soft check, not blocking)');
-        }
+        // ---- 1. Read the checkout confirmation nonce ----
+        // Completed replays are handled before nonce enforcement because the
+        // OrderPaid login transition can rotate the guest session. Pending
+        // transactions are rejected on a missing or invalid nonce below.
+        $nonce = self::postedText('nonce');
 
         // ---- 2. Load this gateway's charge transaction by uuid ----
-        $transaction_uuid = isset($_POST['transaction_uuid'])
-            ? sanitize_text_field(wp_unslash($_POST['transaction_uuid']))
-            : '';
+        $transaction_uuid = self::postedText('transaction_uuid');
 
         if ($transaction_uuid === '') {
             $this->respondError(__('The transaction identifier is missing.', 'ys-helcim-via-fluentcart'), 422);
@@ -111,22 +120,44 @@ class YSHelcimJsProcessor
             $this->respondError(__('The matching transaction could not be found. Please check out again.', 'ys-helcim-via-fluentcart'), 404);
         }
 
-        // ---- 3. Idempotency: a transaction that already succeeded goes straight to the receipt page, with no re-charge ----
+        // ---- 3. Exact local replay: require transaction ID plus paid-order proof ----
         if ($transaction->status === Status::TRANSACTION_SUCCEEDED) {
-            wp_send_json(
-                $this->buildSuccessResponse($transaction, __('Payment already completed. Redirecting to the receipt page…', 'ys-helcim-via-fluentcart')),
-                200
+            $this->respondPurchaseResult(
+                $transaction,
+                $this->purchaseRuntime->executeInline($transaction, ''),
+                true
             );
+        }
+
+        // A completed replay is mutation-free and may cross FluentCart's login
+        // transition. Every pending path that can claim a provider operation
+        // must remain bound to the checkout session that received this nonce.
+        if (!$nonce || !wp_verify_nonce($nonce, self::NONCE_ACTION)) {
+            YSHelcimLogger::info('helcim.js confirm: nonce mismatch blocked before provider claim');
+            $this->respondError(__('The payment confirmation session is invalid or expired. Please refresh and try again.', 'ys-helcim-via-fluentcart'), 403);
+        }
+
+        $confirmToken = self::postedText('confirm_token');
+        if (!$this->confirmationTokens->verify($confirmToken, (string) $transaction->uuid, (int) $transaction->id)) {
+            YSHelcimLogger::info('helcim.js confirm: transaction confirmation token rejected');
+            $this->respondError(__('The payment confirmation session is invalid or expired. Please refresh and try again.', 'ys-helcim-via-fluentcart'), 403);
         }
 
         // ---- 4. Verify the helcim.js response hash (fail-closed) ----
         $response_fields = $this->readResponseFields();
 
-        if (!$this->validateResponseHash($response_fields)) {
+        if (!$this->validateResponseHash($response_fields, (string) $transaction->payment_mode)) {
             YSHelcimLogger::error('helcim.js confirm: response hash verification failed', [
                 'transaction_uuid' => $transaction_uuid,
             ]);
             $this->respondError(__('The card verification response is invalid. Please try again.', 'ys-helcim-via-fluentcart'), 400);
+        }
+
+        // A valid hash authenticates the SDK response; it does not turn an SDK
+        // failure into a successful tokenization. Only the exact success flag
+        // is allowed to reach the provider purchase boundary.
+        if ('1' !== (string) ($response_fields['response'] ?? '')) {
+            $this->respondError(__('The card could not be verified. Please check the card details and try again.', 'ys-helcim-via-fluentcart'), 422);
         }
 
         // ---- 5. Take the cardToken (security review M1: always use the response_fields.cardToken that "passed hash verification") ----
@@ -138,9 +169,7 @@ class YSHelcimJsProcessor
         }
 
         // Tamper assertion: if the front end also passes card_token, it must match the verified value.
-        $posted_token = isset($_POST['card_token'])
-            ? sanitize_text_field(wp_unslash($_POST['card_token']))
-            : '';
+        $posted_token = self::postedText('card_token');
 
         if ($posted_token !== '' && !hash_equals($card_token, $posted_token)) {
             YSHelcimLogger::error('helcim.js confirm: card_token does not match the verified response — possible tampering', [
@@ -149,33 +178,89 @@ class YSHelcimJsProcessor
             $this->respondError(__('The card data verification did not match. Please try again.', 'ys-helcim-via-fluentcart'), 400);
         }
 
-        $helcim_tx = $this->purchaseWithCardToken($transaction, $card_token);
+        // ---- 6. Durable remote-first purchase and exact local aggregate binding ----
+        $result = $this->purchaseRuntime->executeInline($transaction, $card_token);
+        $card_token = '';
+        $this->respondPurchaseResult($transaction, $result, false);
+    }
 
-        if (is_wp_error($helcim_tx)) {
-            YSHelcimLogger::error('helcim.js confirm: charge failed', [
-                'transaction_uuid' => $transaction_uuid,
-                'error'            => $helcim_tx->get_error_message(),
+    /**
+     * Emit one customer-safe response from the durable operation state.
+     *
+     * @param OrderTransaction                    $transaction      Server-loaded transaction.
+     * @param array<string, mixed>|\WP_Error      $result           Runtime result.
+     * @param bool                                $alreadyCompleted Local replay branch.
+     * @return void Always ends with wp_send_json.
+     */
+    private function respondPurchaseResult(OrderTransaction $transaction, $result, bool $alreadyCompleted): void
+    {
+        if (is_wp_error($result)) {
+            YSHelcimLogger::error('helcim.js confirm: purchase runtime rejected the request', [
+                'transaction_uuid' => (string) $transaction->uuid,
+                'error_code'       => $result->get_error_code(),
             ]);
-            $this->respondError(__('The payment could not be completed. Please check your card details or use a different card.', 'ys-helcim-via-fluentcart'), 402);
+            wp_send_json([
+                'status'        => 'failed',
+                'retry_allowed' => false,
+                'message'       => __('The payment could not be started safely. Please contact the store administrator.', 'ys-helcim-via-fluentcart'),
+            ], 503);
         }
 
-        // ---- 6. Charge-response check: APPROVED + amount (integer cents) + currency ----
-        $verify_error = $this->verifyPurchaseResponse($transaction, $helcim_tx);
-        if ($verify_error !== null) {
-            YSHelcimLogger::error('helcim.js confirm: charge-response check failed', [
-                'transaction_uuid' => $transaction_uuid,
-                'reason'           => $verify_error,
-            ]);
-            $this->respondError(__('The payment result check failed. Please contact the site administrator.', 'ys-helcim-via-fluentcart'), 400);
+        $status = is_array($result) ? (string) ($result['status'] ?? '') : '';
+        if ($status === 'succeeded') {
+            $provider_id = YSHelcimTransactionId::normalize($result['provider_transaction_id'] ?? null);
+            $fresh = OrderTransaction::query()->where('id', $transaction->id)->first();
+            if (
+                $provider_id === null ||
+                !$fresh ||
+                $fresh->status !== Status::TRANSACTION_SUCCEEDED ||
+                $provider_id !== YSHelcimTransactionId::normalize($fresh->vendor_charge_id ?? null)
+            ) {
+                wp_send_json([
+                    'status'        => 'pending',
+                    'retry_allowed' => false,
+                    'message'       => __('Your payment needs verification. Do not submit another payment.', 'ys-helcim-via-fluentcart'),
+                ], 409);
+            }
+
+            $response = $this->buildSuccessResponse(
+                $fresh,
+                $alreadyCompleted
+                    ? __('Payment already completed. Redirecting to the receipt page.', 'ys-helcim-via-fluentcart')
+                    : __('Payment successful! Redirecting to the receipt page.', 'ys-helcim-via-fluentcart')
+            );
+            if (is_wp_error($response)) {
+                wp_send_json([
+                    'status'        => 'pending',
+                    'retry_allowed' => false,
+                    'message'       => __('Your payment needs verification. Do not submit another payment.', 'ys-helcim-via-fluentcart'),
+                ], 500);
+            }
+
+            wp_send_json($response, 200);
         }
 
-        // ---- 7. All checks passed: mark the payment successful and sync the order status ----
-        $transaction = $this->markPaid($transaction, $helcim_tx, $card_token);
+        if ($status === 'declined') {
+            wp_send_json([
+                'status'        => 'failed',
+                'retry_allowed' => true,
+                'message'       => __('The payment was declined. Please use a different card.', 'ys-helcim-via-fluentcart'),
+            ], 402);
+        }
 
-        wp_send_json(
-            $this->buildSuccessResponse($transaction, __('Payment successful! Redirecting to the receipt page…', 'ys-helcim-via-fluentcart')),
-            200
-        );
+        if ($status === 'failed') {
+            wp_send_json([
+                'status'        => 'failed',
+                'retry_allowed' => true,
+                'message'       => __('The payment could not be completed. Please try again shortly.', 'ys-helcim-via-fluentcart'),
+            ], 503);
+        }
+
+        wp_send_json([
+            'status'        => 'pending',
+            'retry_allowed' => false,
+            'message'       => __('Your payment result is still being verified. Do not submit another payment.', 'ys-helcim-via-fluentcart'),
+        ], 409);
     }
 
     /**
@@ -187,18 +272,28 @@ class YSHelcimJsProcessor
      *
      * @param OrderTransaction $transaction The transaction (in the succeeded state).
      * @param string           $message     The message to display.
-     * @return array
+     * @return array|\WP_Error
      */
-    private function buildSuccessResponse(OrderTransaction $transaction, string $message): array
+    private function buildSuccessResponse(OrderTransaction $transaction, string $message)
     {
         $order = Order::query()->where('id', $transaction->order_id)->first();
+		if (
+			! $order instanceof Order ||
+			(int) ($order->id ?? 0) !== (int) $transaction->order_id ||
+			'' === trim((string) ($order->uuid ?? ''))
+		) {
+			return new \WP_Error(
+				'ys_helcim_confirm_receipt_missing',
+				__('The paid transaction receipt could not be loaded.', 'ys-helcim-via-fluentcart')
+			);
+		}
 
         return [
             'status'       => 'success',
             'redirect_url' => $transaction->getReceiptPageUrl(true),
             'message'      => $message,
             'order'        => [
-                'uuid' => $order ? (string) $order->uuid : '',
+                'uuid' => (string) $order->uuid,
             ],
         ];
     }
@@ -213,12 +308,13 @@ class YSHelcimJsProcessor
      * - The Woo version "skips verification and lets it through" (fail-open) when the secret key is unset or the response has no hash.
      * - This version is always fail-closed: an unset secret key is rejected; a missing hash is rejected; a failed check is rejected.
      *
-     * @param array $response_fields The helcim.js response fields.
+     * @param array  $response_fields The helcim.js response fields.
+     * @param string $payment_mode    Mode persisted on the FluentCart transaction.
      * @return bool True if verification passed.
      */
-    public function validateResponseHash(array $response_fields): bool
+    public function validateResponseHash(array $response_fields, string $payment_mode): bool
     {
-        $secret_key = $this->settings->getJsSecretKey();
+        $secret_key = $this->settings->getJsSecretKeyForMode($payment_mode);
 
         // fail-closed: reject when the secret key is unset (the Woo version lets it through here, which is a known defect).
         if ($secret_key === '') {
@@ -246,296 +342,13 @@ class YSHelcimJsProcessor
     }
 
     /**
-     * Charge via the Helcim v2 payment/purchase endpoint using the cardToken.
-     *
-     * Idempotency design: the idempotency key is bound to the transaction uuid
-     * (with the 'yshfct-' prefix, kept within 36 characters), so a retry of the
-     * same transaction does not double-charge (Helcim returns the same result for
-     * the same key).
-     *
-     * @param OrderTransaction $transaction The FluentCart transaction (total is in cents).
-     * @param string           $card_token  The card token obtained from helcim.js Verify.
-     * @return array|\WP_Error The Helcim response array, or an error.
-     */
-    private function purchaseWithCardToken(OrderTransaction $transaction, string $card_token)
-    {
-        $api_token = $this->settings->getApiToken();
-
-        if ($api_token === '') {
-            return new \WP_Error(
-                'ys_helcim_no_api_token',
-                __('The Helcim API token has not been configured.', 'ys-helcim-via-fluentcart')
-            );
-        }
-
-        $order = $transaction->order;
-
-        if (!$order) {
-            return new \WP_Error(
-                'ys_helcim_no_order',
-                __('The order for this transaction could not be found.', 'ys-helcim-via-fluentcart')
-            );
-        }
-
-        // [Immutable contract] amount can only come from $transaction->total (the server-side database value).
-        // The overall security of the helcim.js flow depends on this (the hash is not bound to the transaction amount) —
-        // never accept any amount passed in from the front end (see security review M1).
-        // FluentCart stores amounts in cents; the Helcim API expects a decimal string in the main unit.
-        $payload = [
-            'ipAddress'     => $this->getClientIp(),
-            'currency'      => strtoupper((string) $transaction->currency),
-            'amount'        => number_format(((int) $transaction->total) / 100, 2, '.', ''),
-            'cardData'      => [
-                'cardToken' => $card_token,
-            ],
-            'invoiceNumber' => (string) $order->uuid,
-            'ecommerce'     => true,
-        ];
-
-        // Billing address (falls back to shipping when billing is missing; matches the Woo version's buildBillingAddress).
-        $billing_address = $this->buildBillingAddress($order);
-        if (!empty($billing_address)) {
-            $payload['billingAddress'] = $billing_address;
-        }
-
-        /**
-         * Filter the Helcim purchase charge payload.
-         *
-         * @param array            $payload     The charge parameters.
-         * @param OrderTransaction $transaction The FluentCart transaction.
-         */
-        $payload = apply_filters('ys_helcim_fct_purchase_args', $payload, $transaction);
-
-        // Idempotency key (Code Review 🟡-1): bound to "transaction + card token" —
-        // a same-card retry is idempotent (prevents double-charging); a retry with a different card after a first decline gets a new key
-        // (so it is not stuck on the decline result Helcim cached under the same key).
-        // 'ysh-' + 32 hex = 36 characters, within Helcim's 25–36 character limit.
-        $idempotency_key = 'ysh-' . substr(hash('sha256', $transaction->uuid . $card_token), 0, 32);
-
-        return YSHelcimApiClient::request('payment/purchase', $payload, $api_token, $idempotency_key);
-    }
-
-    /**
-     * Check the purchase response (fail-closed).
-     *
-     * Items verified:
-     * 1. status === 'APPROVED'.
-     * 2. transactionId is present (the v2 transaction ID, used for refunds/reconciliation).
-     * 3. Amount compared in integer cents: (int) round(amount * 100) === (int) transaction->total.
-     * 4. Currency matches (case-insensitive).
-     *
-     * @param OrderTransaction $transaction The FluentCart transaction.
-     * @param array            $helcim_tx   The Helcim charge response.
-     * @return string|null Returns null on pass; a reason description on failure (for the log only, never returned to the front end).
-     */
-    private function verifyPurchaseResponse(OrderTransaction $transaction, array $helcim_tx): ?string
-    {
-        // Compare after case normalization (consistent with ys_helcim; under fail-closed, normalization is the correct direction).
-        if ('APPROVED' !== strtoupper((string) ($helcim_tx['status'] ?? ''))) {
-            return 'status_not_approved';
-        }
-
-        if (empty($helcim_tx['transactionId'])) {
-            return 'missing_transaction_id';
-        }
-
-        $paid_cents = (int) round(((float) ($helcim_tx['amount'] ?? 0)) * 100);
-        if ($paid_cents !== (int) $transaction->total) {
-            return 'amount_mismatch';
-        }
-
-        $paid_currency = strtoupper((string) ($helcim_tx['currency'] ?? ''));
-        if ($paid_currency === '' || $paid_currency !== strtoupper((string) $transaction->currency)) {
-            return 'currency_mismatch';
-        }
-
-        return null;
-    }
-
-    /**
-     * Mark the transaction as paid and sync the order status.
-     *
-     * Race-protected (following PayPal's confirmPaymentSuccessByCharge): reload
-     * the transaction first, and skip the update if it is already succeeded (the
-     * idempotency guarantee when the webhook and AJAX run concurrently).
-     *
-     * @param OrderTransaction $transaction The FluentCart transaction.
-     * @param array            $helcim_tx   The Helcim transaction data (APPROVED, with amount and currency already checked).
-     * @param string           $card_token  The card token (stored in meta for a future saved-card feature).
-     * @return OrderTransaction The updated transaction.
-     */
-    public function markPaid(OrderTransaction $transaction, array $helcim_tx, string $card_token = ''): OrderTransaction
-    {
-        // Reload to avoid duplicate processing when the webhook / AJAX run concurrently (on a reload failure, return the original instance without interrupting).
-        $fresh = OrderTransaction::query()->where('id', $transaction->id)->first();
-        if (!$fresh) {
-            return $transaction;
-        }
-        $transaction = $fresh;
-
-        if ($transaction->status === Status::TRANSACTION_SUCCEEDED) {
-            return $transaction;
-        }
-
-        $update_data = [
-            'status'              => Status::TRANSACTION_SUCCEEDED,
-            'vendor_charge_id'    => (string) ($helcim_tx['transactionId'] ?? ''),
-            'payment_method_type' => 'card',
-        ];
-
-        // Take the last 4 digits of the masked card number (e.g. "5454****5454").
-        $masked_card = (string) ($helcim_tx['cardNumber'] ?? '');
-        if ($masked_card !== '') {
-            $update_data['card_last_4'] = substr($masked_card, -4);
-        }
-
-        $card_brand = (string) ($helcim_tx['cardType'] ?? '');
-        if ($card_brand !== '') {
-            $update_data['card_brand'] = $card_brand;
-        }
-
-        // meta: add the approval code and cardToken (usable for a future saved-card / recurring-charge feature).
-        $meta_patch = [];
-        if (!empty($helcim_tx['approvalCode'])) {
-            $meta_patch['approval_code'] = (string) $helcim_tx['approvalCode'];
-        }
-        if ($card_token !== '') {
-            $meta_patch['card_token'] = $card_token;
-        } elseif (!empty($helcim_tx['cardToken'])) {
-            $meta_patch['card_token'] = (string) $helcim_tx['cardToken'];
-        }
-
-        if (!empty($meta_patch)) {
-            $update_data['meta'] = array_merge(
-                is_array($transaction->meta) ? $transaction->meta : [],
-                $meta_patch
-            );
-        }
-
-        $transaction->fill($update_data);
-        $transaction->save();
-
-        YSHelcimLogger::info('helcim.js: transaction paid successfully', [
-            'transaction_uuid' => $transaction->uuid,
-            'vendor_charge_id' => $update_data['vendor_charge_id'],
-        ]);
-
-        // Sync the order status (FluentCart's built-in atomic PAID transition prevents a duplicate OrderPaid trigger).
-        $order = Order::query()->where('id', $transaction->order_id)->first();
-        if ($order) {
-            (new StatusHelper($order))->syncOrderStatuses($transaction);
-        }
-
-        return $transaction;
-    }
-
-    /**
-     * Webhook reconciliation: confirm a pending transaction using the Helcim card-transactions lookup result.
-     *
-     * Lookup order:
-     * 1. vendor_charge_id already bound to the same Helcim transaction → already processed (idempotent 200).
-     * 2. invoiceNumber (= the FluentCart order uuid) → this gateway's pending charge transaction for that order.
-     *
-     * The amount/currency check (fail-closed) still runs before confirmation; only an APPROVED result is marked paid.
-     *
-     * @param array $helcim_tx The Helcim GET card-transactions/{id} response.
-     * @return array{code:int, message:string} The HTTP status code and message (the caller passes them to wp_send_json).
-     */
-    public function reconcileCardTransaction(array $helcim_tx): array
-    {
-        $vendor_id = (string) ($helcim_tx['transactionId'] ?? '');
-
-        if ($vendor_id === '') {
-            return ['code' => 200, 'message' => 'ignored: no transactionId'];
-        }
-
-        // 1. A successful record already bound to the same Helcim transaction → idempotent, do not reprocess.
-        $existing = OrderTransaction::query()
-            ->where('vendor_charge_id', $vendor_id)
-            ->where('payment_method', self::METHOD_SLUG)
-            ->where('transaction_type', Status::TRANSACTION_TYPE_CHARGE)
-            ->first();
-
-        if ($existing && $existing->status === Status::TRANSACTION_SUCCEEDED) {
-            return ['code' => 200, 'message' => 'already processed'];
-        }
-
-        // Only confirm an "approved purchase" — refund / preauth / verify are all cardTransaction
-        // events and are also APPROVED on success, so a missing type check would let a refund/preauth webhook
-        // record a payment by mistake (Code Review 🔴-1; consistent with the ys_helcim webhook reconciliation).
-        if ('APPROVED' !== strtoupper((string) ($helcim_tx['status'] ?? ''))) {
-            return ['code' => 200, 'message' => 'ignored: not approved'];
-        }
-
-        if ('purchase' !== strtolower((string) ($helcim_tx['type'] ?? ''))) {
-            return ['code' => 200, 'message' => 'ignored: not a purchase'];
-        }
-
-        $transaction = $existing;
-
-        // 2. Find the pending transaction by invoiceNumber (= order uuid).
-        if (!$transaction) {
-            $invoice_number = (string) ($helcim_tx['invoiceNumber'] ?? '');
-
-            if ($invoice_number === '') {
-                return ['code' => 200, 'message' => 'ignored: no invoiceNumber'];
-            }
-
-            $order = Order::query()->where('uuid', $invoice_number)->first();
-
-            if (!$order) {
-                YSHelcimLogger::info('webhook reconcile: matching order not found', ['invoice_number' => $invoice_number]);
-                return ['code' => 200, 'message' => 'ignored: order not found'];
-            }
-
-            // Take the latest charge transaction "without filtering on status" (consistent with ys_helcim, Code Review 🟡-9):
-            // a succeeded one is skipped by the later idempotency gate; if a failed transaction actually succeeded on Helcim's end,
-            // webhook reconciliation is exactly the mechanism that rescues it.
-            $transaction = OrderTransaction::query()
-                ->where('order_id', $order->id)
-                ->where('payment_method', self::METHOD_SLUG)
-                ->where('transaction_type', Status::TRANSACTION_TYPE_CHARGE)
-                ->orderBy('id', 'desc')
-                ->first();
-        }
-
-        if (!$transaction) {
-            return ['code' => 200, 'message' => 'ignored: no pending transaction'];
-        }
-
-        if ($transaction->status === Status::TRANSACTION_SUCCEEDED) {
-            return ['code' => 200, 'message' => 'already processed'];
-        }
-
-        // Amount / currency check (fail-closed: on a mismatch do not confirm, only log for manual follow-up).
-        $verify_error = $this->verifyPurchaseResponse($transaction, $helcim_tx);
-        if ($verify_error !== null) {
-            YSHelcimLogger::error('webhook reconcile: amount/currency check failed, refusing to confirm', [
-                'transaction_uuid' => $transaction->uuid,
-                'vendor_charge_id' => $vendor_id,
-                'reason'           => $verify_error,
-            ]);
-            return ['code' => 200, 'message' => 'ignored: verification failed'];
-        }
-
-        $this->markPaid($transaction, $helcim_tx);
-
-        YSHelcimLogger::info('webhook reconcile: pending transaction confirmed', [
-            'transaction_uuid' => $transaction->uuid,
-            'vendor_charge_id' => $vendor_id,
-        ]);
-
-        return ['code' => 200, 'message' => 'reconciled'];
-    }
-
-    /**
      * Read and sanitize the response_fields from the AJAX request.
      *
      * Supports both delivery formats:
      * - A form array (response_fields[response]=1&response_fields[cardToken]=...).
      * - A JSON string (response_fields={"response":1,...}).
      *
-     * Keeps scalar values only and sanitizes each one (the card number field is already in masked form).
+     * Keeps only the five scalar fields required to verify the SDK response hash.
      *
      * @return array The sanitized response fields.
      */
@@ -548,26 +361,39 @@ class YSHelcimJsProcessor
         $raw = wp_unslash($_POST['response_fields']); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- each field is sanitized below.
 
         if (is_string($raw)) {
-            $decoded = json_decode($raw, true);
-            $raw     = is_array($decoded) ? $decoded : [];
+			if (strlen($raw) > self::MAX_RESPONSE_FIELDS_BYTES) {
+				return [];
+			}
+			try {
+				$decoded = json_decode($raw, true, self::MAX_RESPONSE_JSON_DEPTH, JSON_THROW_ON_ERROR);
+			} catch (\JsonException $exception) {
+				unset($exception);
+				$decoded = null;
+			}
+            $raw = is_array($decoded) ? $decoded : [];
         }
 
         if (!is_array($raw)) {
             return [];
         }
 
-        // Note: do not use sanitize_key (it lowercases); the helcim.js fields are camelCase,
-        // so the original key names must be preserved for comparison (only illegal characters are filtered out).
+        $limits = [
+            'response'   => 16,
+            'cardNumber' => 64,
+            'cardToken'  => 2048,
+            'hash'       => 128,
+            'xmlHash'    => 128,
+        ];
         $fields = [];
         foreach ($raw as $key => $value) {
-            if (!is_string($key) || !is_scalar($value)) {
+            if (!is_string($key) || !array_key_exists($key, $limits) || !is_scalar($value)) {
                 continue;
             }
-            $clean_key = preg_replace('/[^A-Za-z0-9_]/', '', $key);
-            if ($clean_key === '') {
+            $clean_value = sanitize_text_field((string) $value);
+            if (strlen($clean_value) > $limits[$key]) {
                 continue;
             }
-            $fields[$clean_key] = sanitize_text_field((string) $value);
+            $fields[$key] = $clean_value;
         }
 
         return $fields;
@@ -665,9 +491,8 @@ class YSHelcimJsProcessor
      */
     public function getClientIp(): string
     {
-        $ip = isset($_SERVER['REMOTE_ADDR'])
-            ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR']))
-            : '';
+		$raw = $_SERVER['REMOTE_ADDR'] ?? '';
+		$ip = is_string($raw) ? sanitize_text_field(wp_unslash($raw)) : '';
 
         if ($ip === '' || !filter_var($ip, FILTER_VALIDATE_IP)) {
             return '127.0.0.1';
@@ -675,6 +500,16 @@ class YSHelcimJsProcessor
 
         return $ip;
     }
+
+	private static function postedText(string $key): string
+	{
+		if (!isset($_POST[$key]) || !is_string($_POST[$key])) {
+			return '';
+		}
+
+		$value = wp_unslash($_POST[$key]);
+		return is_string($value) ? sanitize_text_field($value) : '';
+	}
 
     /**
      * Respond with an error as a 4xx JSON and stop (wp_send_json includes exit).

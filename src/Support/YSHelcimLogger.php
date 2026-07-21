@@ -48,20 +48,45 @@ class YSHelcimLogger {
 	 * @var string[]
 	 */
 	private const SENSITIVE_KEYS = array(
-		'cardNumber',
-		'cardCVV',
-		'cardToken',
-		'cardExpiry',
-		'api-token',
-		'apiToken',
-		'secretToken',
-		'checkoutToken',
-		'xmlHash',
+		'cardnumber',
+		'cardcvv',
+		'cardtoken',
+		'cardexpiry',
+		'apitoken',
+		'apikey',
+		'secrettoken',
+		'checkouttoken',
+		'xmlhash',
 		'hash',
 		'token',
-		'js_secret_key',
-		'cardHolderName',
-		'approvalCode',
+		'jssecretkey',
+		'cardholdername',
+		'approvalcode',
+		'authorization',
+		'password',
+		'transactionuuid',
+		'trxhash',
+		'billingaddress',
+		'shippingaddress',
+		'customer',
+		'customerdata',
+		'contact',
+		'address',
+		'name',
+		'firstname',
+		'lastname',
+		'email',
+		'emailaddress',
+		'phone',
+		'phonenumber',
+		'street1',
+		'street2',
+		'city',
+		'province',
+		'state',
+		'postalcode',
+		'zipcode',
+		'country',
 	);
 
 	/**
@@ -137,37 +162,30 @@ class YSHelcimLogger {
 	/**
 	 * Recursively mask sensitive data.
 	 *
-	 * Rule: strings longer than 8 characters keep the first and last 4 characters
-	 * with the middle replaced by asterisks; strings of 8 characters or fewer are
-	 * fully replaced with *** (keeping 4 characters on each end would expose the
-	 * entire value, so they are masked completely).
+	 * Sensitive fields are fully redacted. Keeping prefixes or suffixes would
+	 * still disclose reusable credential material. Free-form diagnostic strings
+	 * also pass through the bounded provider sanitizer before logging.
 	 *
 	 * @param array $data The original data.
 	 * @return array The masked data.
 	 */
 	public static function mask_sensitive( array $data ): array {
-		array_walk_recursive(
-			$data,
-			static function ( &$value, $key ) {
-				if ( ! in_array( (string) $key, self::SENSITIVE_KEYS, true ) ) {
-					return;
-				}
-
-				if ( ! is_scalar( $value ) || null === $value ) {
-					return;
-				}
-
-				$string_value = (string) $value;
-				$length       = strlen( $string_value );
-
-				if ( $length > 8 ) {
-					$value = substr( $string_value, 0, 4 ) . str_repeat( '*', $length - 8 ) . substr( $string_value, -4 );
-				} elseif ( $length > 0 ) {
-					$value = '***';
-				}
+		$masked = array();
+		foreach ( $data as $key => $value ) {
+			$normalized_key = strtolower( (string) preg_replace( '/[^a-z0-9]+/i', '', (string) $key ) );
+			if ( in_array( $normalized_key, self::SENSITIVE_KEYS, true ) ) {
+				$masked[ $key ] = '[redacted]';
+				continue;
 			}
-		);
+			if ( is_array( $value ) ) {
+				$masked[ $key ] = self::mask_sensitive( $value );
+				continue;
+			}
+			$masked[ $key ] = is_string( $value )
+				? YSHelcimSanitizer::errorText( $value, 5000 )
+				: $value;
+		}
 
-		return $data;
+		return $masked;
 	}
 }

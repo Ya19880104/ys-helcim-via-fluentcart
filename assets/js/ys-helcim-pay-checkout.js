@@ -32,6 +32,7 @@
     var state = {
         processing: false,        // Whether a payment flow is currently in progress (guards against double clicks)
         finished: false,          // Whether this modal flow has been settled (ignore HIDE after SUCCESS/ABORTED)
+        reloadRequired: false,    // Uncertain provider result: never permit another charge in this page lifecycle
         checkoutToken: null,      // HelcimPay checkoutToken for the current flow
         messageHandler: null      // The postMessage listener currently attached (prevents leaks)
     };
@@ -55,7 +56,8 @@
             redirecting: 'Payment complete. Redirecting to your receipt…',
             canceled: 'The payment was canceled or failed. Please try again.',
             confirm_failed: 'We couldn\'t confirm your payment. Please contact the store for help.',
-            network_error: 'Connection error. Please try again in a moment.',
+            network_error: 'The payment result could not be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.',
+            uncertain: 'The payment window closed before its result could be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.',
             incomplete_data: 'The payment data was incomplete. Please try again.'
         };
         var translations = (cfg && cfg.translations) || {};
@@ -168,6 +170,33 @@
     }
 
     /**
+     * Lock the page after a provider session may have produced a charge but the
+     * exact server result is not yet proven. A reload is required before any
+     * further checkout attempt.
+     *
+     * @param {Object} detail  e.detail from the load_payments event
+     * @param {string} message Safe user-facing recovery instruction
+     */
+    function lockUi(detail, message) {
+        detachMessageListener();
+        state.processing = true;
+        state.finished = true;
+        state.reloadRequired = true;
+        setButtonBusy(false);
+        var button = document.querySelector(CONTAINER_SELECTOR + ' .ys-helcim-pay-button');
+        if (button) {
+            button.disabled = true;
+        }
+        showInlineError(message || t('uncertain'));
+        if (detail && detail.paymentLoader) {
+            detail.paymentLoader.hideLoader();
+            if (typeof detail.paymentLoader.disableCheckoutButton === 'function') {
+                detail.paymentLoader.disableCheckoutButton();
+            }
+        }
+    }
+
+    /**
      * Defensively pull our payment_data out of the order-creation response
      * (fluent-cart wp_send_json's the gateway's returned array as-is, so it normally
      *  lives at the top level; also tolerate the PayPal pattern where the server nests it under response/data)
@@ -254,6 +283,8 @@
         var body = new URLSearchParams();
         body.append('action', cfg.confirm_action);
         body.append('transaction_uuid', paymentData.transaction_uuid || '');
+        body.append('operation_uuid', paymentData.operation_uuid || '');
+        body.append('confirm_token', paymentData.confirm_token || '');
         body.append('nonce', paymentData.confirm_nonce || '');
         body.append('event_data', JSON.stringify(txData));
         body.append('hash', hash || '');
@@ -279,9 +310,13 @@
                 return;
             }
             var message = (resp && (resp.message || (resp.data && resp.data.message))) || t('confirm_failed');
-            resetUi(detail, message);
+            if (resp && resp.retry_allowed === true) {
+                resetUi(detail, message);
+                return;
+            }
+            lockUi(detail, message);
         }).catch(function () {
-            resetUi(detail, t('network_error'));
+            lockUi(detail, t('network_error'));
         });
     }
 
@@ -297,7 +332,9 @@
         var identifier = 'helcim-pay-js-' + checkoutToken;
 
         return function onHelcimMessage(event) {
-            if (!event.data || event.data.eventName !== identifier) {
+            if (event.origin !== 'https://secure.helcim.app'
+                || !event.data
+                || event.data.eventName !== identifier) {
                 return;
             }
 
@@ -311,8 +348,8 @@
                 var parsed = parseEventMessage(event.data.eventMessage);
                 safeRemoveIframe();
 
-                if (!parsed.txData) {
-                    resetUi(detail, t('incomplete_data'));
+                if (!parsed.txData || !parsed.hash) {
+                    lockUi(detail, t('uncertain'));
                     return;
                 }
 
@@ -327,17 +364,28 @@
                 if (state.finished) {
                     return;
                 }
+                state.finished = true;
+                detachMessageListener();
+                var aborted = parseEventMessage(event.data.eventMessage);
                 safeRemoveIframe();
-                resetUi(detail, t('canceled'));
+                if (aborted.txData && aborted.hash) {
+                    if (detail.paymentLoader) {
+                        detail.paymentLoader.changeLoaderStatus(t('confirming'));
+                    }
+                    confirmPayment(detail, paymentData, aborted.txData, aborted.hash);
+                    return;
+                }
+                lockUi(detail, t('uncertain'));
                 return;
             }
 
-            // HIDE: the user closed the payment window; restore the UI if payment isn't done (no error shown)
+            // HIDE does not prove whether the provider created a charge.
             if (event.data.eventStatus === 'HIDE') {
                 if (state.finished) {
                     return;
                 }
-                resetUi(detail, '');
+                safeRemoveIframe();
+                lockUi(detail, t('uncertain'));
             }
         };
     }
@@ -348,7 +396,7 @@
      * @param {Object} detail e.detail from the load_payments event
      */
     function onPayClick(detail) {
-        if (state.processing) {
+        if (state.processing || state.reloadRequired) {
             return;
         }
         state.processing = true;
@@ -361,6 +409,10 @@
             resetUi(detail, t('init_failed'));
             return;
         }
+        if (typeof window.appendHelcimPayIframe !== 'function') {
+            resetUi(detail, t('sdk_missing'));
+            return;
+        }
 
         Promise.resolve(detail.orderHandler()).then(function (resp) {
             if (!resp) {
@@ -371,13 +423,13 @@
             }
 
             var paymentData = extractPaymentData(resp);
-            if (!paymentData || !paymentData.checkout_token) {
-                resetUi(detail, t('no_token'));
-                return;
-            }
-
-            if (typeof window.appendHelcimPayIframe !== 'function') {
-                resetUi(detail, t('sdk_missing'));
+            if (!paymentData
+                || !paymentData.checkout_token
+                || !paymentData.transaction_uuid
+                || !paymentData.operation_uuid
+                || !paymentData.confirm_token
+                || !paymentData.confirm_nonce) {
+                lockUi(detail, t('uncertain'));
                 return;
             }
 
@@ -397,7 +449,7 @@
                 window.appendHelcimPayIframe(state.checkoutToken);
             } catch (err) {
                 console.error('[YS Helcim FCT] appendHelcimPayIframe failed:', err);
-                resetUi(detail, t('sdk_missing'));
+                lockUi(detail, t('uncertain'));
             }
         }).catch(function (err) {
             console.error('[YS Helcim FCT] Order-creation flow error:', err);
@@ -466,6 +518,14 @@
         var detail = e.detail || {};
         var container = document.querySelector(CONTAINER_SELECTOR);
         if (!container) {
+            return;
+        }
+
+        if (state.reloadRequired) {
+            renderContainerError(container, t('uncertain'));
+            if (detail.paymentLoader && typeof detail.paymentLoader.disableCheckoutButton === 'function') {
+                detail.paymentLoader.disableCheckoutButton();
+            }
             return;
         }
 

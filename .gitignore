@@ -4,6 +4,9 @@
 node_modules/
 vendor/**/tests/
 vendor/**/Tests/
+/tests/php/vendor/
+/tests/php/.phpunit.cache/
+/tests/js/node_modules/
 
 # OS cruft
 .DS_Store

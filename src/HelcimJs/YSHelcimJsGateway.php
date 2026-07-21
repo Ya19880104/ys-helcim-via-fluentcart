@@ -9,7 +9,7 @@
  * 2. The front end renders the card form inside the payment container (the fields
  *    have an id but no name, so card data never touches our server).
  * 3. Clicking pay → orderHandler() creates the order → makePaymentFromPaymentInstance()
- *    returns payment_data (transaction_uuid / confirm_nonce / js_token / test_mode).
+ *    returns payment_data (transaction_uuid / confirm_nonce / js_token).
  * 4. The front end runs helcimProcess() to tokenize and obtain a cardToken.
  * 5. AJAX ys_helcim_fct_confirm_js → YSHelcimJsProcessor charges server-side (fail-closed).
  *
@@ -20,14 +20,11 @@ namespace YangSheep\Helcim\FluentCart\HelcimJs;
 
 use FluentCart\Api\CurrencySettings;
 use FluentCart\Api\StoreSettings;
-use FluentCart\App\Helpers\Helper;
-use FluentCart\App\Helpers\Status;
-use FluentCart\App\Models\OrderTransaction;
 use FluentCart\App\Modules\PaymentMethods\Core\AbstractPaymentGateway;
 use FluentCart\App\Services\Payments\PaymentInstance;
-use YangSheep\Helcim\FluentCart\Support\YSHelcimApiClient;
+use YangSheep\Helcim\FluentCart\Settings\YSHelcimSecretStorage;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimLogger;
-use YangSheep\Helcim\FluentCart\Webhook\YSHelcimWebhookVerifier;
+use YangSheep\Helcim\FluentCart\Webhook\YSHelcimWebhookDeliveryUrl;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -43,7 +40,7 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
     /**
      * @var array Supported features (subscriptions are not supported: Helcim has no native subscription engine).
      */
-    public array $supportedFeatures = ['payment', 'refund', 'webhook', 'custom_payment'];
+    public array $supportedFeatures = ['payment', 'webhook', 'custom_payment'];
 
     /**
      * Constructor.
@@ -81,10 +78,16 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
             'logo'               => YS_HELCIM_FCT_URL . 'assets/images/helcim-logo.svg',
             'icon'               => YS_HELCIM_FCT_URL . 'assets/images/helcim-icon.svg',
             'brand_color'        => '#5B4FE9',
-            'status'             => $this->settings->get('is_active') === 'yes',
+            'status'             => $this->isEnabled(),
             'upcoming'           => false,
             'supported_features' => $this->supportedFeatures,
         ];
+    }
+
+    /** Keep invalid or unverifiable permanent credentials out of checkout. */
+    public function isEnabled(): bool
+    {
+        return $this->settings->get('is_active') === 'yes' && $this->hasCompleteRuntimeCredentials();
     }
 
     /**
@@ -173,11 +176,7 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
         }
 
         // Credential completeness (fail fast): js_token / api_token / js_secret_key must all be present.
-        if (
-            $this->settings->getJsToken() === ''
-            || $this->settings->getApiToken() === ''
-            || $this->settings->getJsSecretKey() === ''
-        ) {
+        if (!$this->hasCompleteRuntimeCredentials()) {
             YSHelcimLogger::error('helcim.js: credentials are incomplete, cannot create the payment', [
                 'mode' => $this->settings->getMode(),
             ]);
@@ -185,6 +184,14 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
                 'ys_helcim_js_missing_credentials',
                 __('The Helcim credentials are incomplete. Please contact the site administrator.', 'ys-helcim-via-fluentcart')
             );
+        }
+
+        $confirmToken = (new YSHelcimPurchaseConfirmationToken())->issue(
+            (string) $transaction->uuid,
+            (int) $transaction->id
+        );
+        if (is_wp_error($confirmToken)) {
+            return $confirmToken;
         }
 
         // The envelope matches ys_helcim (already E2E verified): it omits custom_payment_url —
@@ -199,8 +206,8 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
             'payment_data' => [
                 'transaction_uuid' => $transaction->uuid,
                 'confirm_nonce'    => wp_create_nonce('ys_helcim_fct_confirm_js'),
+                'confirm_token'    => $confirmToken,
                 'js_token'         => $this->settings->getJsToken(),
-                'test_mode'        => $this->settings->getMode() === 'test',
             ],
         ];
     }
@@ -221,6 +228,16 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
                 'status'  => 'failed',
                 'message' => __('Helcim does not support the current store currency (USD and CAD only).', 'ys-helcim-via-fluentcart'),
             ], 422);
+        }
+
+        // This endpoint runs before orderHandler(). Refuse to render card entry
+        // unless both charge and recovery credentials are ready, so a broken
+        // configuration cannot create stranded pending orders.
+        if (!$this->hasCompleteRuntimeCredentials()) {
+            wp_send_json([
+                'status'  => 'failed',
+                'message' => __('The Helcim payment method is not fully configured. Please contact the site administrator.', 'ys-helcim-via-fluentcart'),
+            ], 503);
         }
 
         wp_send_json([
@@ -247,7 +264,7 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
         return [
             [
                 'handle' => 'ys-helcim-js-sdk',
-                'src'    => 'https://secure.helcim.app/js/helcim.js',
+                'src'    => 'https://secure.myhelcim.com/js/version2.js',
             ],
             [
                 'handle'  => 'ys-helcim-js-checkout',
@@ -285,16 +302,27 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
                 'ajax_url'       => admin_url('admin-ajax.php'),
                 'confirm_action' => 'ys_helcim_fct_confirm_js',
                 'translations'   => [
+                    'button_text'       => $this->settings->getCheckoutButtonText(),
+                    'loading'           => __('Loading payment module…', 'ys-helcim-via-fluentcart'),
+                    'init_failed'       => __('The payment module failed to load. Please refresh the page and try again.', 'ys-helcim-via-fluentcart'),
+                    'order_failed'      => __('The order could not be created. Please refresh the page and try again.', 'ys-helcim-via-fluentcart'),
+                    'no_token'          => __('The payment settings could not be loaded. Please refresh the page and try again.', 'ys-helcim-via-fluentcart'),
+                    'sdk_missing'       => __('The payment component has not loaded. Please refresh the page and try again.', 'ys-helcim-via-fluentcart'),
                     'card_number_label' => __('Card number', 'ys-helcim-via-fluentcart'),
                     'card_expiry_label' => __('Expiry (MM/YY)', 'ys-helcim-via-fluentcart'),
                     'card_cvv_label'    => __('Security code', 'ys-helcim-via-fluentcart'),
-                    'pay_button'        => $this->settings->getCheckoutButtonText(),
-                    'card_invalid'      => __('Please check that your card details are complete.', 'ys-helcim-via-fluentcart'),
-                    'tokenize_failed'   => __('Card verification failed. Please check your card details and try again.', 'ys-helcim-via-fluentcart'),
-                    'order_failed'      => __('The order could not be created. Please refresh the page and try again.', 'ys-helcim-via-fluentcart'),
-                    'confirm_failed'    => __('We could not confirm your payment. Please try again shortly.', 'ys-helcim-via-fluentcart'),
-                    'processing'        => __('Processing payment, please wait…', 'ys-helcim-via-fluentcart'),
+                    'card_name_label'   => __('Cardholder name', 'ys-helcim-via-fluentcart'),
+                    'card_number_invalid' => __('Please enter a valid card number.', 'ys-helcim-via-fluentcart'),
+                    'card_expiry_invalid' => __('Please enter a valid expiry date (MM/YY).', 'ys-helcim-via-fluentcart'),
+                    'card_cvv_invalid'  => __('Please enter a valid security code.', 'ys-helcim-via-fluentcart'),
+                    'processing_card'   => __('Processing your card details…', 'ys-helcim-via-fluentcart'),
+                    'confirming'        => __('Confirming your payment…', 'ys-helcim-via-fluentcart'),
                     'redirecting'       => __('Redirecting to the receipt page…', 'ys-helcim-via-fluentcart'),
+                    'tokenize_failed_prefix' => __('Payment failed: ', 'ys-helcim-via-fluentcart'),
+                    'tokenize_failed'   => __('Card verification failed. Please check your card details and try again.', 'ys-helcim-via-fluentcart'),
+                    'timeout'           => __('The payment timed out. To prevent an incorrect charge, refresh the page before trying again.', 'ys-helcim-via-fluentcart'),
+                    'confirm_failed'    => __('We could not confirm your payment. Please contact the store for help.', 'ys-helcim-via-fluentcart'),
+                    'network_error'     => __('The payment result could not be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.', 'ys-helcim-via-fluentcart'),
                 ],
             ],
         ];
@@ -310,7 +338,7 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
      */
     public function fields(): array
     {
-        $webhook_url = trailingslashit(site_url()) . '?fluent-cart=fct_payment_listener_ipn&method=ys_helcim_js';
+        $webhook_url = YSHelcimWebhookDeliveryUrl::validate(rest_url('ys-fc-pay/v1/events/card'));
 
         $notice_html = $this->renderStoreModeNotice()
             . '<div class="mt-5"><p>'
@@ -319,10 +347,12 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
             . esc_html__('Only USD / CAD are supported. The Helcim.js Configuration must be created as a Verify type in your Helcim dashboard (tokenization only; the charge is executed server-side).', 'ys-helcim-via-fluentcart')
             . '</p></div>';
 
-        $webhook_html = '<div>'
+        $webhook_html = is_wp_error($webhook_url)
+            ? '<div class="notice notice-error inline"><p>' . esc_html($webhook_url->get_error_message()) . '</p></div>'
+            : '<div>'
             . '<p><b>' . esc_html__('Webhook URL:', 'ys-helcim-via-fluentcart') . '</b>'
             . '<code class="copyable-content">' . esc_html($webhook_url) . '</code></p>'
-            . '<p>' . esc_html__('In your Helcim dashboard, go to All Tools → Integrations → Webhooks and set the URL above (must be HTTPS), then paste the generated Verifier Token into the field below. Webhook reconciliation is not enabled until the Verifier Token is set.', 'ys-helcim-via-fluentcart') . '</p>'
+            . '<p>' . esc_html__('In your Helcim dashboard, go to All Tools → Integrations → Webhooks and set the URL above (must be HTTPS), then paste that account\'s Verifier Token into the matching credential tab. Webhook reconciliation is not enabled until the Verifier Token is set.', 'ys-helcim-via-fluentcart') . '</p>'
             . '</div>';
 
         $test_schema = [
@@ -353,6 +383,17 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
                 'label'       => __('Test Helcim.js Secret Key', 'ys-helcim-via-fluentcart'),
                 'type'        => 'password',
                 'placeholder' => __('The Helcim.js Configuration Secret Key', 'ys-helcim-via-fluentcart'),
+                'dependency'  => [
+                    'depends_on' => 'payment_mode',
+                    'operator'   => '=',
+                    'value'      => 'test',
+                ],
+            ],
+            'test_webhook_verifier_token' => [
+                'value'       => '',
+                'label'       => __('Test Webhook Verifier Token', 'ys-helcim-via-fluentcart'),
+                'type'        => 'password',
+                'placeholder' => __('Verifier Token for the developer test account webhook', 'ys-helcim-via-fluentcart'),
                 'dependency'  => [
                     'depends_on' => 'payment_mode',
                     'operator'   => '=',
@@ -395,6 +436,17 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
                     'value'      => 'live',
                 ],
             ],
+            'live_webhook_verifier_token' => [
+                'value'       => '',
+                'label'       => __('Live Webhook Verifier Token', 'ys-helcim-via-fluentcart'),
+                'type'        => 'password',
+                'placeholder' => __('Verifier Token for the live Helcim webhook', 'ys-helcim-via-fluentcart'),
+                'dependency'  => [
+                    'depends_on' => 'payment_mode',
+                    'operator'   => '=',
+                    'value'      => 'live',
+                ],
+            ],
         ];
 
         // Note: is_active is not declared in fields() — the same is true of all four of FluentCart's built-in gateways.
@@ -427,12 +479,6 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
                 'label' => __('Webhook settings', 'ys-helcim-via-fluentcart'),
                 'type'  => 'html_attr',
             ],
-            'webhook_verifier_token' => [
-                'value'       => '',
-                'label'       => __('Webhook Verifier Token', 'ys-helcim-via-fluentcart'),
-                'type'        => 'password',
-                'placeholder' => __('The Verifier Token from the Helcim Webhooks settings page', 'ys-helcim-via-fluentcart'),
-            ],
             'checkout_button_text'   => [
                 'value'       => '',
                 'label'       => __('Checkout button text', 'ys-helcim-via-fluentcart'),
@@ -463,7 +509,29 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
             ? __('test', 'ys-helcim-via-fluentcart')
             : __('live', 'ys-helcim-via-fluentcart');
 
-        if (empty($data[$mode . '_api_token'])) {
+        $settings = new YSHelcimJsSettings();
+        $submittedOrStored = static function (string $field, string $stored) use ($data): string {
+            $submitted = isset($data[$field]) && is_scalar($data[$field])
+                ? trim((string) $data[$field])
+                : '';
+            return $submitted !== '' ? $submitted : trim($stored);
+        };
+
+        $apiTokenAvailable = YSHelcimSecretStorage::isAvailableForValidation(
+            array_key_exists($mode . '_api_token', (array) $data) ? $data[$mode . '_api_token'] : null,
+            $settings->getApiTokenForMode($mode)
+        );
+        $jsToken = $submittedOrStored($mode . '_js_token', $settings->getJsToken());
+        $jsSecretAvailable = YSHelcimSecretStorage::isAvailableForValidation(
+            array_key_exists($mode . '_js_secret_key', (array) $data) ? $data[$mode . '_js_secret_key'] : null,
+            $settings->getJsSecretKeyForMode($mode)
+        );
+        $verifierAvailable = YSHelcimSecretStorage::isAvailableForValidation(
+            array_key_exists($mode . '_webhook_verifier_token', (array) $data) ? $data[$mode . '_webhook_verifier_token'] : null,
+            $settings->getWebhookVerifierTokenForMode($mode)
+        );
+
+        if (!$apiTokenAvailable) {
             return [
                 'status'  => 'failed',
                 /* translators: %s: mode name (test/live) */
@@ -471,7 +539,7 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
             ];
         }
 
-        if (empty($data[$mode . '_js_token'])) {
+        if ($jsToken === '') {
             return [
                 'status'  => 'failed',
                 /* translators: %s: mode name (test/live) */
@@ -479,11 +547,19 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
             ];
         }
 
-        if (empty($data[$mode . '_js_secret_key'])) {
+        if (!$jsSecretAvailable) {
             return [
                 'status'  => 'failed',
                 /* translators: %s: mode name (test/live) */
                 'message' => sprintf(__('Please enter the Helcim.js Secret Key for %s mode.', 'ys-helcim-via-fluentcart'), $mode_label),
+            ];
+        }
+
+        if (!$verifierAvailable) {
+            return [
+                'status'  => 'failed',
+                /* translators: %s: mode name (test/live) */
+                'message' => sprintf(__('Please enter the Webhook Verifier Token for %s mode.', 'ys-helcim-via-fluentcart'), $mode_label),
             ];
         }
 
@@ -494,10 +570,10 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
     }
 
     /**
-     * Data processing before saving settings: encrypt the secret fields.
+     * Data processing before saving settings: persist only proven ciphertext.
      *
-     * Helper::encryptKey is idempotent (an already-encrypted value is returned
-     * as-is), so it is safe to always encrypt the secret fields for both modes.
+     * Blank fields preserve verified old ciphertext. A new value that cannot be
+     * encrypted and independently verified is discarded and disables the gateway.
      *
      * @param array $data        The new settings.
      * @param array $oldSettings The previous settings.
@@ -505,201 +581,67 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
      */
     public static function beforeSettingsUpdate($data, $oldSettings): array
     {
+        $persistenceFailed = false;
         $secret_fields = [
             'test_api_token',
             'live_api_token',
             'test_js_secret_key',
             'live_js_secret_key',
-            'webhook_verifier_token',
+            'test_webhook_verifier_token',
+            'live_webhook_verifier_token',
         ];
 
         foreach ($secret_fields as $field) {
-            if (!empty($data[$field]) && is_string($data[$field])) {
-                $data[$field] = Helper::encryptKey($data[$field]);
-            }
+            $data[$field] = YSHelcimSecretStorage::prepareForStorage(
+                array_key_exists($field, (array) $data) ? $data[$field] : null,
+                array_key_exists($field, (array) $oldSettings) ? $oldSettings[$field] : null,
+                $persistenceFailed
+            );
         }
+
+        if ($persistenceFailed) {
+            $data['is_active'] = 'no';
+        }
+
+        // Legacy values are bound once during bootstrap migration. Settings
+        // saves may clear stale input, but must never reinterpret its mode.
+        $data['webhook_verifier_token'] = '';
 
         return $data;
     }
 
     /**
-     * Refund (triggered in the admin, called by FluentCart's Refund service).
-     *
-     * POST /v2/payment/refund; on success returns the Helcim refund transactionId
-     * (a string), and FluentCart writes it to the refund transaction's
-     * vendor_charge_id.
+     * Fail-closed guard for FluentCart's unsafe local-first refund flow.
      *
      * @param \FluentCart\App\Models\OrderTransaction $transaction The original charge transaction.
      * @param int                                     $amount      The refund amount (in cents).
      * @param array                                   $args        Additional arguments.
-     * @return string|\WP_Error The refund transaction ID, or an error.
+     * @return \WP_Error Always directs administrators to the remote-first flow.
      */
     public function processRefund($transaction, $amount, $args)
     {
-        $amount = (int) $amount;
+        unset($transaction, $amount, $args);
 
-        if ($amount <= 0) {
-            return new \WP_Error(
-                'ys_helcim_js_refund_invalid_amount',
-                __('The refund amount is invalid.', 'ys-helcim-via-fluentcart')
-            );
-        }
-
-        $vendor_charge_id = (int) $transaction->vendor_charge_id;
-        if ($vendor_charge_id <= 0) {
-            return new \WP_Error(
-                'ys_helcim_js_refund_no_charge_id',
-                __('The Helcim transaction ID could not be found, so a remote refund is not possible.', 'ys-helcim-via-fluentcart')
-            );
-        }
-
-        // Mode guard: prevents refunding a test transaction with a live token (or vice versa).
-        $transaction_mode = (string) $transaction->payment_mode;
-        if ($transaction_mode !== '' && $transaction_mode !== $this->settings->getMode()) {
-            return new \WP_Error(
-                'ys_helcim_js_refund_mode_mismatch',
-                __('The transaction mode does not match the current store mode. Please switch the store order mode before refunding.', 'ys-helcim-via-fluentcart')
-            );
-        }
-
-        $api_token = $this->settings->getApiToken();
-        if ($api_token === '') {
-            return new \WP_Error(
-                'ys_helcim_js_refund_no_api_token',
-                __('The Helcim API token has not been configured, so refunds are not possible.', 'ys-helcim-via-fluentcart')
-            );
-        }
-
-        $payload = [
-            'originalTransactionId' => $vendor_charge_id,
-            'amount'                => number_format($amount / 100, 2, '.', ''),
-            'ipAddress'             => (new YSHelcimJsProcessor($this->settings))->getClientIp(),
-        ];
-
-        // Idempotency key (deterministic, security review M2): bound to the original transaction + amount + existing refund count.
-        // A "blind retry after a lost response" produces the same key (Helcim deduplicates naturally on its end);
-        // a legitimate second partial refund of the same amount gets a new key because the previous one already wrote a refund transaction (count + 1).
-        $refund_seq      = OrderTransaction::query()
-            ->where('order_id', $transaction->order_id)
-            ->where('transaction_type', Status::TRANSACTION_TYPE_REFUND)
-            ->count();
-        $idempotency_key = substr('yshfct-rf-' . $vendor_charge_id . '-' . $amount . '-' . $refund_seq, 0, 36);
-
-        $response = YSHelcimApiClient::request('payment/refund', $payload, $api_token, $idempotency_key);
-
-        if (is_wp_error($response)) {
-            YSHelcimLogger::error('helcim.js: refund API failed', [
-                'transaction_uuid' => $transaction->uuid,
-                'error'            => $response->get_error_message(),
-            ]);
-            return $response;
-        }
-
-        if ('APPROVED' !== strtoupper((string) ($response['status'] ?? '')) || empty($response['transactionId'])) {
-            $helcim_message = sanitize_text_field((string) ($response['responseMessage'] ?? ''));
-
-            YSHelcimLogger::error('helcim.js: refund not approved', [
-                'transaction_uuid' => $transaction->uuid,
-                'helcim_message'   => $helcim_message,
-            ]);
-
-            return new \WP_Error(
-                'ys_helcim_js_refund_failed',
-                $helcim_message !== ''
-                    ? sprintf(
-                        /* translators: %s: the message returned by Helcim */
-                        __('Helcim did not approve the refund: %s', 'ys-helcim-via-fluentcart'),
-                        $helcim_message
-                    )
-                    : __('Helcim did not approve the refund.', 'ys-helcim-via-fluentcart')
-            );
-        }
-
-        YSHelcimLogger::info('helcim.js: refund succeeded', [
-            'transaction_uuid' => $transaction->uuid,
-            'refund_id'        => (string) $response['transactionId'],
-        ]);
-
-        return (string) $response['transactionId'];
+        return new \WP_Error(
+            'ys_helcim_native_refund_disabled',
+            __('Use the Helcim Operations refund panel. FluentCart\'s native refund flow is disabled because it records a refund before the provider confirms it.', 'ys-helcim-via-fluentcart')
+        );
     }
 
     /**
-     * Webhook (IPN) handler.
+     * Retired FluentCart IPN compatibility route.
      *
-     * URL: {site}/?fluent-cart=fct_payment_listener_ipn&method=ys_helcim_js
-     *
-     * Flow (fail-closed):
-     * 1. No verifier token set → 501 (log it; the feature is not enabled).
-     * 2. Signature verification failed → 401.
-     * 3. type === 'cardTransaction' → GET card-transactions/{id} to verify.
-     * 4. Delegate reconciliation to the Processor (invoiceNumber = order uuid confirms the pending transaction).
+     * Verification and reconciliation belong exclusively to the clean REST route.
+     * This handler performs no provider lookup and no local payment mutation.
      *
      * @return void Ends with wp_send_json.
      */
     public function handleIPN(): void
     {
-        if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-            wp_send_json(['message' => 'Method not allowed'], 405);
-        }
-
-        // 1. No verifier token set → return 501 explicitly (the webhook feature is not enabled).
-        $verifier_token = $this->settings->getWebhookVerifierToken();
-        if ($verifier_token === '') {
-            YSHelcimLogger::error('helcim.js webhook: verifier token not set, refusing to process');
-            wp_send_json([
-                'message' => __('The webhook verifier token has not been configured.', 'ys-helcim-via-fluentcart'),
-            ], 501);
-        }
-
-        // 2. Verify the signature (the raw body must stay verbatim, untouched by any processing).
-        $raw_body = (string) file_get_contents('php://input');
-
-        // Resource guard before verification: a Helcim webhook body is tiny, so reject anything over 1 MB outright.
-        if (strlen($raw_body) > 1048576) {
-            wp_send_json(['message' => 'payload too large'], 400);
-        }
-
-        $headers = $this->getRequestHeaders();
-
-        if (!YSHelcimWebhookVerifier::verify($headers, $raw_body, $verifier_token)) {
-            YSHelcimLogger::error('helcim.js webhook: signature verification failed');
-            wp_send_json([
-                'message' => __('Webhook signature verification failed.', 'ys-helcim-via-fluentcart'),
-            ], 401);
-        }
-
-        // 3. Only handle cardTransaction events.
-        $payload = json_decode($raw_body, true);
-        if (!is_array($payload) || ($payload['type'] ?? '') !== 'cardTransaction') {
-            wp_send_json(['message' => 'ignored'], 200);
-        }
-
-        $helcim_id = preg_replace('/[^0-9]/', '', (string) ($payload['id'] ?? ''));
-        if ($helcim_id === '') {
-            wp_send_json(['message' => 'ignored: invalid id'], 200);
-        }
-
-        $api_token = $this->settings->getApiToken();
-        if ($api_token === '') {
-            YSHelcimLogger::error('helcim.js webhook: API token not set, cannot verify the transaction');
-            wp_send_json(['message' => 'api token missing'], 500);
-        }
-
-        // Verify the transaction contents via the Helcim API (the webhook body only carries an id and cannot be trusted directly).
-        $helcim_tx = YSHelcimApiClient::request('card-transactions/' . $helcim_id, [], $api_token, null, 'GET');
-
-        if (is_wp_error($helcim_tx) || !is_array($helcim_tx)) {
-            YSHelcimLogger::error('helcim.js webhook: transaction verification failed', [
-                'helcim_id' => $helcim_id,
-                'error'     => is_wp_error($helcim_tx) ? $helcim_tx->get_error_message() : 'invalid response',
-            ]);
-            wp_send_json(['message' => 'lookup failed'], 500);
-        }
-
-        // 4. Reconcile (fail-closed: the amount/currency check runs inside the Processor).
-        $result = (new YSHelcimJsProcessor($this->settings))->reconcileCardTransaction($helcim_tx);
-
-        wp_send_json(['message' => $result['message']], $result['code']);
+        wp_send_json([
+            'message'     => __('This legacy webhook listener is retired. Configure Helcim to use the REST webhook URL.', 'ys-helcim-via-fluentcart'),
+            'webhook_url' => rest_url('ys-fc-pay/v1/events/card'),
+        ], 410);
     }
 
     /**
@@ -715,53 +657,28 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
     }
 
     /**
-     * Get the list of supported currencies (extendable via filter).
+     * Get the currencies implemented by the durable purchase contract.
      *
      * @return array Uppercase currency codes.
      */
     public function getSupportedCurrencies(): array
     {
-        /**
-         * Filter the list of currencies Helcim supports.
-         *
-         * @param array $currencies Defaults to ['USD', 'CAD'].
-         */
-        $currencies = apply_filters('ys_helcim_fct_supported_currencies', ['USD', 'CAD']);
-
-        if (!is_array($currencies) || empty($currencies)) {
-            $currencies = ['USD', 'CAD'];
-        }
-
-        return array_map('strtoupper', array_map('strval', $currencies));
+        return ['USD', 'CAD'];
     }
 
-    /**
-     * Get the request headers (compatible across server environments).
-     *
-     * getallheaders() may not exist on non-Apache environments, so fall back to
-     * rebuilding from the $_SERVER HTTP_* keys. Signature-related header values
-     * are kept verbatim for the HMAC comparison (the Verifier only does
-     * hash_equals, so there is no injection risk).
-     *
-     * @return array
-     */
-    private function getRequestHeaders(): array
+    /** Require both charge credentials and the signed-webhook recovery key. */
+    private function hasCompleteRuntimeCredentials(): bool
     {
-        if (function_exists('getallheaders')) {
-            $headers = getallheaders();
-            if (is_array($headers)) {
-                return $headers;
-            }
-        }
-
-        $headers = [];
-        foreach ($_SERVER as $key => $value) {
-            if (strpos($key, 'HTTP_') === 0 && is_scalar($value)) {
-                $name           = str_replace('_', '-', substr($key, 5));
-                $headers[$name] = (string) $value;
-            }
-        }
-
-        return $headers;
+        return $this->hasCompleteRecoveryCredentials()
+            && '' !== trim($this->settings->getJsToken())
+            && '' !== trim($this->settings->getJsSecretKey());
     }
+
+    /** Require the charge token and signed-webhook recovery token for the current store mode. */
+    private function hasCompleteRecoveryCredentials(): bool
+    {
+        return '' !== trim($this->settings->getApiToken())
+            && '' !== trim($this->settings->getWebhookVerifierToken());
+    }
+
 }

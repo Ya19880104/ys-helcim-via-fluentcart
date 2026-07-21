@@ -135,7 +135,17 @@ class YSHelcimWebhookVerifier
                 continue;
             }
 
-            $normalized[strtolower($name)] = (string) $value;
+            // WP_REST_Request canonicalizes header names by replacing hyphens
+            // with underscores. Normalize both representations back to the
+            // wire-name form before reading the required Helcim headers.
+            $key = str_replace('_', '-', strtolower($name));
+            $value = (string) $value;
+            if (isset($normalized[$key]) && !hash_equals($normalized[$key], $value)) {
+                // Conflicting aliases are ambiguous and must fail closed.
+                $normalized[$key] = '';
+                continue;
+            }
+            $normalized[$key] = $value;
         }
 
         return $normalized;

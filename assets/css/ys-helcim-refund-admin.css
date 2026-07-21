@@ -1,0 +1,192 @@
+.ys-helcim-refund-admin {
+  max-width: 960px;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-lookup,
+.ys-helcim-refund-admin .ys-helcim-refund-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 18px 0;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-lookup label,
+.ys-helcim-refund-admin #ys-helcim-refund-form > label {
+  font-weight: 600;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-context {
+  margin-top: 18px;
+  padding: 20px;
+  border: 1px solid #dcdcde;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 1px 1px rgb(0 0 0 / 4%);
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-summary {
+  margin-bottom: 18px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.ys-helcim-refund-admin #ys-helcim-refund-form {
+  display: grid;
+  gap: 10px;
+}
+
+.ys-helcim-refund-admin #ys-helcim-refund-form > input,
+.ys-helcim-refund-admin #ys-helcim-refund-form > select,
+.ys-helcim-refund-admin #ys-helcim-refund-form > textarea {
+  width: min(100%, 520px);
+}
+
+.ys-helcim-refund-admin fieldset {
+  display: grid;
+  gap: 10px;
+  margin: 8px 0;
+  padding: 14px;
+  border: 1px solid #dcdcde;
+}
+
+.ys-helcim-refund-admin fieldset legend {
+  padding: 0 6px;
+  font-weight: 600;
+}
+
+.ys-helcim-refund-admin #ys-helcim-refund-items {
+  display: grid;
+  gap: 8px;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-item-row {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-operation {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 6px 14px;
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid #dcdcde;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-operation[hidden] {
+  display: none;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-operation dt {
+  font-weight: 600;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-operation dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-resolution {
+  display: grid;
+  gap: 12px;
+  margin-top: 22px;
+  padding: 18px;
+  border: 1px solid #dba617;
+  border-left-width: 4px;
+  border-radius: 4px;
+  background: #fff8e5;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-resolution[hidden],
+.ys-helcim-refund-admin .ys-helcim-refund-resolution-evidence[hidden],
+.ys-helcim-refund-admin .ys-helcim-refund-resolution-confirmation[hidden] {
+  display: none;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-resolution h2,
+.ys-helcim-refund-admin .ys-helcim-refund-resolution p {
+  margin: 0;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-resolution > label,
+.ys-helcim-refund-admin .ys-helcim-refund-resolution-confirmation > label {
+  font-weight: 600;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-resolution-inspect {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-resolution-inspect input,
+.ys-helcim-refund-admin .ys-helcim-refund-resolution-confirmation > input {
+  width: min(100%, 520px);
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-resolution-evidence {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 6px 14px;
+  margin: 0;
+  padding: 12px;
+  background: #fff;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-resolution-evidence dt {
+  font-weight: 600;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-resolution-evidence dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-resolution-confirmation {
+  display: grid;
+  gap: 10px;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-resolution-phrase {
+  display: block;
+  padding: 10px;
+  border: 1px solid #c3c4c7;
+  background: #fff;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.ys-helcim-refund-link {
+  text-decoration: none;
+}
+
+.ys-helcim-refund-spa-notice {
+  display: inline-flex;
+  align-items: center;
+  max-width: 360px;
+  padding: 6px 10px;
+  border: 1px solid #dba617;
+  border-radius: 4px;
+  background: #fcf3cf;
+  color: #3c434a;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+@media (max-width: 782px) {
+  .ys-helcim-refund-admin .ys-helcim-refund-item-row {
+    grid-template-columns: auto 1fr;
+  }
+
+  .ys-helcim-refund-admin .ys-helcim-refund-operation {
+    grid-template-columns: 1fr;
+  }
+
+  .ys-helcim-refund-admin .ys-helcim-refund-resolution-evidence {
+    grid-template-columns: 1fr;
+  }
+}

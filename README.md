@@ -1,194 +1,233 @@
 # YS Helcim via FluentCart
 
-> Add Helcim credit card payments to FluentCart, with two collection modes — a **HelcimPay.js modal** and a **helcim.js inline card form** — plus online refunds and webhook reconciliation.
+Helcim payment integration for FluentCart with durable payment operations, remote-first refunds, and signed webhook recovery.
 
-This plugin registers **two independent payment methods** through FluentCart's official Payment Gateway API. Merchants can enable either one, or both, depending on their needs:
+> **Release candidate — 1.1.0-rc.1**
+>
+> This is the dual-gateway v1.1.0 candidate: the hosted HelcimPay.js modal and the Helcim.js inline form are both registered only when their current-mode credentials and the shared durable recovery runtime are available. RC status still means pre-release; promote it only after both browser flows pass the release gates below on the development and client test environments.
 
-| Payment method | Collection mode | Best for |
-|----------------|-----------------|----------|
-| **Credit Card (Helcim)** | HelcimPay.js secure payment **modal** (pop-up) | Getting live fast with the lowest PCI burden; card entry happens entirely inside Helcim's hosted window |
-| **Credit Card (Helcim Inline Form)** | helcim.js card fields **embedded** directly in the checkout page | Keeping the native checkout experience with card fields shown right on the page (the card is still tokenized in the browser and never touches your server) |
+## Payment methods
 
----
+| Payment method | Collection mode | v1.1.0-rc.1 status |
+|---|---|---|
+| **Credit card (Helcim)** (`ys_helcim`) | HelcimPay.js hosted modal; lowest PCI scope and the path for supported digital wallets | Registered for RC testing through the durable two-phase hosted coordinator |
+| **Credit card (Helcim inline form)** (`ys_helcim_js`) | Helcim.js Verify tokenization in the browser, followed by a server-side v2 purchase | Registered for RC testing when all current-mode credentials and recovery prerequisites are present |
+
+Both payment methods use the same safety invariants: a durable operation is claimed before the hosted session can be exposed or an inline purchase can be sent, provider success requires a valid transaction ID and exact proof, and a lost response remains reconcilable without creating a second charge.
 
 ## Requirements
 
 | Item | Requirement |
-|------|-------------|
-| WordPress | 6.0 or higher |
-| FluentCart | **1.5.2 or higher** |
-| PHP | **8.1 or higher** |
-| SSL / HTTPS | Recommended site-wide; **required for the helcim.js inline mode**, and webhooks are HTTPS-only |
-| Helcim account | A Helcim merchant account (production or developer test account) |
+|---|---|
+| WordPress | 6.0 or later |
+| FluentCart | 1.5.2 or later |
+| PHP | 8.1 or later |
+| Currency | USD or CAD |
+| Database | Transaction-safe InnoDB tables for FluentCart and the plugin operation tables |
+| HTTPS | Required for inline card entry and webhook delivery |
+| Scheduled jobs | Working WordPress Cron or an equivalent server cron that runs due WordPress events at least once per minute |
+| Helcim | A production account or dedicated Developer Test Account with the required API, Helcim.js, and webhook credentials; the hosted API token must permit `GET /card-transactions` |
 
-> If FluentCart isn't installed and active, the plugin shows an admin notice and registers no payment methods.
-
----
-
-## Supported Currencies
-
-> ⚠️ **Helcim only supports `USD` and `CAD`.**
-
-When your FluentCart store currency is anything other than USD or CAD, these two Helcim payment methods **won't appear at checkout** (the helcim.js inline mode also reports an unsupported-currency error while loading its payment block). This is a Helcim platform limitation, not a plugin defect.
-
-If you have a special need to extend the supported currency list, you can adjust it with the `ys_helcim_fct_supported_currencies` filter (see `DEVELOPMENT.md`).
-
----
+The plugin fails closed when FluentCart is unavailable, storage is not transaction-safe, required credentials are missing, or durable recovery cannot be scheduled.
 
 ## Installation
 
-1. Upload the `ys-helcim-via-fluentcart` folder to `/wp-content/plugins/` (or install the ZIP via **Plugins → Add New → Upload Plugin** in wp-admin).
-2. Activate **YS Helcim via FluentCart** on the **Plugins** page.
-3. Confirm that FluentCart (1.5.2 or higher) is installed and active.
-4. Go to **FluentCart → Settings → Payment Methods**, where you'll find both **Credit Card (Helcim)** and **Credit Card (Helcim Inline Form)**.
+1. Install the release ZIP so WordPress creates `/wp-content/plugins/ys-helcim-via-fluentcart/`.
+2. Activate **YS Helcim via FluentCart** while FluentCart is active.
+3. Confirm the operation, outbox, webhook receipt, and refund-resolution tables were created successfully.
+4. Set the FluentCart store currency to USD or CAD.
+5. Configure the credentials belonging to the store's current Order Mode and prove that the hosted API token can read `GET /card-transactions`.
+6. Configure the mandatory clean webhook route and verify WordPress Cron before enabling checkout.
 
----
+## Test and live credential isolation
 
-## Configuration Guide
+FluentCart's global Order Mode selects the credential set:
 
-The two payment methods are configured independently and don't affect each other. Each is covered separately below.
+- `test` uses only the Developer Test Account credentials from the Test tab.
+- `live` uses only the production account credentials from the Live tab.
+- A transaction keeps its original mode. Refund and reconciliation operations resolve credentials for that recorded mode rather than silently switching to the store's current mode.
+- Never copy a test account's verifier, API token, Helcim.js token, or secret into a live credential slot.
 
-### Shared concept: test vs. live is driven by your store's Order Mode
+Secret fields are encrypted with FluentCart's key helpers before storage. A missing or corrupt encrypted value is treated as unavailable.
 
-This plugin follows the same design as FluentCart's Stripe integration: **whether it uses your "test" or "live" credentials depends on the store's global Order Mode** — not on a toggle inside the payment method itself.
+## Inline Helcim.js configuration
 
-- The settings page has separate **Live Credentials** and **Test Credentials** tabs. Fill in both sets.
-- When the store's Order Mode is set to **test** → the **Test Credentials** tab is used.
-- When the store's Order Mode is set to **live** → the **Live Credentials** tab is used.
-- When you save, the plugin validates whichever credential set matches the current store mode to make sure it's complete.
+The inline gateway requires all four values for the active mode:
 
-> Every secret field (API Token, Secret Key, Webhook Verifier Token) is encrypted before it's written to the database.
+1. **API Token** with transaction-processing access.
+2. **Helcim.js Token** from a Helcim.js configuration created as **Card Verify / Tokenize Only**.
+3. **Helcim.js Secret Key** from the same configuration.
+4. **Webhook Verifier Token** belonging to the same Helcim account and mode.
 
----
+The browser uses Helcim.js only to verify/tokenize the card. WordPress then calls the v2 `payment/purchase` endpoint with the verified card token. The v2 purchase transaction ID—not a legacy Verify ID—is the refundable provider identifier stored for the FluentCart transaction.
 
-### Setup A: Credit Card (Helcim) — HelcimPay.js modal
+### Developer Test Account behavior
 
-This mode needs a single **API Token**.
+Use Helcim's official test cards only with a dedicated Developer Test Account. The account's terminal enforces its test status.
 
-1. Log in to your Helcim dashboard and go to **All Tools → Integrations → API Access**.
-2. Create (or reuse an existing) **API Token**.
-3. Back in WordPress, open the **Credit Card (Helcim)** payment method settings:
-   - On the **Live Credentials** tab, enter the API Token from your production account.
-   - On the **Test Credentials** tab, enter the API Token from your developer test account (see "Test Mode" below).
-4. (Optional) Customize the **checkout button text**. The default is "Pay with credit card (Helcim)."
-5. Enable the payment method and save.
+The inline Verify-to-v2-purchase flow intentionally **omits** the legacy Helcim.js `test=1` field. Sending that flag can produce a demonstration token that the v2 Payment API rejects as unverified. FluentCart Order Mode still selects the test credential set; it does not turn the deprecated SDK flag back on.
 
-At checkout, clicking the payment button opens Helcim's secure payment window, where the customer enters their card details to complete the payment.
+## Hosted HelcimPay.js configuration and two-phase flow
 
----
+The hosted gateway requires the active mode's **API Token** and **Webhook Verifier Token**. The API Access configuration must permit both hosted initialization and Card Transaction reads through `GET /card-transactions`; the latter is required to recover a lost browser callback. Hosted checkout fails closed if that read capability or the recurring recovery schedule cannot be proven. It provides the lowest PCI scope and supports Helcim-hosted payment experiences such as eligible digital wallets.
 
-### Setup B: Credit Card (Helcim Inline Form) — helcim.js
+Hosted checkout uses a durable two-phase boundary:
 
-This mode needs **three** fields: **API Token**, **Helcim.js Token**, and **Helcim.js Secret Key**.
+1. The server reloads the exact FluentCart charge identity, creates a purchase operation with a one-time confirmation token, atomically claims its active scope, and reads the claim back before calling `helcim-pay/initialize`.
+2. The operation UUID is the provider correlation value. The modal is exposed only after the initializer returns an exact checkout/secret-token pair for that claimed operation; one-time verification material is stored encrypted.
+3. Browser callback data is treated as untrusted. Confirmation reloads the exact hosted charge and operation, consumes the short-lived confirmation token, verifies the provider hash with the one-time secret, and requires the exact operation correlation.
+4. Approval or decline proof must match the original status/type/amount/currency identity; an approval also requires a valid positive v2 transaction ID. Only durably persisted proof may drive FluentCart payment effects.
+5. Replays resume an already persisted success idempotently. A lost browser response is reconciled through the signed clean webhook and API proof without opening a second active payment attempt.
 
-1. **API Token**: same as above — get it from **All Tools → Integrations → API Access** in your Helcim dashboard.
-2. **Helcim.js Token + Secret Key**: create a **Helcim.js Configuration** in your Helcim dashboard:
-   - **Be sure to choose the "Verify" type** (card tokenization only — it does not charge the card on the front end).
-   - Once created, you'll get a **JS Token** and a **Secret Key**. Enter both.
-3. Back in WordPress, open the **Credit Card (Helcim Inline Form)** payment method settings and enter the three fields on both the **Live Credentials** and **Test Credentials** tabs.
-4. Enable the payment method and save.
+If the journal cannot be created, claimed, or read back, no hosted session is shown. If initialization fails and that failure cannot be durably recorded, the scope remains locked for reconciliation instead of inviting another charge.
 
-> **Why does helcim.js use the Verify type?**
-> Legacy helcim.js transaction IDs can't be used for refunds against the Helcim v2 API. So this plugin is designed to use helcim.js on the front end only for **card tokenization (obtaining a cardToken)**, while the actual charge is completed **server-side** via the v2 `payment/purchase` endpoint — which returns a refundable v2 transaction ID. That's what gives you a complete refund and reconciliation lifecycle.
+### Hosted lost-callback recovery
 
----
+When the browser callback is lost, the one-minute recovery worker begins provider lookup after the operation is five minutes old. During the early safety window, only one exact approved result bound to that operation can resolve the remote state; persisted success resumes local completion idempotently, and recovery never sends another purchase.
 
-### Setup C: Webhook (optional — payment reconciliation safety net)
+- An empty provider collection is never proof that no charge occurred and never releases the active payment scope.
+- An empty or declined observation before the 70-minute checkout-material safety boundary does not clear the modal metadata or unlock another payment attempt.
+- After that safety boundary, one exact declined result may resolve the operation as declined; an empty result still cannot do so.
+- The automatic provider-lookup phase is bounded to seven claimed attempts with persisted backoff. If no exact proof is available, automatic recovery pauses while the operation and active scope remain locked.
+- A paused or charged-but-locally-incomplete operation appears in a `manage_options` WordPress admin notice. An administrator may use **Check Helcim once** for one nonce-protected lookup; this does not reset the automatic retry budget, and an inconclusive result remains locked.
 
-The webhook isn't required — **payments work fine without it**. Its job is to be a safety net: if the customer pays but their browser drops the connection on the way back to your site, the webhook lets Helcim proactively notify your site so the order still gets marked as paid.
+Before enabling hosted checkout on each test/live credential set, confirm that a harmless filtered `GET /card-transactions` request succeeds and returns the documented root JSON list. A `401`, `403`, timeout, malformed envelope, or missing recurring event disables new hosted checkout rather than weakening recovery.
 
-Setup steps (each payment method has its own Webhook URL and Verifier Token fields):
+## Mandatory clean webhook
 
-1. On the payment method settings page, copy the displayed **Webhook URL** (it looks like `https://your-site/?fluent-cart=fct_payment_listener_ipn&method=ys_helcim`).
-2. Log in to your Helcim dashboard and go to **All Tools → Integrations → Webhooks**.
-3. Paste in that Webhook URL (**HTTPS only**).
-4. Helcim gives you a **Verifier Token** — copy it and paste it back into the "Webhook Verifier Token" field on the payment method settings page, then save.
+The v1.1.0 recovery design requires a signed webhook for every enabled current-mode payment path. Settings validation and checkout for both hosted and inline payments fail closed when the current-mode verifier is missing.
 
-> When a webhook arrives, the plugin first verifies the signature and timestamp with HMAC-SHA256 (to prevent forgery and replay), then queries the Helcim API to confirm the transaction's real amount and currency. Only when everything matches does it reconcile the order.
+The delivery route is:
 
----
+```text
+https://payments.example.com/wp-json/ys-fc-pay/v1/events/card
+```
 
-## Test Mode
+Requirements:
 
-**Helcim has no standalone sandbox environment.** To test without charging a real card, you'll need to:
+- HTTPS only.
+- The complete hostname and path must not contain the provider name.
+- Use the exact REST path `/wp-json/ys-fc-pay/v1/events/card`; the legacy FluentCart query listener is retired and returns `410`.
+- If the WordPress site's normal hostname contains the prohibited term, use a neutral HTTPS alias or a narrowly scoped reverse proxy that forwards only this POST route.
+- Store separate test/live verifier tokens when the accounts differ.
+- Do not reuse a verifier from another site or environment without proving account ownership and event scope.
 
-1. Request a **Developer Test Account** from Helcim to get that account's dedicated test API Token (for helcim.js mode you'll also need the test account's JS Token and Secret Key).
-2. Enter the test credentials on the **Test Credentials** tab of the settings page.
-3. Set your FluentCart store **Order Mode to test**.
-4. Use one of Helcim's official **test card numbers** at checkout.
+On receipt, the plugin verifies the signed timestamp/body, rejects stale or replayed deliveries, records a durable receipt, fetches the transaction from the API with the credential for the candidate mode, and binds the provider event to one durable payment attempt before changing FluentCart state.
 
-In test mode, the helcim.js inline form automatically passes a `test=1` parameter to tell the Helcim SDK this is a test transaction.
+## Durable purchase behavior
 
----
+Both payment flows use a persistent operation journal and an active-scope lock:
 
-## Comparing the two modes
+1. FluentCart creates the order and charge transaction.
+2. The plugin creates or reuses the durable operation for that exact payment attempt.
+3. A one-time confirmation token authorizes the public confirm request.
+4. The server claims and verifies the operation before exposing a hosted modal or sending the inline provider purchase with its persisted idempotency key.
+5. Approved provider proof is recorded before local payment effects are finalized.
+6. Terminal declines release the payment scope; indeterminate transport/provider outcomes retain the scope for reconciliation.
 
-| Aspect | HelcimPay.js (modal) | helcim.js (inline form) |
-|--------|----------------------|-------------------------|
-| Payment method slug | `ys_helcim` | `ys_helcim_js` |
-| Where the card is entered | Helcim-hosted **pop-up window** | **Embedded** fields right on the checkout page |
-| Credentials needed | API Token | API Token + JS Token + Secret Key |
-| Setup in Helcim dashboard | API Token only | Also requires a Helcim.js Configuration (Verify type) |
-| PCI burden | Lowest (the card never touches your page's DOM) | Low (card fields are on your page, but tokenized directly in the browser — they **never reach your server**) |
-| How the charge happens | Customer completes it in the window; the server verifies the result before recording the payment | Front end tokenizes to get a cardToken; the **server** charges via `payment/purchase` |
-| HTTPS | Recommended | **Required** |
-| User experience | Standard pop-up flow | No pop-up; the customer stays on the page |
+Do not tell a shopper to submit again while an operation is indeterminate. Resolve it from provider evidence or the signed webhook first.
 
-Both modes support refunds and webhook reconciliation, with the same level of security verification.
+## Remote-first refunds
 
----
+FluentCart 1.5.2's native refund service records a local refund before calling the gateway and can leave a false local refund when the provider fails. This plugin therefore vetoes the native Helcim refund path and provides a dedicated **FluentCart → Helcim Refunds** workflow.
 
-## Refunds
+The replacement flow is remote-first:
 
-You can issue online refunds for Helcim transactions right from the **order page in wp-admin**:
+1. Load and lock the refundable Helcim parent transaction.
+2. Validate amount, currency, mode, remaining refundable total, and historical integrity.
+3. Persist a deterministic 36-character provider-safe idempotency key.
+4. Call the Helcim refund API.
+5. Only after exact provider success, atomically record the FluentCart refund and its local effects.
+6. Persist recoverable local effects in the outbox; never send another provider refund merely because a local effect must be retried.
 
-- Full and partial refunds are supported (the refund amount can't exceed the original transaction amount).
-- Refunds call the Helcim v2 `payment/refund` API in real time; on success, FluentCart creates a matching refund transaction record.
-- Every refund carries a **deterministic idempotency key**, so retrying the operation won't cause a duplicate refund.
-- Before refunding, the plugin checks that the transaction mode (test/live) matches the current store mode, so you can't accidentally refund a test transaction with live credentials (or vice versa).
+For a full refund against a proven open batch, the narrow reverse fallback is allowed only after the original transaction and batch response prove the same approved purchase, amount, currency, batch ID, and `closed=false`. Refund and reverse are separate journaled operations with separate persisted keys.
 
----
+An indeterminate refund remains locked for reconciliation. The positive-resolution UI requires fresh provider proof, an explicit candidate transaction ID, operator attestation, and an exact confirmation phrase. It never converts an unknown outcome to failure merely to permit another refund.
 
-## Pre-launch checklist (important)
+## WordPress Cron requirement
 
-During development, this plugin's full functionality and security were verified against **mocked Helcim responses**. **Before going live, be sure to run a small real transaction with real Helcim credentials** and confirm all four items below work. This is because Helcim's hash serialization details need to be calibrated against a real response (see the FAQ below and `DEVELOPMENT.md`).
+Durable local effects and stale-claim recovery depend on scheduled events:
 
-- [ ] **HelcimPay modal payment succeeds**: confirm that after the customer pays in the modal, the `hash` verification passes and the order is marked paid (this step validates that your `json_encode` serialization matches Helcim's).
-- [ ] **helcim.js inline payment succeeds**: confirm that after front-end Verify tokenization, the server-side `payment/purchase` charge succeeds and the order is marked paid.
-- [ ] **Refund succeeds**: issue a small refund against one of the transactions above and confirm a refund record appears on both the Helcim side and the FluentCart side.
-- [ ] **Webhook is received correctly** (if enabled): trigger a test webhook from your Helcim dashboard and confirm your site responds 200 and reconciles the order.
+- A per-operation event retries incomplete local refund effects.
+- A bounded one-minute sweep recovers abandoned claims and processes ready outbox rows.
+- The same one-minute cadence claims due hosted lost-callback operations, applies persisted provider success locally, and schedules bounded provider lookups with durable backoff.
+- Plugin preflight fails closed when the recurring recovery events cannot be installed or repaired; hosted checkout also checks that its recovery event remains healthy.
 
-> We recommend running the tests above with a minimal amount (e.g., $1) on your production account, and only opening up to real customers once everything passes.
+On low-traffic or production sites, configure a real server cron to run due WordPress events at least once per minute. If `DISABLE_WP_CRON` is enabled, an external scheduler is mandatory. Monitor the event queue and investigate repeated outbox errors; do not delete journal rows to make a report appear clean.
 
----
+## Release package
 
-## Frequently Asked Questions
+Build from the repository root with Windows PowerShell 5.1 or newer and PHP 8.1 CLI available. The builder refuses to package mismatched checkout translation keys or stale POT/PO/MO catalogs:
 
-**Q1. Why don't I see the Helcim payment methods at checkout?**
-The most common reason is that your store currency isn't USD or CAD. Helcim only supports those two currencies, so the payment methods are hidden automatically for any other currency. Also confirm the payment method is enabled and that the credentials for the current store mode are filled in.
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build-release.ps1 -RequireClean
+```
 
-**Q2. Does Helcim have a test environment?**
-There's no standalone sandbox. You need to request a Developer Test Account from Helcim to get test credentials, use them with Helcim's official test card numbers, and set your store Order Mode to test.
+By default the script writes to the ignored `outputs/release/` directory:
 
-**Q3. Why are there two payment modes, and which should I pick?**
-The two only differ in **how card entry is presented**: the modal (HelcimPay.js) is the simplest to set up and has the lowest PCI burden; the inline form (helcim.js) doesn't pop up and feels more seamless. If you have no particular preference, start with the HelcimPay.js modal. You can also enable both and let customers choose.
+- `ys-helcim-via-fluentcart.zip`
+- `ys-helcim-via-fluentcart.manifest.json`
 
-**Q4. Is customers' card data safe? Does it pass through my server?**
-No. In both modes, the full card number and security code **never reach your server**:
-- Modal mode: the card is entered inside Helcim's hosted window.
-- Inline mode: the card fields deliberately have **only an `id` and no `name` attribute**, so they aren't serialized and submitted with the checkout form; the card is tokenized directly in the browser by the Helcim SDK, and your server only receives the masked card number and cardToken.
-On top of that, all sensitive fields in the debug log (card number, Token, Secret, hash, etc.) are automatically masked.
+The builder uses a strict runtime allowlist, a single `ys-helcim-via-fluentcart/` root, normalized forward-slash entry names, fixed ZIP timestamps, ordered entries, and sidecar SHA-256 hashes. It excludes tests, internal docs, scripts, manual probes, development dependencies, archives, logs, server paths, test card literals, and recognized secret formats.
 
-**Q5. What does the "hash calibration" mentioned in the pre-launch section actually mean?**
-After a successful payment in HelcimPay modal mode, the plugin uses a hash comparison to confirm the returned data wasn't tampered with. That hash is sensitive to how `json_encode` serializes data (for example, whether slashes are escaped). Since development was verified against mocked responses, you should run one real transaction with real Helcim credentials before launch to confirm the hash verification passes. If the comparison fails, see the "Real-credential launch calibration checklist" in `DEVELOPMENT.md`.
+Verify an existing artifact independently:
 
-**Q6. Where is the debug log written?**
-Once you enable **debug logging** in the payment method settings, entries are written via PHP `error_log` (typically to your site's `wp-content/debug.log`, depending on your host's configuration). Every log line is prefixed with `[ys-helcim-fct]` for easy searching, and sensitive values are always masked. **We recommend turning this off in production** (even when off, error-level messages are still logged, so payment errors are never silenced).
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-release-package.ps1 `
+  -ZipPath .\outputs\release\ys-helcim-via-fluentcart.zip `
+  -ManifestPath .\outputs\release\ys-helcim-via-fluentcart.manifest.json `
+  -SourceRoot .
+```
 
-**Q7. Does it support subscriptions, pre-authorization (preauth/capture), or saved cards?**
-Not in v1.0.0. Only one-time charges (purchase) and refunds are currently supported. See "Known Limitations" in `DEVELOPMENT.md`.
+Run the executable package regression test:
 
----
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\package\ReleasePackage.Tests.ps1
+```
+
+Rebuild and verify the translation catalogs before the final package build:
+
+```powershell
+php .\scripts\check-frontend-translations.php
+php .\scripts\update-translations.php
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\package\FrontendTranslationContract.Tests.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\package\Translations.Tests.ps1
+```
+
+The final GitHub release should attach exactly one verified ZIP asset. Record the release commit, ZIP SHA-256, Hub package version, and deployed manifest as separate anchors.
+
+## Release-candidate verification gates
+
+Before replacing a client site's current payment gateway:
+
+- Confirm the exact WordPress, PHP, FluentCart, currency, database engine, Order Mode, and credential ownership.
+- Prove the current-mode hosted API token can call filtered `GET /card-transactions` and that the response is a root JSON list.
+- Back up the current plugin directory and relevant settings/operation rows.
+- Deploy the exact manifest-verified artifact that passed development testing.
+- Prove an approved inline purchase, a terminal decline that remains unpaid, duplicate-confirm replay safety, and lost-response recovery.
+- Prove full and partial remote-first refunds, open-batch reverse fallback, provider failure with no local refund, retry safety, and outbox recovery.
+- Prove valid, invalid, stale, and replayed webhooks.
+- Prove the hosted five-minute positive-only lookup, pre-70-minute empty/decline lock, seven-attempt pause, visible admin attention, and one-shot manual check without permitting a duplicate charge.
+- Confirm no raw PAN, CVV, reusable card token, API token, secret, or verifier appears in logs or plaintext persistence.
+- Prove both hosted and inline approved, declined, replay, lost-browser-response, webhook-recovery, and active-scope conflict paths against the same durable invariants.
+- Confirm no new PHP fatal/error and verify provider, operation, FluentCart transaction, and order state agree.
+
+## Security notes
+
+- Full card numbers and CVV must never reach WordPress logs, request serialization, order metadata, or operation rows.
+- Inline card inputs have no `name` attribute and are tokenized directly by Helcim.js.
+- Reusable inline card material may exist only in the encrypted short-lived operation envelope required for same-operation recovery, and is purged at terminal resolution/expiry.
+- Provider-changing requests require persistent idempotency keys and durable scope locks.
+- Webhook content is never trusted without signature verification and an API lookup.
+- The package verifier is a release hygiene control, not a substitute for credential rotation or a dedicated secret-scanning service.
+
+## Known limitations
+
+- `1.1.0-rc.1` is a pre-release dual-gateway candidate and must not be promoted until every release-candidate gate above has current environment evidence.
+- Only one-time purchase and refund/reverse operations are supported.
+- Subscriptions, pre-authorization/capture, and customer-facing saved cards are not supported.
+- Only USD and CAD are supported unless the gateway filter is deliberately extended and provider support is independently confirmed.
+- A settled refund gate depends on provider batch state; mocked or manually fabricated callbacks do not replace end-to-end evidence.
 
 ## License
 
@@ -196,5 +235,4 @@ GPL v2 or later
 
 ## Author
 
-**YANGSHEEP DESIGN**
-https://yangsheep.com.tw
+YANGSHEEP DESIGN — https://yangsheep.com.tw
