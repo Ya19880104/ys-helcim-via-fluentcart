@@ -58,7 +58,7 @@ try {
     & $verifier -ZipPath $first.ZipPath -ManifestPath $first.ManifestPath -SourceRoot $repoRoot
 
     $manifest = Get-Content -Raw -LiteralPath $first.ManifestPath | ConvertFrom-Json
-    Assert-Equal -Expected '1.1.0-rc.1' -Actual $manifest.version -Message 'The manifest version does not match the release candidate.'
+    Assert-Equal -Expected '1.1.0-rc.2' -Actual $manifest.version -Message 'The manifest version does not match the release candidate.'
     Assert-Equal -Expected $first.FileCount -Actual $manifest.file_count -Message 'The manifest file count is incorrect.'
     Assert-Equal -Expected $first.Sha256 -Actual $manifest.archive_sha256 -Message 'The manifest archive digest is incorrect.'
 

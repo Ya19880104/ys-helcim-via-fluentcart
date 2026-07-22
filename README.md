@@ -2,13 +2,13 @@
 
 Helcim payment integration for FluentCart with durable payment operations, remote-first refunds, and signed webhook recovery.
 
-> **Release candidate — 1.1.0-rc.1**
+> **Release candidate — 1.1.0-rc.2**
 >
 > This is the dual-gateway v1.1.0 candidate: the hosted HelcimPay.js modal and the Helcim.js inline form are both registered only when their current-mode credentials and the shared durable recovery runtime are available. RC status still means pre-release; promote it only after both browser flows pass the release gates below on the development and client test environments.
 
 ## Payment methods
 
-| Payment method | Collection mode | v1.1.0-rc.1 status |
+| Payment method | Collection mode | v1.1.0-rc.2 status |
 |---|---|---|
 | **Credit card (Helcim)** (`ys_helcim`) | HelcimPay.js hosted modal; lowest PCI scope and the path for supported digital wallets | Registered for RC testing through the durable two-phase hosted coordinator |
 | **Credit card (Helcim inline form)** (`ys_helcim_js`) | Helcim.js Verify tokenization in the browser, followed by a server-side v2 purchase | Registered for RC testing when all current-mode credentials and recovery prerequisites are present |
@@ -223,7 +223,7 @@ Before replacing a client site's current payment gateway:
 
 ## Known limitations
 
-- `1.1.0-rc.1` is a pre-release dual-gateway candidate and must not be promoted until every release-candidate gate above has current environment evidence.
+- `1.1.0-rc.2` is a pre-release dual-gateway candidate and must not be promoted until every release-candidate gate above has current environment evidence.
 - Only one-time purchase and refund/reverse operations are supported.
 - Subscriptions, pre-authorization/capture, and customer-facing saved cards are not supported.
 - Only USD and CAD are supported unless the gateway filter is deliberately extended and provider support is independently confirmed.

@@ -733,6 +733,19 @@
                 expiryYearInput.value = validation.expiryDigits.substring(2, 4);
             }
 
+            // The customer may enter or edit FluentCart billing fields after this gateway form was rendered.
+            // Refresh the Helcim AVS fields immediately before tokenization so the SDK receives current values.
+            var checkoutAddressInput = document.getElementById('billing_address_1');
+            var checkoutPostalCodeInput = document.getElementById('billing_postcode');
+            var cardHolderAddressInput = document.getElementById('cardHolderAddress');
+            var cardHolderPostalCodeInput = document.getElementById('cardHolderPostalCode');
+            if (checkoutAddressInput && cardHolderAddressInput) {
+                cardHolderAddressInput.value = checkoutAddressInput.value.trim();
+            }
+            if (checkoutPostalCodeInput && cardHolderPostalCodeInput) {
+                cardHolderPostalCodeInput.value = checkoutPostalCodeInput.value.trim();
+            }
+
             // Clear any previous results so the poller doesn't misfire
             var results = document.getElementById('helcimResults');
             if (results) {

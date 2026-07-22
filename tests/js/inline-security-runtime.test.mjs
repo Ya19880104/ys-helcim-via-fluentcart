@@ -143,6 +143,37 @@ describe('Helcim.js inline checkout runtime security boundaries', () => {
     }
   });
 
+  it('synchronizes current FluentCart billing fields before invoking Helcim.js', async () => {
+    let observedAddress = '';
+    let observedPostalCode = '';
+    const window = createCheckout(() => Promise.resolve(jsonResponse({ payment_args: {} })));
+    const address = window.document.createElement('input');
+    address.id = 'billing_address_1';
+    const postalCode = window.document.createElement('input');
+    postalCode.id = 'billing_postcode';
+    window.document.body.prepend(address, postalCode);
+    window.helcimProcess = () => {
+      observedAddress = window.document.getElementById('cardHolderAddress').value;
+      observedPostalCode = window.document.getElementById('cardHolderPostalCode').value;
+      return new Promise(() => {});
+    };
+    const detail = paymentDetail(() => Promise.resolve({ payment_data: paymentData }));
+
+    try {
+      await renderCheckout(window, detail);
+      address.value = 'No. 1 Test Road';
+      postalCode.value = '100';
+      submitValidCard(window);
+      await flushPromises();
+      await flushPromises();
+
+      expect(observedAddress).toBe('No. 1 Test Road');
+      expect(observedPostalCode).toBe('100');
+    } finally {
+      window.close();
+    }
+  });
+
   it('locks checkout after an SDK timeout and requires a reload before another payment attempt', async () => {
     let now = 0;
     let orderCalls = 0;

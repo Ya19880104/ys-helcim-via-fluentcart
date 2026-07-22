@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0-rc.2] - 2026-07-23
+
+### Fixed
+
+- Refresh the Helcim.js AVS address and postal-code fields from the current FluentCart billing inputs immediately before tokenization. This prevents guest checkout details entered after the payment form renders from being submitted as stale or empty values.
+- Add a browser-runtime regression test that reproduces the stale AVS field failure before the fix and proves the current billing values are supplied to Helcim.js.
+
+### RC gate
+
+- This remains a pre-release. Promotion still requires current approved, declined, replay, webhook, and duplicate-charge evidence from a dedicated Developer Test Account or an explicitly authorized live-card test.
+
 ## [1.1.0-rc.1] - 2026-07-22
 
 Dual-gateway release candidate for the production-readiness architecture. This remains a pre-release until both browser flows and client test mode pass the documented gates.
