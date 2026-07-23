@@ -36,8 +36,18 @@ final class YSHelcimPayRecoveryCapability {
 		$this->clock = $clock ?? static fn (): int => time();
 	}
 
-	/** @return true|\WP_Error */
-	public function verify( YSHelcimPaySettings $settings ) {
+	/**
+	 * @param object $settings Gateway settings exposing getMode() and getApiToken().
+	 * @return true|\WP_Error
+	 */
+	public function verify( $settings ) {
+		if (
+			! is_object( $settings ) ||
+			! is_callable( array( $settings, 'getMode' ) ) ||
+			! is_callable( array( $settings, 'getApiToken' ) )
+		) {
+			return self::unavailable();
+		}
 		$mode = strtolower( trim( (string) $settings->getMode() ) );
 		$api_token = trim( $settings->getApiToken() );
 		if ( ! in_array( $mode, array( 'test', 'live' ), true ) || '' === $api_token ) {

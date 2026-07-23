@@ -12,8 +12,12 @@
  *    -> AJAX confirm (server captures via /v2/payment/purchase using the cardToken) -> redirect to the receipt page
  *
  * Security notes:
- * - The full card number / CVV never appear in the confirm request; response_fields only collects the
- *   response fields the SDK writes into #helcimResults (cardNumber is masked), and defensively strips CVV-like keys
+ * - The merchant confirmation request contains only the SDK XML and xmlHash
+ *   proof envelope. The server authenticates that envelope with the Helcim.js
+ *   Secret Key and extracts the cardToken from the verified XML.
+ * - The full card number and CVV never appear in the XML proof or the request.
+ * - The server binds the request to the checkout transaction and treats the v2
+ *   payment/purchase response as the authoritative charge proof.
  *
  * @package YangSheep\Helcim\FluentCart
  */
@@ -511,7 +515,33 @@
     }
 
     /**
-     * Send the confirm AJAX request (the server validates the response hash -> captures via /v2/payment/purchase -> reconciles fail-closed)
+     * Decide whether an SDK surface contains a complete terminal result.
+     * A success is actionable only after the provider-issued card token exists;
+     * otherwise the primary DOM poller must keep waiting.
+     *
+     * @param {Object} fields Normalized callback response fields
+     * @returns {boolean}
+     */
+    function isCompleteTokenizeResult(fields) {
+        if (!Object.prototype.hasOwnProperty.call(fields, 'response')) {
+            return false;
+        }
+
+        var response = String(fields.response);
+        if (response === '') {
+            return false;
+        }
+
+        if (response !== '1') {
+            return true;
+        }
+
+        return !!(fields.cardToken && fields.xml && fields.xmlHash);
+    }
+
+    /**
+     * Send the confirm AJAX request. The browser token is untrusted input; the
+     * server-side v2 purchase and its strict provider response are authoritative.
      *
      * @param {Object} detail      e.detail from the load_payments event
      * @param {Object} paymentData payment_data from the order-creation response
@@ -519,7 +549,7 @@
      */
     function confirmPayment(detail, paymentData, fields) {
         var proofFields = {};
-        var proofFieldNames = ['response', 'cardNumber', 'cardToken', 'hash', 'xmlHash'];
+        var proofFieldNames = ['xml', 'xmlHash'];
         proofFieldNames.forEach(function (name) {
             if (Object.prototype.hasOwnProperty.call(fields, name)) {
                 proofFields[name] = fields[name];
@@ -530,7 +560,6 @@
         body.append('transaction_uuid', paymentData.transaction_uuid || '');
         body.append('nonce', paymentData.confirm_nonce || '');
         body.append('confirm_token', paymentData.confirm_token || '');
-        body.append('card_token', fields.cardToken || '');
         body.append('response_fields', JSON.stringify(proofFields));
 
         fetch(cfg.ajax_url, {
@@ -617,8 +646,11 @@
             var results = document.getElementById('helcimResults');
             var responseInput = results ? results.querySelector('input#response, input[name="response"]') : null;
             if (responseInput) {
-                handleTokenizeResult(detail, paymentData, collectResultFields());
-                return;
+                var fields = collectResultFields();
+                if (isCompleteTokenizeResult(fields)) {
+                    handleTokenizeResult(detail, paymentData, fields);
+                    return;
+                }
             }
             if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
                 requireReloadAfterSdkTimeout(detail);
@@ -654,6 +686,27 @@
         }
 
         return { ok: true, message: '', cardDigits: cardDigits, expiryDigits: expiryDigits };
+    }
+
+    /**
+     * Read the latest non-empty value from a FluentCart checkout input.
+     *
+     * FluentCart renders duplicate address-editor components with duplicate ids.
+     * document.getElementById() can therefore return the hidden, empty instance
+     * even when the active billing editor contains a valid value.
+     *
+     * @param {string} id Checkout input id
+     * @returns {string}
+     */
+    function checkoutInputValue(id) {
+        var inputs = document.querySelectorAll('[id="' + id + '"]');
+        for (var i = inputs.length - 1; i >= 0; i--) {
+            var value = typeof inputs[i].value === 'string' ? inputs[i].value.trim() : '';
+            if (value) {
+                return value;
+            }
+        }
+        return '';
     }
 
     /**
@@ -734,16 +787,27 @@
             }
 
             // The customer may enter or edit FluentCart billing fields after this gateway form was rendered.
-            // Refresh the Helcim AVS fields immediately before tokenization so the SDK receives current values.
-            var checkoutAddressInput = document.getElementById('billing_address_1');
-            var checkoutPostalCodeInput = document.getElementById('billing_postcode');
+            // The just-created order is authoritative. Fall back to the latest
+            // non-empty editor only when the server could not resolve the order address.
+            var checkoutAddress = typeof paymentData.cardholder_address === 'string'
+                ? paymentData.cardholder_address.trim()
+                : '';
+            var checkoutPostalCode = typeof paymentData.cardholder_postal_code === 'string'
+                ? paymentData.cardholder_postal_code.trim()
+                : '';
+            if (!checkoutAddress) {
+                checkoutAddress = checkoutInputValue('billing_address_1');
+            }
+            if (!checkoutPostalCode) {
+                checkoutPostalCode = checkoutInputValue('billing_postcode');
+            }
             var cardHolderAddressInput = document.getElementById('cardHolderAddress');
             var cardHolderPostalCodeInput = document.getElementById('cardHolderPostalCode');
-            if (checkoutAddressInput && cardHolderAddressInput) {
-                cardHolderAddressInput.value = checkoutAddressInput.value.trim();
+            if (checkoutAddress && cardHolderAddressInput) {
+                cardHolderAddressInput.value = checkoutAddress;
             }
-            if (checkoutPostalCodeInput && cardHolderPostalCodeInput) {
-                cardHolderPostalCodeInput.value = checkoutPostalCodeInput.value.trim();
+            if (checkoutPostalCode && cardHolderPostalCodeInput) {
+                cardHolderPostalCodeInput.value = checkoutPostalCode;
             }
 
             // Clear any previous results so the poller doesn't misfire
@@ -849,8 +913,12 @@
 
     // Some helcim.js versions support a global callback; it coexists with the poller, with a single gate preventing double handling
     window.helcimJsCallback = function (response) {
-        if (typeof activeResultHandler === 'function') {
-            activeResultHandler(normalizeCallbackResponse(response));
+        var fields = normalizeCallbackResponse(response);
+        if (
+            typeof activeResultHandler === 'function' &&
+            isCompleteTokenizeResult(fields)
+        ) {
+            activeResultHandler(fields);
         }
     };
 

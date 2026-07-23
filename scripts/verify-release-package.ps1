@@ -40,6 +40,7 @@ $secretMarkers = [ordered]@{
     slack_token = '\bxox[baprs]-[A-Za-z0-9-]{20,}\b'
     embedded_url_credentials = 'https?://[^\s/:]+:[^\s/@]+@'
     credential_assignment = '(?i)(?:api[_ -]?token|secret[_ -]?key|verifier[_ -]?token)["'']?\s*(?:=>|:|=)\s*["''][A-Za-z0-9_./+=-]{16,}["'']'
+    internal_environment = '(?i)\b(?:dev|staging)-[a-z0-9][a-z0-9-]*\b'
     development_host = '(?i)(?:(?:https?://)?(?:dev|staging)-[a-z0-9-]+(?:\.[a-z0-9-]+)+|\.wppro\.cloud|\.trycloudflare\.com)'
     development_path = '(?i)(?:/var/www/|[A-Z]:\\(?:dev|Users)\\)'
     official_test_card = '\b(?:4124939999999990|5413330089099130|374245001751006)\b'

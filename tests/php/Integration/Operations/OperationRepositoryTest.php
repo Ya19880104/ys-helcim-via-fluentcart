@@ -758,6 +758,150 @@ final class OperationRepositoryTest extends TestCase
         self::assertSame('ys_helcim_journal_unavailable', $failed->get_error_code());
     }
 
+	public function testInlineRecoveryScanReturnsOnlyExpiredActiveInlinePurchases(): void
+	{
+		$inline = $this->operation(130, 'purchase:inline-due');
+		$inline['gateway'] = 'ys_helcim_js';
+		$inline['provider_correlation_id'] = $inline['operation_uuid'];
+		self::assertIsArray($this->repository->create($inline));
+		self::assertTrue($this->repository->claimRemoteProcessing($inline['operation_uuid']));
+		$this->database->update(
+			'wp_ys_helcim_operations',
+			['created_at' => '2026-07-20 22:00:00'],
+			['operation_uuid' => $inline['operation_uuid']]
+		);
+
+		$hosted = $this->operation(131, 'purchase:hosted-due');
+		$hosted['provider_correlation_id'] = $hosted['operation_uuid'];
+		self::assertIsArray($this->repository->create($hosted));
+		self::assertTrue($this->repository->claimRemoteProcessing($hosted['operation_uuid']));
+		$this->database->update(
+			'wp_ys_helcim_operations',
+			['created_at' => '2026-07-20 22:00:00'],
+			['operation_uuid' => $hosted['operation_uuid']]
+		);
+
+		$rows = $this->repository->findPurchasesNeedingRecovery(
+			'ys_helcim_js',
+			'2026-07-20 23:00:00',
+			'2026-07-21 00:00:00',
+			'2026-07-20 23:55:00',
+			7,
+			10
+		);
+
+		self::assertIsArray($rows);
+		self::assertSame([$inline['operation_uuid']], array_column($rows, 'operation_uuid'));
+	}
+
+	public function testInlineRecoveryClaimIsDurableSingleClaimantAndGatewayBound(): void
+	{
+		$operation = $this->operation(132, 'purchase:inline-claim');
+		$operation['gateway'] = 'ys_helcim_js';
+		$operation['provider_correlation_id'] = $operation['operation_uuid'];
+		self::assertIsArray($this->repository->create($operation));
+		self::assertTrue($this->repository->claimRemoteProcessing($operation['operation_uuid']));
+
+		self::assertFalse($this->repository->claimPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim',
+			'2026-07-21 00:00:00',
+			'2026-07-20 23:55:00',
+			'2026-07-21 00:02:00',
+			7
+		));
+		self::assertTrue($this->repository->claimPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim_js',
+			'2026-07-21 00:00:00',
+			'2026-07-20 23:55:00',
+			'2026-07-21 00:02:00',
+			7
+		));
+		self::assertFalse($this->repository->claimPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim_js',
+			'2026-07-21 00:00:00',
+			'2026-07-20 23:55:00',
+			'2026-07-21 00:02:00',
+			7
+		));
+
+		$claimed = $this->repository->findByUuid($operation['operation_uuid']);
+		self::assertSame(1, (int) $claimed['recovery_attempt_count']);
+		self::assertSame('2026-07-21 00:02:00', $claimed['next_recovery_at']);
+	}
+
+	public function testInlineRecoveryDeferIsDurableAndGatewayBound(): void
+	{
+		$operation = $this->operation(133, 'purchase:inline-defer');
+		$operation['gateway'] = 'ys_helcim_js';
+		$operation['provider_correlation_id'] = $operation['operation_uuid'];
+		self::assertIsArray($this->repository->create($operation));
+		self::assertTrue($this->repository->claimRemoteProcessing($operation['operation_uuid']));
+		self::assertTrue($this->repository->claimPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim_js',
+			'2026-07-21 00:00:00',
+			'2026-07-20 23:55:00',
+			'2026-07-21 00:02:00',
+			7
+		));
+
+		self::assertFalse($this->repository->deferPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim',
+			1,
+			'2026-07-21 00:02:00',
+			'2026-07-21 00:05:00',
+			'provider_timeout',
+			'Provider lookup timed out.'
+		));
+		self::assertTrue($this->repository->deferPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim_js',
+			1,
+			'2026-07-21 00:02:00',
+			'2026-07-21 00:05:00',
+			'provider_timeout',
+			'Provider lookup timed out.'
+		));
+
+		$deferred = $this->repository->findByUuid($operation['operation_uuid']);
+		self::assertSame(1, (int) $deferred['recovery_attempt_count']);
+		self::assertSame('2026-07-21 00:05:00', $deferred['next_recovery_at']);
+		self::assertSame('provider_timeout', $deferred['remote_error_code']);
+	}
+
+	public function testInlineAttentionQueryIncludesUnresolvedAndLocalBindingFailures(): void
+	{
+		$indeterminate = $this->operation(134, 'purchase:inline-attention-indeterminate');
+		$indeterminate['gateway'] = 'ys_helcim_js';
+		$indeterminate['provider_correlation_id'] = $indeterminate['operation_uuid'];
+		self::assertIsArray($this->repository->create($indeterminate));
+		self::assertTrue($this->repository->claimRemoteProcessing($indeterminate['operation_uuid']));
+		self::assertTrue($this->repository->transitionRemote($indeterminate['operation_uuid'], 'processing', 'indeterminate'));
+
+		$succeeded = $this->operation(135, 'purchase:inline-attention-local');
+		$succeeded['gateway'] = 'ys_helcim_js';
+		$succeeded['provider_correlation_id'] = $succeeded['operation_uuid'];
+		self::assertIsArray($this->repository->create($succeeded));
+		self::assertTrue($this->repository->claimRemoteProcessing($succeeded['operation_uuid']));
+		self::assertTrue($this->repository->transitionRemote(
+			$succeeded['operation_uuid'],
+			'processing',
+			'succeeded',
+			['vendor_transaction_id' => '51178135']
+		));
+
+		$rows = $this->repository->findPurchasesNeedingAttention('ys_helcim_js', 10, 7);
+		self::assertIsArray($rows);
+		self::assertSame(
+			[$indeterminate['operation_uuid'], $succeeded['operation_uuid']],
+			array_column($rows, 'operation_uuid')
+		);
+	}
+
 	public function testHostedRecoveryClaimAndBackoffAreDurableAndSingleClaimant(): void
 	{
 		$operation = $this->operation(84, 'purchase:hosted-claim');
@@ -1014,6 +1158,132 @@ final class OperationRepositoryTest extends TestCase
 			'ys_helcim_hosted_recovery_attention_required',
 			'Exact provider proof is still unavailable.'
 		));
+	}
+
+	public function testPausedInlineRecoveryCanBeClaimedForOneManualAttemptAtATimeAndIsGatewayBound(): void
+	{
+		$operation = $this->operation(136, 'purchase:inline-manual-attention');
+		$operation['gateway'] = 'ys_helcim_js';
+		$operation['provider_correlation_id'] = $operation['operation_uuid'];
+		self::assertIsArray($this->repository->create($operation));
+		self::assertTrue($this->repository->claimRemoteProcessing($operation['operation_uuid']));
+		$this->database->update(
+			'wp_ys_helcim_operations',
+			['recovery_attempt_count' => 7, 'next_recovery_at' => null],
+			['operation_uuid' => $operation['operation_uuid']]
+		);
+
+		self::assertFalse($this->repository->claimPausedPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim',
+			'2026-07-21 00:00:00',
+			'2026-07-20 23:55:00',
+			'2026-07-21 00:02:00',
+			7
+		));
+		self::assertTrue($this->repository->claimPausedPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim_js',
+			'2026-07-21 00:00:00',
+			'2026-07-20 23:55:00',
+			'2026-07-21 00:02:00',
+			7
+		));
+		self::assertFalse($this->repository->claimPausedPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim_js',
+			'2026-07-21 00:00:00',
+			'2026-07-20 23:55:00',
+			'2026-07-21 00:02:00',
+			7
+		));
+	}
+
+	public function testUnscheduledAttentionRecoveryCanBeClaimedOnceBeforeAutomaticAttemptsRun(): void
+	{
+		$operation = $this->operation(137, 'purchase:inline-unscheduled-attention');
+		$operation['gateway'] = 'ys_helcim_js';
+		$operation['provider_correlation_id'] = $operation['operation_uuid'];
+		self::assertIsArray($this->repository->create($operation));
+		self::assertTrue($this->repository->claimRemoteProcessing($operation['operation_uuid']));
+		self::assertTrue($this->repository->transitionRemote(
+			$operation['operation_uuid'],
+			'processing',
+			'indeterminate'
+		));
+		$row = $this->repository->findByUuid($operation['operation_uuid']);
+		self::assertSame(0, (int) $row['recovery_attempt_count']);
+		self::assertNull($row['next_recovery_at']);
+
+		self::assertFalse($this->repository->claimAttentionPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim',
+			'2026-07-21 00:00:00',
+			'2026-07-20 23:55:00',
+			'2026-07-21 00:02:00',
+			7
+		));
+		self::assertTrue($this->repository->claimAttentionPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim_js',
+			'2026-07-21 00:00:00',
+			'2026-07-20 23:55:00',
+			'2026-07-21 00:02:00',
+			7
+		));
+		self::assertFalse($this->repository->claimAttentionPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim_js',
+			'2026-07-21 00:00:00',
+			'2026-07-20 23:55:00',
+			'2026-07-21 00:02:00',
+			7
+		));
+		self::assertTrue($this->repository->deferPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim_js',
+			0,
+			'2026-07-21 00:02:00',
+			null,
+			'ys_helcim_purchase_recovery_attention_required',
+			'Exact provider proof is still unavailable.'
+		));
+		$row = $this->repository->findByUuid($operation['operation_uuid']);
+		self::assertSame(0, (int) $row['recovery_attempt_count']);
+		self::assertNull($row['next_recovery_at']);
+		self::assertNotNull($row['active_scope_key']);
+	}
+
+	public function testAttentionRecoveryCannotStealAnUnexpiredLease(): void
+	{
+		$operation = $this->operation(138, 'purchase:inline-active-manual-lease');
+		$operation['gateway'] = 'ys_helcim_js';
+		$operation['provider_correlation_id'] = $operation['operation_uuid'];
+		self::assertIsArray($this->repository->create($operation));
+		self::assertTrue($this->repository->claimRemoteProcessing($operation['operation_uuid']));
+		self::assertTrue($this->repository->transitionRemote(
+			$operation['operation_uuid'],
+			'processing',
+			'indeterminate'
+		));
+		$this->database->update(
+			'wp_ys_helcim_operations',
+			['next_recovery_at' => '2026-07-21 00:03:00'],
+			['operation_uuid' => $operation['operation_uuid']]
+		);
+
+		self::assertFalse($this->repository->claimAttentionPurchaseRecovery(
+			$operation['operation_uuid'],
+			'ys_helcim_js',
+			'2026-07-21 00:00:00',
+			'2026-07-20 23:55:00',
+			'2026-07-21 00:02:00',
+			7
+		));
+		self::assertSame(
+			'2026-07-21 00:03:00',
+			$this->repository->findByUuid($operation['operation_uuid'])['next_recovery_at']
+		);
 	}
 
 	public function testExactPositiveTerminalStateWinsRaceAgainstEmptyObservation(): void

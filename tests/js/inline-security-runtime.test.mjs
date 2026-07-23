@@ -90,6 +90,7 @@ function writeSuccessfulTokenizeResult(window) {
     cardNumber: '5454****5454',
     cardToken: 'ephemeral-card-token',
     xmlHash: 'provider-proof-hash',
+    xml: '<message><response>1</response><type>verify</type><cardToken>ephemeral-card-token</cardToken></message>',
   })) {
     const input = window.document.createElement('input');
     input.type = 'hidden';
@@ -236,7 +237,7 @@ describe('Helcim.js inline checkout runtime security boundaries', () => {
     }
   });
 
-  it('allowlists only proof fields in the merchant confirm request', async () => {
+  it('sends only the official XML proof envelope to the merchant confirm request', async () => {
     let confirmBody = '';
     const window = createCheckout((url, options = {}) => {
       if (String(url).includes('/payment-info')) {
@@ -277,14 +278,13 @@ describe('Helcim.js inline checkout runtime security boundaries', () => {
 
       expect(confirmBody).not.toBe('');
       const body = new URLSearchParams(confirmBody);
-      const fields = JSON.parse(body.get('response_fields'));
-
-      expect(Object.keys(fields).sort()).toEqual([
-        'cardNumber',
-        'cardToken',
-        'response',
-        'xmlHash',
-      ]);
+      expect(body.has('card_token')).toBe(false);
+      const proof = JSON.parse(body.get('response_fields'));
+      expect(Object.keys(proof).sort()).toEqual(['xml', 'xmlHash']);
+      expect(proof.xmlHash).toBe('provider-proof-hash');
+      expect(proof.xml).toContain('<transaction>');
+      expect(body.has('cardNumber')).toBe(false);
+      expect(body.has('response')).toBe(false);
     } finally {
       window.close();
     }

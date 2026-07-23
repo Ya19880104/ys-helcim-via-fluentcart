@@ -350,7 +350,31 @@ final class YSHelcimOperationRepository {
 		int $max_attempts,
 		int $limit = 20
 	) {
+		return $this->findPurchasesNeedingRecovery(
+			'ys_helcim',
+			$created_before,
+			$due_before,
+			$local_claimed_before,
+			$max_attempts,
+			$limit
+		);
+	}
+
+	/**
+	 * Find due active purchases for one exact Helcim gateway.
+	 *
+	 * @return array<int,array<string,mixed>>|\WP_Error
+	 */
+	public function findPurchasesNeedingRecovery(
+		string $gateway,
+		string $created_before,
+		string $due_before,
+		string $local_claimed_before,
+		int $max_attempts,
+		int $limit = 20
+	) {
 		if (
+			! self::isPurchaseGateway( $gateway ) ||
 			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $created_before ) ||
 			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $due_before ) ||
 			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $local_claimed_before ) ||
@@ -369,7 +393,7 @@ final class YSHelcimOperationRepository {
 			"/* ys_helcim_hosted_purchase_recovery_scan */
 			SELECT * FROM {$this->table}
 			WHERE operation_type = 'purchase'
-			AND gateway = 'ys_helcim'
+			AND gateway = %s
 			AND remote_status IN ('processing', 'indeterminate', 'succeeded')
 			AND (
 				local_status IN ('pending', 'failed')
@@ -388,6 +412,7 @@ final class YSHelcimOperationRepository {
 				COALESCE(next_recovery_at, created_at) ASC,
 				id ASC
 			LIMIT %d",
+			$gateway,
 			$local_claimed_before,
 			$created_before,
 			$max_attempts,
@@ -423,9 +448,33 @@ final class YSHelcimOperationRepository {
 		string $lease_until,
 		int $max_attempts
 	) {
+		return $this->claimPurchaseRecovery(
+			$operation_uuid,
+			'ys_helcim',
+			$due_before,
+			$local_claimed_before,
+			$lease_until,
+			$max_attempts
+		);
+	}
+
+	/**
+	 * Atomically lease one due purchase recovery attempt for an exact gateway.
+	 *
+	 * @return bool|\WP_Error
+	 */
+	public function claimPurchaseRecovery(
+		string $operation_uuid,
+		string $gateway,
+		string $due_before,
+		string $local_claimed_before,
+		string $lease_until,
+		int $max_attempts
+	) {
 		$operation_uuid = strtolower( trim( $operation_uuid ) );
 		if (
 			1 !== preg_match( '/\A[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/', $operation_uuid ) ||
+			! self::isPurchaseGateway( $gateway ) ||
 			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $due_before ) ||
 			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $local_claimed_before ) ||
 			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $lease_until ) ||
@@ -449,7 +498,7 @@ final class YSHelcimOperationRepository {
 		if (
 			! is_array( $current ) ||
 			'purchase' !== (string) ( $current['operation_type'] ?? '' ) ||
-			'ys_helcim' !== (string) ( $current['gateway'] ?? '' ) ||
+			$gateway !== (string) ( $current['gateway'] ?? '' ) ||
 			! in_array( $remote_status, array( 'processing', 'indeterminate', 'succeeded' ), true ) ||
 			! in_array( $local_status, array( 'pending', 'failed', 'applying' ), true ) ||
 			( 'applying' === $local_status && ( 'succeeded' !== $remote_status || null === $local_claimed || $local_claimed > $local_claimed_before ) ) ||
@@ -462,6 +511,7 @@ final class YSHelcimOperationRepository {
 
 		$claim_where = array(
 			'operation_uuid'         => $operation_uuid,
+			'gateway'                => $gateway,
 			'remote_status'          => $remote_status,
 			'local_status'           => $local_status,
 			'active_scope_key'       => $active_scope,
@@ -505,9 +555,85 @@ final class YSHelcimOperationRepository {
 		string $lease_until,
 		int $max_attempts
 	) {
+		return $this->claimPausedPurchaseRecovery(
+			$operation_uuid,
+			'ys_helcim',
+			$due_before,
+			$local_claimed_before,
+			$lease_until,
+			$max_attempts
+		);
+	}
+
+	/**
+	 * Lease one due or unscheduled attention-row lookup for an exact gateway.
+	 *
+	 * Unlike an automatic claim, this does not consume the automatic attempt
+	 * budget. The exact due value remains part of the compare-and-swap lease.
+	 *
+	 * @return bool|\WP_Error
+	 */
+	public function claimAttentionPurchaseRecovery(
+		string $operation_uuid,
+		string $gateway,
+		string $due_before,
+		string $local_claimed_before,
+		string $lease_until,
+		int $max_attempts
+	) {
+		return $this->claimManualPurchaseRecovery(
+			$operation_uuid,
+			$gateway,
+			$due_before,
+			$local_claimed_before,
+			$lease_until,
+			$max_attempts,
+			false
+		);
+	}
+
+	/**
+	 * Lease one administrator-requested attempt for an exact purchase gateway.
+	 *
+	 * @return bool|\WP_Error
+	 */
+	public function claimPausedPurchaseRecovery(
+		string $operation_uuid,
+		string $gateway,
+		string $due_before,
+		string $local_claimed_before,
+		string $lease_until,
+		int $max_attempts
+	) {
+		return $this->claimManualPurchaseRecovery(
+			$operation_uuid,
+			$gateway,
+			$due_before,
+			$local_claimed_before,
+			$lease_until,
+			$max_attempts,
+			true
+		);
+	}
+
+	/**
+	 * Compare-and-swap one manual provider-query lease.
+	 *
+	 * @return bool|\WP_Error
+	 */
+	private function claimManualPurchaseRecovery(
+		string $operation_uuid,
+		string $gateway,
+		string $due_before,
+		string $local_claimed_before,
+		string $lease_until,
+		int $max_attempts,
+		bool $paused_only
+	) {
 		$operation_uuid = strtolower( trim( $operation_uuid ) );
 		if (
 			1 !== preg_match( '/\A[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/', $operation_uuid ) ||
+			! self::isPurchaseGateway( $gateway ) ||
 			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $due_before ) ||
 			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $local_claimed_before ) ||
 			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $lease_until ) ||
@@ -531,12 +657,13 @@ final class YSHelcimOperationRepository {
 		if (
 			! is_array( $current ) ||
 			'purchase' !== (string) ( $current['operation_type'] ?? '' ) ||
-			'ys_helcim' !== (string) ( $current['gateway'] ?? '' ) ||
+			$gateway !== (string) ( $current['gateway'] ?? '' ) ||
 			! in_array( $remote_status, array( 'processing', 'indeterminate', 'succeeded' ), true ) ||
 			! in_array( $local_status, array( 'pending', 'failed', 'applying' ), true ) ||
 			( 'applying' === $local_status && ( 'succeeded' !== $remote_status || null === $local_claimed || $local_claimed > $local_claimed_before ) ) ||
 			'' === $active_scope ||
-			$attempt_count < $max_attempts ||
+			( $paused_only && $attempt_count < $max_attempts ) ||
+			( ! $paused_only && ! in_array( $remote_status, array( 'indeterminate', 'succeeded' ), true ) && $attempt_count < $max_attempts ) ||
 			( null !== $next_due && $next_due > $due_before )
 		) {
 			return false;
@@ -544,6 +671,7 @@ final class YSHelcimOperationRepository {
 
 		$claim_where = array(
 			'operation_uuid'         => $operation_uuid,
+			'gateway'                => $gateway,
 			'remote_status'          => $remote_status,
 			'local_status'           => $local_status,
 			'active_scope_key'       => $active_scope,
@@ -583,11 +711,37 @@ final class YSHelcimOperationRepository {
 		string $error_code,
 		string $error_message
 	) {
+		return $this->deferPurchaseRecovery(
+			$operation_uuid,
+			'ys_helcim',
+			$expected_attempt_count,
+			$expected_lease_until,
+			$next_recovery_at,
+			$error_code,
+			$error_message
+		);
+	}
+
+	/**
+	 * Persist recovery backoff for one exact purchase gateway and lease.
+	 *
+	 * @return bool|\WP_Error
+	 */
+	public function deferPurchaseRecovery(
+		string $operation_uuid,
+		string $gateway,
+		int $expected_attempt_count,
+		string $expected_lease_until,
+		?string $next_recovery_at,
+		string $error_code,
+		string $error_message
+	) {
 		$operation_uuid = strtolower( trim( $operation_uuid ) );
 		$error_code     = substr( sanitize_text_field( $error_code ), 0, 100 );
 		if (
 			1 !== preg_match( '/\A[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/', $operation_uuid ) ||
-			$expected_attempt_count < 1 ||
+			! self::isPurchaseGateway( $gateway ) ||
+			$expected_attempt_count < 0 ||
 			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $expected_lease_until ) ||
 			'' === $error_code ||
 			( null !== $next_recovery_at && 1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $next_recovery_at ) )
@@ -605,7 +759,7 @@ final class YSHelcimOperationRepository {
 		if (
 			! is_array( $current ) ||
 			'purchase' !== (string) ( $current['operation_type'] ?? '' ) ||
-			'ys_helcim' !== (string) ( $current['gateway'] ?? '' ) ||
+			$gateway !== (string) ( $current['gateway'] ?? '' ) ||
 			! in_array( $remote_status, array( 'processing', 'indeterminate', 'succeeded' ), true ) ||
 			! in_array( $local_status, array( 'pending', 'failed', 'applying' ), true ) ||
 			'' === $active_scope ||
@@ -633,6 +787,7 @@ final class YSHelcimOperationRepository {
 				$data,
 				array(
 					'operation_uuid'         => $operation_uuid,
+					'gateway'                => $gateway,
 					'remote_status'          => $remote_status,
 					'local_status'           => $local_status,
 					'active_scope_key'       => $active_scope,
@@ -653,7 +808,18 @@ final class YSHelcimOperationRepository {
 
 	/** @return array<int,array<string,mixed>>|\WP_Error */
 	public function findHostedPurchasesNeedingAttention( int $limit = 10, int $max_attempts = 7 ) {
-		if ( $limit < 1 || $limit > 100 || $max_attempts < 1 || $max_attempts > 100 ) {
+		return $this->findPurchasesNeedingAttention( 'ys_helcim', $limit, $max_attempts );
+	}
+
+	/** @return array<int,array<string,mixed>>|\WP_Error */
+	public function findPurchasesNeedingAttention( string $gateway, int $limit = 10, int $max_attempts = 7 ) {
+		if (
+			! self::isPurchaseGateway( $gateway ) ||
+			$limit < 1 ||
+			$limit > 100 ||
+			$max_attempts < 1 ||
+			$max_attempts > 100
+		) {
 			return self::invalidOperation();
 		}
 		if ( property_exists( $this->database, 'last_error' ) ) {
@@ -663,7 +829,7 @@ final class YSHelcimOperationRepository {
 			"/* ys_helcim_hosted_purchase_attention_scan */
 			SELECT * FROM {$this->table}
 			WHERE operation_type = 'purchase'
-			AND gateway = 'ys_helcim'
+			AND gateway = %s
 			AND active_scope_key IS NOT NULL
 			AND local_status IN ('pending', 'failed', 'applying')
 			AND (
@@ -672,6 +838,7 @@ final class YSHelcimOperationRepository {
 			)
 			ORDER BY updated_at ASC, id ASC
 			LIMIT %d",
+			$gateway,
 			$max_attempts,
 			$limit
 		);
@@ -1336,6 +1503,10 @@ final class YSHelcimOperationRepository {
 		}
 
 		return false === $updated ? self::journalUnavailable() : (int) $updated;
+	}
+
+	private static function isPurchaseGateway( string $gateway ): bool {
+		return in_array( $gateway, array( 'ys_helcim', 'ys_helcim_js' ), true );
 	}
 
 	/** @return \WP_Error */

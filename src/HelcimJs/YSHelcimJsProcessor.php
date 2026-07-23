@@ -4,14 +4,17 @@
  *
  * Responsibilities:
  * 1. The fail-closed validation chain for the AJAX confirm (ys_helcim_fct_confirm_js):
- *    nonce → load the transaction → idempotency check → validateResponseHash →
- *    durable server-side v2 purchase (charge with cardToken) → strict provider proof → local aggregate binding.
+ *    nonce → load the transaction → idempotency check → keyed XML proof →
+ *    durable server-side v2 purchase (charge with cardToken) → strict provider
+ *    proof → local aggregate binding.
  *
  * Security principles:
  * - If any validation step fails, the request is rejected and the payment is never marked successful (fail-closed).
- * - Hash comparison always uses hash_equals; an unset secret key means rejection.
+ * - The browser response is accepted only after the official keyed XML proof
+ *   validates; the server-side v2 purchase remains the authoritative charge proof.
  * - The purchase charge carries an idempotency key bound to the transaction uuid, preventing a retry from double-charging.
- * - Card numbers never pass through this server (we only receive the masked number and the cardToken).
+ * - Full card numbers and CVV never pass through this server. The SDK XML
+ *   contains only the masked result envelope and the provider-issued cardToken.
  * - Secrets are not written to the log (YSHelcimLogger masks, and this layer does not proactively pass full secrets through).
  *
  * @package YangSheep\Helcim\FluentCart
@@ -36,9 +39,9 @@ if (!defined('ABSPATH')) {
  */
 class YSHelcimJsProcessor
 {
-	private const MAX_RESPONSE_FIELDS_BYTES = 65536;
+    private const MAX_RESPONSE_FIELDS_BYTES = 65536;
 
-	private const MAX_RESPONSE_JSON_DEPTH = 16;
+    private const MAX_RESPONSE_JSON_DEPTH = 16;
 
     /**
      * Gateway slug (used to match transaction.payment_method).
@@ -85,10 +88,9 @@ class YSHelcimJsProcessor
      *
      * Request parameters:
      * - transaction_uuid : the transaction uuid sent during order creation.
-     * - nonce            : wp_create_nonce('ys_helcim_fct_confirm').
-     * - card_token       : the cardToken obtained from helcim.js Verify tokenization.
-     * - response_fields  : the helcim.js response fields (response / responseMessage /
-     *                      cardToken / cardNumber(masked) / cardType / hash or xmlHash, etc.).
+     * - nonce            : wp_create_nonce('ys_helcim_fct_confirm_js').
+     * - confirm_token    : server-signed transaction-bound confirmation token.
+     * - response_fields  : JSON containing only Helcim.js xml and xmlHash.
      *
      * The validation order is fixed (fail-closed); on any failure it responds with a 4xx JSON and stops.
      *
@@ -143,42 +145,41 @@ class YSHelcimJsProcessor
             $this->respondError(__('The payment confirmation session is invalid or expired. Please refresh and try again.', 'ys-helcim-via-fluentcart'), 403);
         }
 
-        // ---- 4. Verify the helcim.js response hash (fail-closed) ----
+        // ---- 4. Authenticate and parse the official Helcim.js XML response ----
         $response_fields = $this->readResponseFields();
-
         if (!$this->validateResponseHash($response_fields, (string) $transaction->payment_mode)) {
-            YSHelcimLogger::error('helcim.js confirm: response hash verification failed', [
+            YSHelcimLogger::info('helcim.js confirm: XML response hash verification failed', [
                 'transaction_uuid' => $transaction_uuid,
             ]);
             $this->respondError(__('The card verification response is invalid. Please try again.', 'ys-helcim-via-fluentcart'), 400);
         }
 
-        // A valid hash authenticates the SDK response; it does not turn an SDK
-        // failure into a successful tokenization. Only the exact success flag
-        // is allowed to reach the provider purchase boundary.
-        if ('1' !== (string) ($response_fields['response'] ?? '')) {
+        $xml = (string) ($response_fields['xml'] ?? '');
+        $xml_object = self::parseResponseXml($xml);
+        if (!$xml_object instanceof \SimpleXMLElement) {
+            $this->respondError(__('The card verification response is invalid. Please try again.', 'ys-helcim-via-fluentcart'), 400);
+        }
+
+        if ('1' !== trim((string) ($xml_object->response ?? ''))) {
             $this->respondError(__('The card could not be verified. Please check the card details and try again.', 'ys-helcim-via-fluentcart'), 422);
         }
 
-        // ---- 5. Take the cardToken (security review M1: always use the response_fields.cardToken that "passed hash verification") ----
-        // The verified card and the charged card must be the same one, so that the hash gate actually applies to the real charge.
-        $card_token = (string) ($response_fields['cardToken'] ?? '');
+        if ('verify' !== strtolower(trim((string) ($xml_object->type ?? '')))) {
+            $this->respondError(__('The card verification response is invalid. Please try again.', 'ys-helcim-via-fluentcart'), 400);
+        }
 
-        if ($card_token === '') {
+        // Use only the cardToken inside the hash-authenticated XML. Sibling DOM
+        // fields are deliberately not accepted as payment proof.
+        $card_token = trim((string) ($xml_object->cardToken ?? ''));
+        if (
+            strlen($card_token) < 16 ||
+            strlen($card_token) > 2048 ||
+            1 !== preg_match('/\A[A-Za-z0-9_-]+\z/', $card_token)
+        ) {
             $this->respondError(__('The card token is missing. Please re-enter your card details.', 'ys-helcim-via-fluentcart'), 422);
         }
 
-        // Tamper assertion: if the front end also passes card_token, it must match the verified value.
-        $posted_token = self::postedText('card_token');
-
-        if ($posted_token !== '' && !hash_equals($card_token, $posted_token)) {
-            YSHelcimLogger::error('helcim.js confirm: card_token does not match the verified response — possible tampering', [
-                'transaction_uuid' => $transaction_uuid,
-            ]);
-            $this->respondError(__('The card data verification did not match. Please try again.', 'ys-helcim-via-fluentcart'), 400);
-        }
-
-        // ---- 6. Durable remote-first purchase and exact local aggregate binding ----
+        // ---- 5. Durable remote-first purchase and exact local aggregate binding ----
         $result = $this->purchaseRuntime->executeInline($transaction, $card_token);
         $card_token = '';
         $this->respondPurchaseResult($transaction, $result, false);
@@ -256,6 +257,16 @@ class YSHelcimJsProcessor
             ], 503);
         }
 
+        YSHelcimLogger::info('helcim.js confirm: purchase returned a nonterminal state', [
+            'transaction_uuid' => (string) $transaction->uuid,
+            'status'           => $status,
+            'operation_uuid'   => is_array($result) ? (string) ($result['operation_uuid'] ?? '') : '',
+            'remote_status'    => is_array($result) ? (string) ($result['remote_status'] ?? '') : '',
+            'local_status'     => is_array($result) ? (string) ($result['local_status'] ?? '') : '',
+            'error_code'       => is_array($result) ? (string) ($result['error_code'] ?? '') : '',
+            'replayed'         => is_array($result) ? (bool) ($result['replayed'] ?? false) : false,
+        ]);
+
         wp_send_json([
             'status'        => 'pending',
             'retry_allowed' => false,
@@ -299,104 +310,127 @@ class YSHelcimJsProcessor
     }
 
     /**
-     * Verify the helcim.js response hash (formula ported from the Woo version's YSHelcimJsService::validateResponseHash).
+     * Verify the official Helcim.js xmlHash proof.
      *
-     * Formula: expected = SHA256( response . cardNumber . cardToken . jsSecretKey )
-     * compared with the hash (or xmlHash) in the response using hash_equals.
+     * Helcim's integration canonicalizes the XML by removing whitespace, then
+     * hashes the Secret Key prefix plus the canonical XML. A SimpleXML
+     * reserialization fallback matches the provider's documented integration
+     * behavior when the browser decoded XML entities inside the hidden input.
      *
-     * Difference from the Woo version (the known defect fixed here):
-     * - The Woo version "skips verification and lets it through" (fail-open) when the secret key is unset or the response has no hash.
-     * - This version is always fail-closed: an unset secret key is rejected; a missing hash is rejected; a failed check is rejected.
-     *
-     * @param array  $response_fields The helcim.js response fields.
+     * @param array  $response_fields The allowlisted XML proof envelope.
      * @param string $payment_mode    Mode persisted on the FluentCart transaction.
-     * @return bool True if verification passed.
+     * @return bool True if the keyed XML proof is valid.
      */
     public function validateResponseHash(array $response_fields, string $payment_mode): bool
     {
         $secret_key = $this->settings->getJsSecretKeyForMode($payment_mode);
+        $xml = isset($response_fields['xml']) && is_string($response_fields['xml'])
+            ? $response_fields['xml']
+            : '';
+        $received_hash = isset($response_fields['xmlHash']) && is_string($response_fields['xmlHash'])
+            ? strtolower($response_fields['xmlHash'])
+            : '';
 
-        // fail-closed: reject when the secret key is unset (the Woo version lets it through here, which is a known defect).
-        if ($secret_key === '') {
-            YSHelcimLogger::error('helcim.js: JS Secret Key not set, refusing the confirm request');
+        if (
+            $secret_key === '' ||
+            $xml === '' ||
+            strlen($xml) > self::MAX_RESPONSE_FIELDS_BYTES ||
+            1 !== preg_match('/\A[a-f0-9]{64}\z/', $received_hash) ||
+            stripos($xml, '<!DOCTYPE') !== false
+        ) {
             return false;
         }
 
-        // Response hash field: the helcimProcess callback provides hash; the #helcimResults hidden field is xmlHash.
-        $received_hash = (string) ($response_fields['hash'] ?? $response_fields['xmlHash'] ?? '');
+        $canonical_xml = preg_replace('/\s+/', '', $xml);
+        if (is_string($canonical_xml)) {
+            $expected_hash = hash('sha256', $secret_key . $canonical_xml);
+            if (hash_equals($expected_hash, $received_hash)) {
+                return true;
+            }
+        }
 
-        // fail-closed: reject when there is no hash (the Woo version lets it through here, which is a known defect).
-        if ($received_hash === '') {
-            YSHelcimLogger::error('helcim.js: response has no hash, refusing the confirm request');
+        $xml_object = self::parseResponseXml($xml);
+        if (!$xml_object instanceof \SimpleXMLElement) {
             return false;
         }
 
-        // The Woo version's verified formula: SHA256(response . cardNumber . cardToken . secretKey).
-        $data_string = (string) ($response_fields['response'] ?? '')
-            . (string) ($response_fields['cardNumber'] ?? '')
-            . (string) ($response_fields['cardToken'] ?? '');
+        $serialized = $xml_object->asXML();
+        if (!is_string($serialized)) {
+            return false;
+        }
 
-        $expected_hash = hash('sha256', $data_string . $secret_key);
+        $serialized = str_replace('<?xml version="1.0"?>', '', $serialized);
+        $canonical_xml = preg_replace('/\s+/', '', $serialized);
+        if (!is_string($canonical_xml)) {
+            return false;
+        }
 
-        return hash_equals($expected_hash, $received_hash);
+        return hash_equals(
+            hash('sha256', $secret_key . $canonical_xml),
+            $received_hash
+        );
     }
 
     /**
-     * Read and sanitize the response_fields from the AJAX request.
+     * Read only the XML and xmlHash fields needed for provider authentication.
      *
-     * Supports both delivery formats:
-     * - A form array (response_fields[response]=1&response_fields[cardToken]=...).
-     * - A JSON string (response_fields={"response":1,...}).
+     * The XML must remain byte-for-byte intact until hash verification, so it
+     * is intentionally not passed through sanitize_text_field().
      *
-     * Keeps only the five scalar fields required to verify the SDK response hash.
-     *
-     * @return array The sanitized response fields.
+     * @return array{xml?:string,xmlHash?:string}
      */
     private function readResponseFields(): array
     {
-        if (!isset($_POST['response_fields'])) {
+        if (!isset($_POST['response_fields']) || !is_string($_POST['response_fields'])) {
             return [];
         }
 
-        $raw = wp_unslash($_POST['response_fields']); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- each field is sanitized below.
-
-        if (is_string($raw)) {
-			if (strlen($raw) > self::MAX_RESPONSE_FIELDS_BYTES) {
-				return [];
-			}
-			try {
-				$decoded = json_decode($raw, true, self::MAX_RESPONSE_JSON_DEPTH, JSON_THROW_ON_ERROR);
-			} catch (\JsonException $exception) {
-				unset($exception);
-				$decoded = null;
-			}
-            $raw = is_array($decoded) ? $decoded : [];
-        }
-
-        if (!is_array($raw)) {
+        $raw = wp_unslash($_POST['response_fields']); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- keyed XML is verified before parsing.
+        if (!is_string($raw) || strlen($raw) > self::MAX_RESPONSE_FIELDS_BYTES) {
             return [];
         }
 
-        $limits = [
-            'response'   => 16,
-            'cardNumber' => 64,
-            'cardToken'  => 2048,
-            'hash'       => 128,
-            'xmlHash'    => 128,
+        try {
+            $decoded = json_decode($raw, true, self::MAX_RESPONSE_JSON_DEPTH, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $exception) {
+            unset($exception);
+            return [];
+        }
+
+        if (
+            !is_array($decoded) ||
+            !isset($decoded['xml'], $decoded['xmlHash']) ||
+            !is_string($decoded['xml']) ||
+            !is_string($decoded['xmlHash']) ||
+            $decoded['xml'] === '' ||
+            strlen($decoded['xml']) > self::MAX_RESPONSE_FIELDS_BYTES ||
+            1 !== preg_match('/\A[a-fA-F0-9]{64}\z/', $decoded['xmlHash'])
+        ) {
+            return [];
+        }
+
+        return [
+            'xml' => $decoded['xml'],
+            'xmlHash' => strtolower($decoded['xmlHash']),
         ];
-        $fields = [];
-        foreach ($raw as $key => $value) {
-            if (!is_string($key) || !array_key_exists($key, $limits) || !is_scalar($value)) {
-                continue;
-            }
-            $clean_value = sanitize_text_field((string) $value);
-            if (strlen($clean_value) > $limits[$key]) {
-                continue;
-            }
-            $fields[$key] = $clean_value;
+    }
+
+    /** Parse provider XML without loading external entities or network resources. */
+    private static function parseResponseXml(string $xml): ?\SimpleXMLElement
+    {
+        if ($xml === '' || stripos($xml, '<!DOCTYPE') !== false) {
+            return null;
         }
 
-        return $fields;
+        $previous = libxml_use_internal_errors(true);
+        try {
+            $parsed = simplexml_load_string($xml, \SimpleXMLElement::class, LIBXML_NONET | LIBXML_NOCDATA);
+        } finally {
+            libxml_clear_errors();
+            libxml_use_internal_errors($previous);
+        }
+
+        return $parsed instanceof \SimpleXMLElement ? $parsed : null;
     }
 
     /**

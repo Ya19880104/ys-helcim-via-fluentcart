@@ -203,6 +203,9 @@ final class WebhookModeSettingsTest extends TestCase
             'test_webhook_verifier_token' => 'new-current-mode-verifier',
         ]);
         self::assertSame('success', $complete['status']);
+        self::assertStringContainsString('credential fields are present', $complete['message']);
+        self::assertStringContainsString('browser payment test', $complete['message']);
+        self::assertStringNotContainsString('settings verified', $complete['message']);
     }
 
     public function testInlineEnableValidationCanUseAnExistingCompleteCredentialSetWithoutSecretEcho(): void

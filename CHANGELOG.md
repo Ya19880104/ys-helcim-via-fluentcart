@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0-rc.8] - 2026-07-23
+
+### Fixed
+
+- Revalidate the current FluentCart refund accounting only after a refund operation owns the order scope and before any Helcim mutation. A stale or unavailable balance now fails closed, sends no provider request, records a terminal failed operation, and releases the scope for a fresh administrator retry.
+- Bind the claimed refund to the original order-item quantity snapshot and revalidate it before the provider call. Removed items or reduced refundable quantities can no longer produce a remote refund followed by a stale local stock/accounting failure; large valid orders remain supported, and pre-send RC material v1 can resume only through a fresh server-owned context.
+- Extend bounded purchase recovery to the Inline Helcim.js gateway. Recovery queries exact provider proof by the persisted operation UUID, never resends a purchase, keeps empty or ambiguous outcomes locked, and safely applies exact approvals or declines through the existing purchase coordinator.
+- Make purchase recovery scan, lease, backoff, attention notices, and manual one-shot checks gateway-bound while preserving the Hosted compatibility entry points. Hosted and Inline each receive an independent bounded batch so one gateway cannot starve the other.
+- Permit a capability- and nonce-protected read-only manual lookup for due or unscheduled attention rows, including attempt zero, without stealing an active lease or consuming the automatic retry budget.
+- Require the Inline gateway to prove both the recurring recovery schedule and read-only card-transaction API access before card entry or order creation. Each automatic recovery row now receives a fresh full lease, and its backoff is calculated from the completed lookup time.
+- Accept canonical numeric strings returned by `wpdb` in the new refund freshness gate while rejecting ambiguous, signed, fractional, or out-of-range transaction identifiers.
+- Repair the documented release-builder default source-root path and cover direct Windows PowerShell invocation without an explicit `-SourceRoot`.
+
+### RC gate
+
+- The authorized TEST AISALE account has current Inline, Hosted, signed-webhook, replay, decline, refund, reverse, and WordPress Cron evidence. This remains a pre-release until the rebuilt artifact is deployed and its final post-deploy browser regression and independent review are complete.
+
+## [1.1.0-rc.7] - 2026-07-23
+
+### Fixed
+
+- While either Helcim method is enabled, serialize every fresh FluentCart checkout and every existing-order retry for the same cart before FluentCart can create or rewrite an order transaction. When both Helcim methods are disabled, fresh checkouts owned by another provider remain outside this plugin's scope.
+- Reject payment-method changes once a Helcim transaction or durable purchase attempt exists. Journal-free retries are allowed only for the same gateway when the transaction is pending or failed and has no provider receipt.
+- Treat Helcim's exact `POST payment/purchase` HTTP 400 `Card is not verified` response as a terminal pre-charge validation rejection. Near matches and responses with any contradictory or additional proof remain fail-closed and indeterminate.
+- Add regression coverage for cross-provider retries, concurrent existing-order access, receipt/status inconsistencies, terminal validation replay, and fresh-token successor operations.
+
+### RC gate
+
+- This remains a pre-release until the approved, declined, replay, webhook, and refund/reverse gates pass in the authorized client test environment with its dedicated Developer Test Account credentials.
+
+## [1.1.0-rc.6] - 2026-07-23
+
+### Fixed
+
+- Return the just-created order's billing street and postal code to the same checkout browser as the authoritative Helcim.js AVS source. This fixes normal saved-address checkout, where FluentCart exposes only an address id while its editor input remains empty.
+- Resolve the live FluentCart editor case where duplicate address-field ids caused Helcim.js to read a hidden empty input instead of the populated editor. The browser now uses the latest non-empty editor only when the authoritative order AVS field is unavailable.
+- Require a complete Helcim.js result surface before confirmation so an incomplete success response cannot strand a verified order in pending.
+- Replace the incorrect field-concatenation hash check with Helcim's keyed full-XML `xmlHash` contract. Confirmation now accepts only `xml` plus `xmlHash`, authenticates the envelope before parsing, and extracts the card token exclusively from the verified XML.
+- Document and enforce the Helcim.js configuration requirement to enable **Include XML on Response**.
+- Add PHP and JSDOM regressions for both the normal selected-address flow and the duplicate-id editor structure, verifying the values observed by `helcimProcess()`.
+
+### RC gate
+
+- This remains a pre-release. Promotion still requires the full authorized client test environment approved, declined, refund/reverse, webhook, and replay gates.
+
 ## [1.1.0-rc.2] - 2026-07-23
 
 ### Fixed
@@ -103,7 +148,7 @@ Initial release: adds Helcim credit card payments to FluentCart (1.5.2+).
   - Added webhook reconciliation.
 - **Encrypted secret storage**: API Token / JS Secret Key / Webhook Verifier Token are encrypted with FluentCart's `Helper::encryptKey` before being stored, and decrypted with `decryptKey` on read; corrupt ciphertext is always coerced to an empty string (fail-closed).
 - **Webhook replay protection**: verification includes a ±5-minute timestamp tolerance check and strict base64 decoding; transaction IDs are filtered through a numeric-only allowlist; request bodies larger than 1MB are rejected outright.
-- **helcim.js card token consistency assertion**: charges always use the cardToken from the **hash-verified** response; if the front end sends a different card_token, the request is rejected (anti-tampering).
+- **Helcim.js authenticated token extraction**: the browser sends only the SDK `xml` and `xmlHash` proof envelope. Charges use the card token parsed exclusively from the keyed full-XML proof after it passes constant-time verification; sibling DOM token fields are never accepted as payment proof.
 - Passed internal security review: **0 Critical / 0 High**.
 
 ### Technical Details

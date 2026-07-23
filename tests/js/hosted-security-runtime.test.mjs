@@ -215,6 +215,50 @@ describe('HelcimPay hosted checkout runtime security boundaries', () => {
     }
   });
 
+  it('keeps an aborted decline without signed proof locked while its result is verified', async () => {
+    const counters = {};
+    let confirmCalls = 0;
+    let orderCalls = 0;
+    const window = createCheckout((url) => {
+      if (String(url).includes('/payment-info')) {
+        return Promise.resolve(jsonResponse({ payment_args: {} }));
+      }
+      confirmCalls += 1;
+      return Promise.resolve(jsonResponse({ status: 'success' }));
+    });
+    window.appendHelcimPayIframe = () => {};
+    window.removeHelcimPayIframe = () => {};
+    const checkoutDetail = detail(() => {
+      orderCalls += 1;
+      return Promise.resolve({ payment_data: paymentData });
+    }, counters);
+
+    try {
+      await render(window, checkoutDetail);
+      await begin(window);
+      const aborted = providerMessage(window, 'ABORTED');
+      aborted.data.eventMessage = null;
+      window.dispatchEvent(aborted);
+      await flushPromises();
+
+      const button = window.document.querySelector('.ys-helcim-pay-button');
+      const message = window.document.querySelector('.ys-helcim-error').textContent;
+      expect(confirmCalls).toBe(0);
+      expect(button.disabled).toBe(true);
+      expect(counters.enabled || 0).toBe(0);
+      expect(counters.disabled).toBe(1);
+      expect(message).toMatch(/declined/i);
+      expect(message).toMatch(/being verified/i);
+      expect(message).toMatch(/do not retry/i);
+
+      button.click();
+      await flushPromises();
+      expect(orderCalls).toBe(1);
+    } finally {
+      window.close();
+    }
+  });
+
   it('re-enables checkout after an exact definitive decline response', async () => {
     const counters = {};
     const window = createCheckout((url) => {

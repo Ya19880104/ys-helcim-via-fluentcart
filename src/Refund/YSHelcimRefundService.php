@@ -30,21 +30,42 @@ final class YSHelcimRefundService {
 	/** @var callable */
 	private $clock;
 
+	/** @var callable */
+	private $freshness_loader;
+
 	/**
 	 * @param YSHelcimOperationRepository $operations   Durable operation repository.
 	 * @param callable                    $api_request  Helcim API request callable.
 	 * @param callable                    $uuid_factory Persistent UUID generator for reverse children.
 	 * @param callable|null               $clock        UTC SQL timestamp provider.
+	 * @param callable|null               $freshness_loader Server-owned refund-context loader.
+	 * @param callable|null               $context_loader_factory Factory for the production context loader.
 	 */
 	public function __construct(
 		private YSHelcimOperationRepository $operations,
 		callable $api_request,
 		callable $uuid_factory,
-		?callable $clock = null
+		?callable $clock = null,
+		?callable $freshness_loader = null,
+		?callable $context_loader_factory = null
 	) {
 		$this->api_request  = $api_request;
 		$this->uuid_factory = $uuid_factory;
 		$this->clock        = $clock ?? static fn (): string => gmdate( 'Y-m-d H:i:s' );
+		$context_loader_factory = $context_loader_factory
+			?? static fn (): YSHelcimRefundContextLoader => new YSHelcimRefundContextLoader();
+		$this->freshness_loader = $freshness_loader ?? static function ( array $request, array $row ) use ( $context_loader_factory ) {
+			unset( $request );
+			$transaction_id = self::positiveInteger( $row['transaction_id'] ?? null );
+			if ( null === $transaction_id ) {
+				return self::freshnessUnavailable();
+			}
+
+			$loader = $context_loader_factory();
+			return is_callable( $loader )
+				? $loader( $transaction_id )
+				: self::freshnessUnavailable();
+		};
 	}
 
 	/**
@@ -181,6 +202,20 @@ final class YSHelcimRefundService {
 			return null === $current ? self::operationConflict() : $this->resultFromRow( $current, $refund_uuid );
 		}
 
+		$freshness = $this->validateClaimedFreshness( $row, $request );
+		if ( is_wp_error( $freshness ) ) {
+			return $this->persistResult(
+				$row,
+				new YSHelcimRefundResult(
+					YSHelcimRefundResult::FAILED,
+					null,
+					(string) $freshness->get_error_code(),
+					(string) $freshness->get_error_message()
+				),
+				$refund_uuid
+			);
+		}
+
 		$operation_type = (string) $row['operation_type'];
 		$payload        = 'refund' === $operation_type
 			? array(
@@ -224,6 +259,45 @@ final class YSHelcimRefundService {
 		}
 
 		return $this->persistResult( $row, $result, $refund_uuid );
+	}
+
+	/** Re-read mutable accounting only after this operation owns the order scope. */
+	private function validateClaimedFreshness( array $row, array $request ) {
+		try {
+			$fresh = ( $this->freshness_loader )( $request, $row );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return self::freshnessUnavailable();
+		}
+		if ( is_wp_error( $fresh ) ) {
+			return self::freshnessUnavailable();
+		}
+		if ( ! is_array( $fresh ) ) {
+			return self::freshnessUnavailable();
+		}
+
+		$fresh_vendor_id = self::positiveIntegerString( $fresh['vendor_transaction_id'] ?? null );
+		$fresh_item_quantities = self::normalizeItemQuantities( $fresh['order_item_quantities'] ?? null );
+		if (
+			$request['order_id'] !== ( $fresh['order_id'] ?? null ) ||
+			$request['transaction_id'] !== ( $fresh['transaction_id'] ?? null ) ||
+			$request['transaction_uuid'] !== ( $fresh['transaction_uuid'] ?? null ) ||
+			$request['vendor_transaction_id'] !== $fresh_vendor_id ||
+			$request['gateway'] !== ( $fresh['gateway'] ?? null ) ||
+			'succeeded' !== ( $fresh['status'] ?? null ) ||
+			'charge' !== ( $fresh['transaction_type'] ?? null ) ||
+			$request['transaction_total'] !== ( $fresh['transaction_total'] ?? null ) ||
+			$request['refunded_total'] !== ( $fresh['refunded_total'] ?? null ) ||
+			$request['remaining_refundable'] !== ( $fresh['remaining_refundable'] ?? null ) ||
+			$request['currency'] !== ( $fresh['currency'] ?? null ) ||
+			$request['payment_mode'] !== ( $fresh['payment_mode'] ?? null ) ||
+			$request['order_item_quantities'] !== $fresh_item_quantities ||
+			$request['amount'] > ( $fresh['remaining_refundable'] ?? -1 )
+		) {
+			return self::freshnessStale();
+		}
+
+		return true;
 	}
 
 	/** @return YSHelcimRefundResult|\WP_Error */
@@ -519,7 +593,7 @@ final class YSHelcimRefundService {
 
 	/** Validate mutable freshness and provider context only for a new mutation. */
 	private function validateNewMutation( array $identity, array $request ) {
-		foreach ( array( 'refunded_total', 'remaining_refundable', 'current_mode', 'api_token', 'ip_address' ) as $field ) {
+		foreach ( array( 'refunded_total', 'remaining_refundable', 'order_item_quantities', 'current_mode', 'api_token', 'ip_address' ) as $field ) {
 			if ( ! array_key_exists( $field, $request ) ) {
 				return self::invalidRequest();
 			}
@@ -530,11 +604,20 @@ final class YSHelcimRefundService {
 			}
 		}
 
+		$item_quantities = self::normalizeItemQuantities( $request['order_item_quantities'] );
+		if (
+			null === $item_quantities ||
+			! self::localPayloadMatchesItems( $identity['local_payload'], $item_quantities )
+		) {
+			return self::invalidRequest();
+		}
+
 		$mutation = array_merge(
 			$identity,
 			array(
 				'refunded_total'       => $request['refunded_total'],
 				'remaining_refundable' => $request['remaining_refundable'],
+				'order_item_quantities' => $item_quantities,
 				'current_mode'         => strtolower( trim( (string) $request['current_mode'] ) ),
 				'api_token'            => trim( (string) $request['api_token'] ),
 				'ip_address'           => trim( (string) $request['ip_address'] ),
@@ -561,11 +644,12 @@ final class YSHelcimRefundService {
 	private function encryptMutationContext( array $mutation ): array {
 		$plaintext = wp_json_encode(
 			array(
-				'version'                       => 1,
+				'version'                       => 2,
 				'vendor_transaction_id'         => $mutation['vendor_transaction_id'],
 				'transaction_total'              => $mutation['transaction_total'],
 				'refunded_total'                 => $mutation['refunded_total'],
 				'remaining_refundable'           => $mutation['remaining_refundable'],
+				'order_item_quantities'          => $mutation['order_item_quantities'],
 				'ip_address'                     => $mutation['ip_address'],
 				'credential_fingerprint'         => self::credentialFingerprint( $mutation['api_token'] ),
 			),
@@ -601,14 +685,25 @@ final class YSHelcimRefundService {
 
 		$plaintext = YSHelcimSensitiveEnvelope::decrypt( $envelope );
 		$stored    = is_string( $plaintext ) ? json_decode( $plaintext, true ) : null;
+		$material_version = is_array( $stored ) ? (int) ( $stored['version'] ?? 0 ) : 0;
+		// RC material v1 predates the item snapshot. It may resume only with the
+		// current server-owned context, which is reloaded again after the scope
+		// claim before any provider mutation. Unknown versions fail closed.
+		$item_quantities = 2 === $material_version
+			? self::normalizeItemQuantities( $stored['order_item_quantities'] ?? null )
+			: ( 1 === $material_version
+				? self::normalizeItemQuantities( $request['order_item_quantities'] ?? null )
+				: null );
 		if (
 			! is_array( $stored ) ||
-			1 !== (int) ( $stored['version'] ?? 0 ) ||
+			! in_array( $material_version, array( 1, 2 ), true ) ||
 			! hash_equals( (string) ( $stored['credential_fingerprint'] ?? '' ), self::credentialFingerprint( $api_token ) ) ||
 			$identity['vendor_transaction_id'] !== self::positiveIntegerString( $stored['vendor_transaction_id'] ?? null ) ||
 			$identity['transaction_total'] !== ( $stored['transaction_total'] ?? null ) ||
 			! is_int( $stored['refunded_total'] ?? null ) ||
 			! is_int( $stored['remaining_refundable'] ?? null ) ||
+			null === $item_quantities ||
+			! self::localPayloadMatchesItems( $identity['local_payload'], $item_quantities ) ||
 			! is_string( $stored['ip_address'] ?? null ) ||
 			false === filter_var( $stored['ip_address'], FILTER_VALIDATE_IP )
 		) {
@@ -620,6 +715,7 @@ final class YSHelcimRefundService {
 			array(
 				'refunded_total'       => $stored['refunded_total'],
 				'remaining_refundable' => $stored['remaining_refundable'],
+				'order_item_quantities' => $item_quantities,
 				'api_token'            => $api_token,
 				'ip_address'           => $stored['ip_address'],
 			)
@@ -703,6 +799,56 @@ final class YSHelcimRefundService {
 			: null;
 	}
 
+	/** @return array<int,int>|null */
+	private static function normalizeItemQuantities( mixed $value ): ?array {
+		if ( ! is_array( $value ) || empty( $value ) ) {
+			return null;
+		}
+
+		$normalized = array();
+		foreach ( $value as $item_id => $quantity ) {
+			if (
+				! is_int( $item_id ) ||
+				$item_id <= 0 ||
+				! is_int( $quantity ) ||
+				$quantity <= 0 ||
+				isset( $normalized[ $item_id ] )
+			) {
+				return null;
+			}
+			$normalized[ $item_id ] = $quantity;
+		}
+		ksort( $normalized, SORT_NUMERIC );
+
+		return $normalized;
+	}
+
+	/** @param array<string,mixed> $payload @param array<int,int> $item_quantities */
+	private static function localPayloadMatchesItems( array $payload, array $item_quantities ): bool {
+		foreach ( $payload['item_ids'] ?? array() as $item_id ) {
+			if ( ! isset( $item_quantities[ $item_id ] ) ) {
+				return false;
+			}
+		}
+		foreach ( $payload['refunded_items'] ?? array() as $row ) {
+			if (
+				! is_array( $row ) ||
+				! isset( $row['id'], $row['restore_quantity'] ) ||
+				! isset( $item_quantities[ $row['id'] ] ) ||
+				$row['restore_quantity'] > $item_quantities[ $row['id'] ]
+			) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private static function positiveInteger( mixed $value ): ?int {
+		$normalized = self::positiveIntegerString( $value );
+		return null === $normalized ? null : (int) $normalized;
+	}
+
 	private static function credentialFingerprint( string $api_token ): string {
 		return hash_hmac(
 			'sha256',
@@ -726,6 +872,20 @@ final class YSHelcimRefundService {
 		return new \WP_Error(
 			'ys_helcim_operation_conflict',
 			__( 'The refund operation changed or is already being processed.', 'ys-helcim-via-fluentcart' )
+		);
+	}
+
+	private static function freshnessUnavailable(): \WP_Error {
+		return new \WP_Error(
+			'ys_helcim_refund_freshness_unavailable',
+			(string) self::invalidRequest()->get_error_message()
+		);
+	}
+
+	private static function freshnessStale(): \WP_Error {
+		return new \WP_Error(
+			'ys_helcim_refund_context_stale',
+			(string) self::invalidRequest()->get_error_message()
 		);
 	}
 }

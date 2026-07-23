@@ -344,6 +344,7 @@ class YSHelcimPayGateway extends AbstractPaymentGateway {
 					'order_failed'   => __( 'The order could not be created. Please check your checkout details and try again.', 'ys-helcim-via-fluentcart' ),
 					'sdk_missing'    => __( 'The payment component has not loaded. Please refresh the page and try again.', 'ys-helcim-via-fluentcart' ),
 					'uncertain'      => __( 'The payment window closed before its result could be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.', 'ys-helcim-via-fluentcart' ),
+					'declined_verifying' => __( 'The payment was declined. Its final result is being verified. Do not retry this payment yet.', 'ys-helcim-via-fluentcart' ),
 				),
 			),
 		);

@@ -58,6 +58,7 @@
             confirm_failed: 'We couldn\'t confirm your payment. Please contact the store for help.',
             network_error: 'The payment result could not be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.',
             uncertain: 'The payment window closed before its result could be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.',
+            declined_verifying: 'The payment was declined. Its final result is being verified. Do not retry this payment yet.',
             incomplete_data: 'The payment data was incomplete. Please try again.'
         };
         var translations = (cfg && cfg.translations) || {};
@@ -375,7 +376,7 @@
                     confirmPayment(detail, paymentData, aborted.txData, aborted.hash);
                     return;
                 }
-                lockUi(detail, t('uncertain'));
+                lockUi(detail, t('declined_verifying'));
                 return;
             }
 

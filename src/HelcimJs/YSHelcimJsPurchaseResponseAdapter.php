@@ -134,6 +134,20 @@ final class YSHelcimJsPurchaseResponseAdapter {
 			return $disposition;
 		}
 
+		$exact_validation_error = array(
+			'verification' => 'Card is not verified',
+		);
+		if (
+			YSHelcimApiClient::MUTATION_VALIDATION_REJECTED === $disposition
+			&& 'ys_helcim_api_error' === $error->get_error_code()
+			&& 'provider' === ( $data['kind'] ?? null )
+			&& 400 === ( $data['http_code'] ?? null )
+			&& $exact_validation_error === ( $data['provider_errors'] ?? null )
+			&& array( 'errors' => $exact_validation_error ) === ( $data['provider_response'] ?? null )
+		) {
+			return $disposition;
+		}
+
 		return null;
 	}
 

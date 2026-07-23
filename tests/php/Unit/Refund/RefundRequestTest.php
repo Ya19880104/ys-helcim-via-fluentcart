@@ -54,6 +54,7 @@ final class RefundRequestTest extends TestCase
         self::assertSame(2100, $result['remaining_refundable']);
         self::assertSame('USD', $result['currency']);
         self::assertSame('test', $result['payment_mode']);
+        self::assertSame([101 => 2, 102 => 1], $result['order_item_quantities']);
         self::assertSame('test', $result['current_mode']);
         self::assertSame('server-only-token', $result['api_token']);
         self::assertSame('203.0.113.9', $result['ip_address']);
@@ -124,6 +125,7 @@ final class RefundRequestTest extends TestCase
             'transaction total' => ['transaction_total', 2100],
             'refunded total' => ['refunded_total', 0],
             'remaining amount' => ['remaining_refundable', 2100],
+            'order item quantities' => ['order_item_quantities', [101 => 2]],
             'payment mode' => ['payment_mode', 'test'],
             'current mode' => ['current_mode', 'test'],
             'API token' => ['api_token', 'client-token'],

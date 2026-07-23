@@ -338,9 +338,13 @@ final class YSHelcimPurchaseCoordinator {
 
 		$failure_disposition = self::strictTerminalFailureDisposition( $provider_outcome );
 		if ( null !== $failure_disposition ) {
-			$error_code = 'authentication_rejected' === $failure_disposition
-				? 'provider_authentication_rejected'
-				: 'purchase_never_sent';
+			if ( 'authentication_rejected' === $failure_disposition ) {
+				$error_code = 'provider_authentication_rejected';
+			} elseif ( 'validation_rejected' === $failure_disposition ) {
+				$error_code = 'provider_validation_rejected';
+			} else {
+				$error_code = 'purchase_never_sent';
+			}
 			$persisted = $this->operations->transitionRemote(
 				(string) $row['operation_uuid'],
 				YSHelcimOperationState::REMOTE_PROCESSING,
@@ -780,7 +784,7 @@ final class YSHelcimPurchaseCoordinator {
 			true !== ( $outcome['definitive'] ?? null ) ||
 			! in_array(
 				$outcome['mutation_disposition'] ?? null,
-				array( 'never_sent', 'authentication_rejected' ),
+				array( 'never_sent', 'authentication_rejected', 'validation_rejected' ),
 				true
 			)
 		) {

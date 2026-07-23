@@ -101,6 +101,7 @@ final class ProcessorCoordinatorTest extends TestCase
         self::assertFalse($first->payload['retry_allowed']);
         self::assertSame('pending', $second->payload['status']);
         self::assertSame(1, $apiCalls);
+        self::assertCount(1, $this->repository->findPurchasesByIdentity(20));
         self::assertSame(Status::TRANSACTION_PENDING, OrderTransaction::allRecords()[20]['status']);
     }
 
@@ -148,7 +149,7 @@ final class ProcessorCoordinatorTest extends TestCase
         self::assertNull(OrderTransaction::allRecords()[20]['vendor_charge_id']);
     }
 
-    public function testPendingTransactionWithInvalidNonceCannotReachHashValidationOrProvider(): void
+    public function testPendingTransactionWithInvalidNonceCannotReachProvider(): void
     {
         $apiCalls = 0;
         $processor = new YSHelcimJsProcessor(
@@ -215,6 +216,7 @@ final class ProcessorCoordinatorTest extends TestCase
     {
         yield 'nonce' => ['nonce', 403];
         yield 'transaction UUID' => ['transaction_uuid', 422];
+        yield 'response fields' => ['response_fields', 400];
     }
 
     public function testAuthenticatedSdkFailureResponseCannotReachTheProvider(): void
@@ -227,12 +229,7 @@ final class ProcessorCoordinatorTest extends TestCase
                 return self::approved();
             })
         );
-        $this->postVerifiedConfirm('failure-card-token');
-        $_POST['response_fields']['response'] = '0';
-        $_POST['response_fields']['hash'] = hash(
-            'sha256',
-            '0' . $_POST['response_fields']['cardNumber'] . $_POST['response_fields']['cardToken'] . 'js-secret'
-        );
+        $this->postVerifiedConfirm('failure-card-token', '0');
 
         $response = $this->invoke($processor);
 
@@ -242,7 +239,7 @@ final class ProcessorCoordinatorTest extends TestCase
         self::assertCount(0, $this->repository->findPurchasesByIdentity(20));
     }
 
-    public function testResponseHashUsesTheTransactionsStoredModeAfterStoreModeSwitch(): void
+    public function testResponseXmlHashUsesTheTransactionsStoredModeAfterStoreModeSwitch(): void
     {
         BaseGatewaySettings::$settingsByClass[YSHelcimJsSettings::class]['live_js_secret_key'] = 'enc:wrong-live-secret';
         StoreSettings::$orderMode = 'live';
@@ -261,6 +258,47 @@ final class ProcessorCoordinatorTest extends TestCase
         self::assertSame(200, $response->statusCode);
         self::assertSame('success', $response->payload['status']);
         self::assertSame(1, $apiCalls);
+    }
+
+    public function testMalformedAuthenticatedXmlCardTokenCannotReachTheProvider(): void
+    {
+        $apiCalls = 0;
+        $processor = new YSHelcimJsProcessor(
+            $this->settings,
+            $this->runtime(static function () use (&$apiCalls): array {
+                ++$apiCalls;
+                return self::approved();
+            })
+        );
+        $this->postVerifiedConfirm('short');
+
+        $response = $this->invoke($processor);
+
+        self::assertSame(422, $response->statusCode);
+        self::assertSame('failed', $response->payload['status']);
+        self::assertSame(0, $apiCalls);
+    }
+
+    public function testInvalidXmlHashCannotReachTheProvider(): void
+    {
+        $apiCalls = 0;
+        $processor = new YSHelcimJsProcessor(
+            $this->settings,
+            $this->runtime(static function () use (&$apiCalls): array {
+                ++$apiCalls;
+                return self::approved();
+            })
+        );
+        $this->postVerifiedConfirm('verified-card-token');
+        $proof = json_decode((string) $_POST['response_fields'], true, 16, JSON_THROW_ON_ERROR);
+        $proof['xmlHash'] = str_repeat('0', 64);
+        $_POST['response_fields'] = json_encode($proof, JSON_THROW_ON_ERROR);
+
+        $response = $this->invoke($processor);
+
+        self::assertSame(400, $response->statusCode);
+        self::assertSame('failed', $response->payload['status']);
+        self::assertSame(0, $apiCalls);
     }
 
     public function testAlreadySucceededNeedsExactProviderIdButDoesNotNeedCardTokenOrHash(): void
@@ -300,22 +338,18 @@ final class ProcessorCoordinatorTest extends TestCase
         self::assertSame(0, $apiCalls);
     }
 
-    public function testResponseFieldReaderKeepsOnlyTheMinimumHashProofEnvelope(): void
+    public function testResponseFieldReaderKeepsOnlyTheOfficialXmlProofEnvelope(): void
     {
         $processor = new YSHelcimJsProcessor(
             $this->settings,
             $this->runtime(static fn (): array => self::approved())
         );
         $_POST['response_fields'] = json_encode([
+            'xml' => '<message><response>1</response></message>',
+            'xmlHash' => str_repeat('b', 64),
             'response' => '1',
             'cardNumber' => '5454****5454',
             'cardToken' => 'ephemeral-card-token',
-            'hash' => str_repeat('a', 64),
-            'xmlHash' => str_repeat('b', 64),
-            'responseMessage' => 'approved',
-            'cardHolderName' => 'Private Person',
-            'cardExpiry' => '0128',
-            'xml' => '<payment>private</payment>',
             'cardCVV' => '100',
         ], JSON_THROW_ON_ERROR);
 
@@ -323,10 +357,7 @@ final class ProcessorCoordinatorTest extends TestCase
         $fields = $reader->invoke($processor);
 
         self::assertSame([
-            'response' => '1',
-            'cardNumber' => '5454****5454',
-            'cardToken' => 'ephemeral-card-token',
-            'hash' => str_repeat('a', 64),
+            'xml' => '<message><response>1</response></message>',
             'xmlHash' => str_repeat('b', 64),
         ], $fields);
     }
@@ -338,11 +369,8 @@ final class ProcessorCoordinatorTest extends TestCase
             $this->runtime(static fn (): array => self::approved())
         );
         $_POST['response_fields'] = json_encode([
-            'response' => '1',
-            'cardNumber' => '5454****5454',
-            'cardToken' => 'ephemeral-card-token',
-            'hash' => str_repeat('a', 64),
-            'padding' => str_repeat('x', 70000),
+            'xml' => '<message>' . str_repeat('x', 70000) . '</message>',
+            'xmlHash' => str_repeat('b', 64),
         ], JSON_THROW_ON_ERROR);
 
         $reader = new \ReflectionMethod($processor, 'readResponseFields');
@@ -395,21 +423,22 @@ final class ProcessorCoordinatorTest extends TestCase
         );
     }
 
-    private function postVerifiedConfirm(string $cardToken): void
+    private function postVerifiedConfirm(string $cardToken, string $response = '1'): void
     {
-        $response = '1';
-        $cardNumber = '5454****5454';
+        $xml = '<message>'
+            . '<response>' . $response . '</response>'
+            . '<responseMessage>' . ($response === '1' ? 'APPROVED' : 'DECLINED') . '</responseMessage>'
+            . '<type>verify</type>'
+            . '<cardToken>' . $cardToken . '</cardToken>'
+            . '</message>';
         $_POST = [
             'transaction_uuid' => 'fc-transaction-123',
             'nonce' => 'nonce-ys_helcim_fct_confirm_js',
             'confirm_token' => (new YSHelcimPurchaseConfirmationToken())->issue('fc-transaction-123', 20),
-            'card_token' => $cardToken,
-            'response_fields' => [
-                'response' => $response,
-                'cardNumber' => $cardNumber,
-                'cardToken' => $cardToken,
-                'hash' => hash('sha256', $response . $cardNumber . $cardToken . 'js-secret'),
-            ],
+            'response_fields' => json_encode([
+                'xml' => $xml,
+                'xmlHash' => hash('sha256', 'js-secret' . preg_replace('/\s+/', '', $xml)),
+            ], JSON_THROW_ON_ERROR),
         ];
     }
 

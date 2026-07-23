@@ -68,6 +68,108 @@ final class ApiClientFailureClassificationTest extends TestCase
         self::assertCount(1, \YSHelcimWpDouble::$requests);
     }
 
+    public function testExactPurchaseCardVerificationRejectionIsProvenNotCharged(): void
+    {
+        \YSHelcimWpDouble::$response = [
+            'response' => ['code' => 400],
+            'body' => '{"errors":{"verification":"Card is not verified"}}',
+        ];
+
+        $result = YSHelcimApiClient::request(
+            'payment/purchase',
+            [],
+            'test-api-token',
+            'ysh-' . str_repeat('a', 32)
+        );
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('provider', $result->get_error_data()['kind']);
+        self::assertSame(400, $result->get_error_data()['http_code']);
+        self::assertFalse($result->get_error_data()['indeterminate']);
+        self::assertSame('validation_rejected', $result->get_error_data()['mutation_disposition']);
+        self::assertSame(
+            ['verification' => 'Card is not verified'],
+            $result->get_error_data()['provider_errors']
+        );
+        self::assertSame(
+            ['errors' => ['verification' => 'Card is not verified']],
+            $result->get_error_data()['provider_response']
+        );
+        self::assertCount(1, \YSHelcimWpDouble::$requests);
+    }
+
+    /** @dataProvider nearMatchCardVerificationRejections */
+    public function testNearMatchCardVerificationResponsesRemainOutcomeUnknown(
+        string $endpoint,
+        int $httpCode,
+        string $method,
+        string $body
+    ): void {
+        \YSHelcimWpDouble::$response = [
+            'response' => ['code' => $httpCode],
+            'body' => $body,
+        ];
+
+        $result = YSHelcimApiClient::request(
+            $endpoint,
+            [],
+            'test-api-token',
+            'ysh-' . str_repeat('a', 32),
+            $method
+        );
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('outcome_unknown', $result->get_error_data()['mutation_disposition']);
+        self::assertArrayNotHasKey('provider_response', $result->get_error_data());
+    }
+
+    /** @return iterable<string,array{string,int,string,string}> */
+    public static function nearMatchCardVerificationRejections(): iterable
+    {
+        yield 'wrong mutation endpoint' => [
+            'payment/refund',
+            400,
+            'POST',
+            '{"errors":{"verification":"Card is not verified"}}',
+        ];
+        yield 'wrong method' => [
+            'payment/purchase',
+            400,
+            'PUT',
+            '{"errors":{"verification":"Card is not verified"}}',
+        ];
+        yield 'wrong HTTP status' => [
+            'payment/purchase',
+            422,
+            'POST',
+            '{"errors":{"verification":"Card is not verified"}}',
+        ];
+        yield 'message is only a near match' => [
+            'payment/purchase',
+            400,
+            'POST',
+            '{"errors":{"verification":"Card is not verified."}}',
+        ];
+        yield 'extra provider error' => [
+            'payment/purchase',
+            400,
+            'POST',
+            '{"errors":{"verification":"Card is not verified","other":"Rejected"}}',
+        ];
+        yield 'contradictory transaction proof' => [
+            'payment/purchase',
+            400,
+            'POST',
+            '{"errors":{"verification":"Card is not verified"},"transactionId":51177123}',
+        ];
+        yield 'contradictory success proof' => [
+            'payment/purchase',
+            400,
+            'POST',
+            '{"errors":{"verification":"Card is not verified"},"status":"APPROVED"}',
+        ];
+    }
+
     /** @dataProvider nonAllowlistedClientErrorProvider */
     public function testOtherClientErrorsDoNotClaimTheMutationWasRejected(int $httpCode): void
     {

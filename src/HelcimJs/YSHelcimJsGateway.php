@@ -22,9 +22,11 @@ use FluentCart\Api\CurrencySettings;
 use FluentCart\Api\StoreSettings;
 use FluentCart\App\Modules\PaymentMethods\Core\AbstractPaymentGateway;
 use FluentCart\App\Services\Payments\PaymentInstance;
+use YangSheep\Helcim\FluentCart\HelcimPay\YSHelcimPayRecoveryCapability;
 use YangSheep\Helcim\FluentCart\Settings\YSHelcimSecretStorage;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimLogger;
 use YangSheep\Helcim\FluentCart\Webhook\YSHelcimWebhookDeliveryUrl;
+use YangSheep\Helcim\FluentCart\YSHelcimFctBootstrap;
 
 if (!defined('ABSPATH')) {
     exit;
@@ -185,6 +187,15 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
                 __('The Helcim credentials are incomplete. Please contact the site administrator.', 'ys-helcim-via-fluentcart')
             );
         }
+        if (!$this->hasDurableRecoverySchedule()) {
+            YSHelcimLogger::error('helcim.js: durable purchase recovery schedule is unavailable');
+            return $this->recoveryUnavailableError();
+        }
+        $recoveryAccess = $this->verifyRecoveryApiAccess();
+        if (is_wp_error($recoveryAccess)) {
+            YSHelcimLogger::error('helcim.js: card-transaction recovery permission is unavailable');
+            return $recoveryAccess;
+        }
 
         $confirmToken = (new YSHelcimPurchaseConfirmationToken())->issue(
             (string) $transaction->uuid,
@@ -193,6 +204,14 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
         if (is_wp_error($confirmToken)) {
             return $confirmToken;
         }
+
+        $billingAddress = $order->billing_address ?? null;
+        $cardholderAddress = is_object($billingAddress)
+            ? trim((string) ($billingAddress->address_1 ?? ''))
+            : '';
+        $cardholderPostalCode = is_object($billingAddress)
+            ? trim((string) ($billingAddress->postcode ?? ''))
+            : '';
 
         // The envelope matches ys_helcim (already E2E verified): it omits custom_payment_url —
         // that key would make FluentCart redirect to its built-in custom checkout page, so orderHandler()'s
@@ -208,6 +227,8 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
                 'confirm_nonce'    => wp_create_nonce('ys_helcim_fct_confirm_js'),
                 'confirm_token'    => $confirmToken,
                 'js_token'         => $this->settings->getJsToken(),
+                'cardholder_address' => $cardholderAddress,
+                'cardholder_postal_code' => $cardholderPostalCode,
             ],
         ];
     }
@@ -237,6 +258,20 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
             wp_send_json([
                 'status'  => 'failed',
                 'message' => __('The Helcim payment method is not fully configured. Please contact the site administrator.', 'ys-helcim-via-fluentcart'),
+            ], 503);
+        }
+        if (!$this->hasDurableRecoverySchedule()) {
+            $error = $this->recoveryUnavailableError();
+            wp_send_json([
+                'status'  => 'failed',
+                'message' => $error->get_error_message(),
+            ], 503);
+        }
+        $recoveryAccess = $this->verifyRecoveryApiAccess();
+        if (is_wp_error($recoveryAccess)) {
+            wp_send_json([
+                'status'  => 'failed',
+                'message' => $recoveryAccess->get_error_message(),
             ], 503);
         }
 
@@ -344,7 +379,11 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
             . '<div class="mt-5"><p>'
             . esc_html__('Helcim has no separate sandbox environment: to test, request a "developer test account" from Helcim and enter that credential set on the Test tab, using the official test card numbers.', 'ys-helcim-via-fluentcart')
             . '</p><p>'
-            . esc_html__('Only USD / CAD are supported. The Helcim.js Configuration must be created as a Verify type in your Helcim dashboard (tokenization only; the charge is executed server-side).', 'ys-helcim-via-fluentcart')
+            . esc_html__('Only USD / CAD are supported. The Helcim.js Configuration must be Active and created as Card Verify with "Include XML on Response" enabled (tokenization only; the charge is executed server-side).', 'ys-helcim-via-fluentcart')
+            . '</p><p>'
+            . esc_html__('For a Developer Test Account, add this checkout site\'s exact HTTPS origin under Website URLs. Legacy Helcim.js Test Mode must stay off, and the checkout form must not send test=1.', 'ys-helcim-via-fluentcart')
+            . '</p><p>'
+            . esc_html__('The matching API Access token must grant Transaction Processing Admin so the server can purchase, refund, and reverse test transactions.', 'ys-helcim-via-fluentcart')
             . '</p></div>';
 
         $webhook_html = is_wp_error($webhook_url)
@@ -371,7 +410,7 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
                 'value'       => '',
                 'label'       => __('Test Helcim.js Token', 'ys-helcim-via-fluentcart'),
                 'type'        => 'text',
-                'placeholder' => __('The Helcim.js Configuration Token (Verify type)', 'ys-helcim-via-fluentcart'),
+                'placeholder' => __('The Helcim.js Configuration Token (Verify type, Include XML enabled)', 'ys-helcim-via-fluentcart'),
                 'dependency'  => [
                     'depends_on' => 'payment_mode',
                     'operator'   => '=',
@@ -418,7 +457,7 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
                 'value'       => '',
                 'label'       => __('Live Helcim.js Token', 'ys-helcim-via-fluentcart'),
                 'type'        => 'text',
-                'placeholder' => __('The Helcim.js Configuration Token (Verify type)', 'ys-helcim-via-fluentcart'),
+                'placeholder' => __('The Helcim.js Configuration Token (Verify type, Include XML enabled)', 'ys-helcim-via-fluentcart'),
                 'dependency'  => [
                     'depends_on' => 'payment_mode',
                     'operator'   => '=',
@@ -565,7 +604,7 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
 
         return [
             'status'  => 'success',
-            'message' => __('Helcim.js settings verified.', 'ys-helcim-via-fluentcart'),
+            'message' => __('Helcim.js credential fields are present. Complete a browser payment test to verify the Helcim.js Configuration, Website URLs, and paired Secret Key.', 'ys-helcim-via-fluentcart'),
         ];
     }
 
@@ -679,6 +718,26 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
     {
         return '' !== trim($this->settings->getApiToken())
             && '' !== trim($this->settings->getWebhookVerifierToken());
+    }
+
+    /** Inline checkout must never start without its durable lost-response worker. */
+    protected function hasDurableRecoverySchedule(): bool
+    {
+        return YSHelcimFctBootstrap::init()->ensureHostedPurchaseReconciliation();
+    }
+
+    /** @return true|\WP_Error */
+    protected function verifyRecoveryApiAccess()
+    {
+        return (new YSHelcimPayRecoveryCapability())->verify($this->settings);
+    }
+
+    private function recoveryUnavailableError(): \WP_Error
+    {
+        return new \WP_Error(
+            'ys_helcim_js_recovery_unavailable',
+            __('Inline payment recovery is unavailable. Please contact the site administrator.', 'ys-helcim-via-fluentcart')
+        );
     }
 
 }

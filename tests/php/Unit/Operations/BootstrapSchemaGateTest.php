@@ -681,6 +681,209 @@ final class BootstrapSchemaGateTest extends TestCase
 		self::assertSame(['recover', '00000000-0000-4000-8000-000000000002'], $events[5]);
     }
 
+	public function testPurchaseRecoverySweepGivesHostedAndInlineIndependentBoundedBatches(): void
+	{
+		$events = [];
+		$operations = new class($events) {
+			public function __construct(private array &$events) {}
+			public function findPurchasesNeedingRecovery(
+				string $gateway,
+				string $cutoff,
+				string $dueBefore,
+				string $localClaimedBefore,
+				int $maxAttempts,
+				int $limit
+			): array {
+				$this->events[] = ['scan', $gateway, $cutoff, $dueBefore, $localClaimedBefore, $maxAttempts, $limit];
+				$suffixes = $gateway === 'ys_helcim' ? ['11', '12'] : ['21', '22'];
+				return array_map(
+					static fn (string $suffix): array => [
+						'operation_uuid' => '00000000-0000-4000-8000-0000000000' . $suffix,
+					],
+					$suffixes
+				);
+			}
+			public function claimPurchaseRecovery(
+				string $uuid,
+				string $gateway,
+				string $dueBefore,
+				string $localClaimedBefore,
+				string $leaseUntil,
+				int $maxAttempts
+			): bool {
+				$this->events[] = ['claim', $gateway, $uuid, $dueBefore, $localClaimedBefore, $leaseUntil, $maxAttempts];
+				return true;
+			}
+			public function findByUuidStrict(string $uuid): array
+			{
+				return [
+					'operation_uuid' => $uuid,
+					'remote_status' => 'indeterminate',
+					'local_status' => 'pending',
+					'active_scope_key' => 'purchase:test',
+					'recovery_attempt_count' => 1,
+				];
+			}
+			public function deferPurchaseRecovery(
+				string $uuid,
+				string $gateway,
+				int $attempt,
+				string $expectedLease,
+				?string $nextDue,
+				string $code,
+				string $message
+			): bool {
+				$this->events[] = ['defer', $gateway, $uuid, $attempt, $expectedLease, $nextDue, $code, $message];
+				return true;
+			}
+		};
+		$hostedService = new class($events) {
+			public function __construct(private array &$events) {}
+			public function recover(string $uuid): array
+			{
+				$this->events[] = ['recover', 'ys_helcim', $uuid];
+				return ['status' => 'pending', 'reason' => 'unresolved'];
+			}
+		};
+		$inlineService = new class($events) {
+			public function __construct(private array &$events) {}
+			public function recover(string $uuid): array
+			{
+				$this->events[] = ['recover', 'ys_helcim_js', $uuid];
+				return ['status' => 'pending', 'reason' => 'unresolved'];
+			}
+		};
+		$bootstrap = YSHelcimFctBootstrap::init();
+		(new \ReflectionProperty($bootstrap, 'hosted_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => $hostedService]
+		);
+		(new \ReflectionProperty($bootstrap, 'inline_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => $inlineService]
+		);
+
+		$bootstrap->reconcileHostedPurchases();
+
+		$scans = array_values(array_filter($events, static fn (array $event): bool => $event[0] === 'scan'));
+		self::assertSame(['ys_helcim', 'ys_helcim_js'], array_column($scans, 1));
+		self::assertSame([2, 2], array_column($scans, 6));
+		$recoveries = array_values(array_filter($events, static fn (array $event): bool => $event[0] === 'recover'));
+		self::assertSame(
+			[
+				['recover', 'ys_helcim', '00000000-0000-4000-8000-000000000011'],
+				['recover', 'ys_helcim', '00000000-0000-4000-8000-000000000012'],
+				['recover', 'ys_helcim_js', '00000000-0000-4000-8000-000000000021'],
+				['recover', 'ys_helcim_js', '00000000-0000-4000-8000-000000000022'],
+			],
+			$recoveries
+		);
+	}
+
+	public function testEachPurchaseRecoveryGetsAFreshLeaseAndPostLookupBackoffClock(): void
+	{
+		$events = [];
+		$base = 1784678400;
+		$times = [
+			$base,
+			$base + 30,
+			$base + 90,
+			$base + 100,
+			$base + 130,
+			$base + 190,
+		];
+		$operations = new class($events) {
+			public function __construct(private array &$events) {}
+			public function findPurchasesNeedingRecovery(
+				string $gateway,
+				string $cutoff,
+				string $dueBefore,
+				string $localClaimedBefore,
+				int $maxAttempts,
+				int $limit
+			): array {
+				$this->events[] = ['scan', $gateway, $cutoff, $dueBefore, $localClaimedBefore, $maxAttempts, $limit];
+				$suffix = 'ys_helcim' === $gateway ? '31' : '32';
+				return [[
+					'operation_uuid' => '00000000-0000-4000-8000-0000000000' . $suffix,
+				]];
+			}
+			public function claimPurchaseRecovery(
+				string $uuid,
+				string $gateway,
+				string $dueBefore,
+				string $localClaimedBefore,
+				string $leaseUntil,
+				int $maxAttempts
+			): bool {
+				$this->events[] = ['claim', $gateway, $uuid, $dueBefore, $localClaimedBefore, $leaseUntil, $maxAttempts];
+				return true;
+			}
+			public function findByUuidStrict(string $uuid): array
+			{
+				return [
+					'operation_uuid' => $uuid,
+					'remote_status' => 'indeterminate',
+					'local_status' => 'pending',
+					'active_scope_key' => 'purchase:test',
+					'recovery_attempt_count' => 1,
+				];
+			}
+			public function deferPurchaseRecovery(
+				string $uuid,
+				string $gateway,
+				int $attempt,
+				string $expectedLease,
+				?string $nextDue,
+				string $code,
+				string $message
+			): bool {
+				$this->events[] = ['defer', $gateway, $uuid, $attempt, $expectedLease, $nextDue, $code, $message];
+				return true;
+			}
+		};
+		$service = new class($events) {
+			public function __construct(private array &$events) {}
+			public function recover(string $uuid): array
+			{
+				$this->events[] = ['recover', $uuid];
+				return ['status' => 'pending', 'reason' => 'unresolved'];
+			}
+		};
+		$bootstrap = YSHelcimFctBootstrap::init();
+		(new \ReflectionProperty($bootstrap, 'hosted_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => $service]
+		);
+		(new \ReflectionProperty($bootstrap, 'inline_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => $service]
+		);
+		(new \ReflectionProperty($bootstrap, 'recovery_clock'))->setValue(
+			$bootstrap,
+			static function () use (&$times): int {
+				$now = array_shift($times);
+				TestCase::assertIsInt($now, 'The recovery loop used an unexpected stale clock read.');
+				return $now;
+			}
+		);
+
+		$bootstrap->reconcileHostedPurchases();
+
+		$claims = array_values(array_filter($events, static fn (array $event): bool => 'claim' === $event[0]));
+		self::assertSame(gmdate('Y-m-d H:i:s', $base + 30), $claims[0][3]);
+		self::assertSame(gmdate('Y-m-d H:i:s', $base + 30 + 120), $claims[0][5]);
+		self::assertSame(gmdate('Y-m-d H:i:s', $base + 130), $claims[1][3]);
+		self::assertSame(gmdate('Y-m-d H:i:s', $base + 130 + 120), $claims[1][5]);
+
+		$defers = array_values(array_filter($events, static fn (array $event): bool => 'defer' === $event[0]));
+		self::assertSame($claims[0][5], $defers[0][4]);
+		self::assertSame(gmdate('Y-m-d H:i:s', $base + 90 + 300), $defers[0][5]);
+		self::assertSame($claims[1][5], $defers[1][4]);
+		self::assertSame(gmdate('Y-m-d H:i:s', $base + 190 + 300), $defers[1][5]);
+		self::assertSame([], $times);
+	}
+
 	public function testHostedAttentionNoticeShowsOnlyOperationalIdentifiersAndManualOneShotAction(): void
 	{
 		$operationUuid = '00000000-0000-4000-8000-000000000901';
@@ -736,6 +939,95 @@ final class BootstrapSchemaGateTest extends TestCase
 		self::assertStringNotContainsString('secret', strtolower($html));
 	}
 
+	public function testPurchaseAttentionNoticeListsExactGatewayAndMethodWithoutSecrets(): void
+	{
+		$operations = new class {
+			public function findPurchasesNeedingAttention(string $gateway, int $limit, int $maxAttempts): array
+			{
+				TestCase::assertSame(10, $limit);
+				TestCase::assertSame(7, $maxAttempts);
+				$suffix = $gateway === 'ys_helcim' ? '911' : '912';
+				return [[
+					'operation_uuid' => '00000000-0000-4000-8000-000000000' . $suffix,
+					'gateway' => $gateway,
+					'order_id' => $gateway === 'ys_helcim' ? 101 : 102,
+					'transaction_id' => $gateway === 'ys_helcim' ? 201 : 202,
+					'remote_status' => 'indeterminate',
+					'local_status' => 'pending',
+					'recovery_attempt_count' => 7,
+					'next_recovery_at' => null,
+					'updated_at' => '2026-07-21 00:00:00',
+				]];
+			}
+		};
+		$bootstrap = YSHelcimFctBootstrap::init();
+		(new \ReflectionProperty($bootstrap, 'hosted_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => new \stdClass()]
+		);
+		(new \ReflectionProperty($bootstrap, 'inline_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => new \stdClass()]
+		);
+
+		ob_start();
+		$bootstrap->renderHostedPurchaseAttentionNotice();
+		$html = (string) ob_get_clean();
+
+		self::assertStringContainsString('Hosted modal (ys_helcim)', $html);
+		self::assertStringContainsString('Inline form (ys_helcim_js)', $html);
+		self::assertStringContainsString('Order 101 / transaction 201', $html);
+		self::assertStringContainsString('Order 102 / transaction 202', $html);
+		self::assertStringNotContainsString('api-token', $html);
+		self::assertStringNotContainsString('secret', strtolower($html));
+	}
+
+	public function testUnscheduledAttentionNoticeOffersManualCheckBeforeCronRuns(): void
+	{
+		$operationUuid = '00000000-0000-4000-8000-000000000914';
+		$operations = new class($operationUuid) {
+			public function __construct(private string $uuid) {}
+			public function findPurchasesNeedingAttention(string $gateway, int $limit, int $maxAttempts): array
+			{
+				if ('ys_helcim_js' !== $gateway) {
+					return [];
+				}
+				return [[
+					'operation_uuid' => $this->uuid,
+					'gateway' => $gateway,
+					'order_id' => 114,
+					'transaction_id' => 214,
+					'remote_status' => 'indeterminate',
+					'local_status' => 'pending',
+					'recovery_attempt_count' => 0,
+					'next_recovery_at' => null,
+					'updated_at' => '2026-07-21 00:00:00',
+				]];
+			}
+		};
+		$bootstrap = YSHelcimFctBootstrap::init();
+		(new \ReflectionProperty($bootstrap, 'hosted_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => new \stdClass()]
+		);
+		(new \ReflectionProperty($bootstrap, 'inline_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => new \stdClass()]
+		);
+
+		ob_start();
+		$bootstrap->renderHostedPurchaseAttentionNotice();
+		$html = (string) ob_get_clean();
+
+		self::assertStringContainsString($operationUuid, $html);
+		self::assertStringContainsString('next check is pending scheduling', $html);
+		self::assertStringContainsString('Check Helcim once', $html);
+		self::assertStringContainsString(
+			'ys_helcim_retry_purchase_ys_helcim_js_' . $operationUuid,
+			$html
+		);
+	}
+
 	public function testManualHostedRecoveryUsesPausedLeaseAndReturnsToPausedWhenStillUnresolved(): void
 	{
 		$events = [];
@@ -783,6 +1075,194 @@ final class BootstrapSchemaGateTest extends TestCase
 		self::assertSame('defer', $events[2][0]);
 		self::assertNull($events[2][4]);
 		self::assertSame('ys_helcim_hosted_recovery_attention_required', $events[2][5]);
+	}
+
+	public function testManualInlineRecoveryUsesGatewayBoundPausedLeaseAndReturnsToAttention(): void
+	{
+		$events = [];
+		$operationUuid = '00000000-0000-4000-8000-000000000913';
+		$operations = new class($events) {
+			public function __construct(private array &$events) {}
+			public function claimPausedPurchaseRecovery(
+				string $uuid,
+				string $gateway,
+				string $due,
+				string $stale,
+				string $lease,
+				int $max
+			): bool {
+				$this->events[] = ['claim', $gateway, $uuid, $due, $stale, $lease, $max];
+				return true;
+			}
+			public function findByUuidStrict(string $uuid): array
+			{
+				return [
+					'operation_uuid' => $uuid,
+					'gateway' => 'ys_helcim_js',
+					'active_scope_key' => 'purchase:paused',
+					'recovery_attempt_count' => 7,
+				];
+			}
+			public function deferPurchaseRecovery(
+				string $uuid,
+				string $gateway,
+				int $attempt,
+				string $lease,
+				?string $next,
+				string $code,
+				string $message
+			): bool {
+				$this->events[] = ['defer', $gateway, $uuid, $attempt, $lease, $next, $code, $message];
+				return true;
+			}
+		};
+		$service = new class($events) {
+			public function __construct(private array &$events) {}
+			public function recover(string $uuid): array
+			{
+				$this->events[] = ['recover', $uuid];
+				return ['status' => 'pending', 'reason' => 'provider_lookup_empty_unresolved'];
+			}
+		};
+		$bootstrap = YSHelcimFctBootstrap::init();
+		(new \ReflectionProperty($bootstrap, 'inline_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => $service]
+		);
+
+		$result = $bootstrap->retryPurchaseManually($operationUuid, 'ys_helcim_js');
+
+		self::assertIsArray($result);
+		self::assertSame('pending', $result['status']);
+		self::assertSame('claim', $events[0][0]);
+		self::assertSame('ys_helcim_js', $events[0][1]);
+		self::assertSame(['recover', $operationUuid], $events[1]);
+		self::assertSame('defer', $events[2][0]);
+		self::assertSame('ys_helcim_js', $events[2][1]);
+		self::assertNull($events[2][5]);
+		self::assertSame('ys_helcim_purchase_recovery_attention_required', $events[2][6]);
+	}
+
+	public function testManualInlineRecoveryCanClaimUnscheduledAttentionAndReturnsSafelyToAttention(): void
+	{
+		$events = [];
+		$operationUuid = '00000000-0000-4000-8000-000000000915';
+		$operations = new class($events) {
+			public function __construct(private array &$events) {}
+			public function claimAttentionPurchaseRecovery(
+				string $uuid,
+				string $gateway,
+				string $due,
+				string $stale,
+				string $lease,
+				int $max
+			): bool {
+				$this->events[] = ['claim', $gateway, $uuid, $due, $stale, $lease, $max];
+				return true;
+			}
+			public function findByUuidStrict(string $uuid): array
+			{
+				return [
+					'operation_uuid' => $uuid,
+					'gateway' => 'ys_helcim_js',
+					'active_scope_key' => 'purchase:unscheduled-attention',
+					'recovery_attempt_count' => 0,
+				];
+			}
+			public function deferPurchaseRecovery(
+				string $uuid,
+				string $gateway,
+				int $attempt,
+				string $lease,
+				?string $next,
+				string $code,
+				string $message
+			): bool {
+				$this->events[] = ['defer', $gateway, $uuid, $attempt, $lease, $next, $code, $message];
+				return true;
+			}
+		};
+		$service = new class($events) {
+			public function __construct(private array &$events) {}
+			public function recover(string $uuid): array
+			{
+				$this->events[] = ['recover-get-only', $uuid];
+				return ['status' => 'pending', 'reason' => 'provider_lookup_empty_unresolved'];
+			}
+		};
+		$bootstrap = YSHelcimFctBootstrap::init();
+		(new \ReflectionProperty($bootstrap, 'inline_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => $service]
+		);
+
+		$result = $bootstrap->retryPurchaseManually($operationUuid, 'ys_helcim_js');
+
+		self::assertIsArray($result);
+		self::assertSame('pending', $result['status']);
+		self::assertSame('claim', $events[0][0]);
+		self::assertSame('ys_helcim_js', $events[0][1]);
+		self::assertSame(['recover-get-only', $operationUuid], $events[1]);
+		self::assertSame('defer', $events[2][0]);
+		self::assertSame(0, $events[2][3]);
+		self::assertNull($events[2][5]);
+		self::assertSame('ys_helcim_purchase_recovery_attention_required', $events[2][6]);
+	}
+
+	public function testManualInlineRecoveryDoesNotQueryProviderWhenAttentionLeaseIsActive(): void
+	{
+		$operationUuid = '00000000-0000-4000-8000-000000000916';
+		$operations = new class {
+			public function claimAttentionPurchaseRecovery(
+				string $uuid,
+				string $gateway,
+				string $due,
+				string $stale,
+				string $lease,
+				int $max
+			): bool {
+				return false;
+			}
+		};
+		$service = new class {
+			public function recover(string $uuid): array
+			{
+				throw new \RuntimeException('Provider lookup must not run without a lease.');
+			}
+		};
+		$bootstrap = YSHelcimFctBootstrap::init();
+		(new \ReflectionProperty($bootstrap, 'inline_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => $service]
+		);
+
+		$result = $bootstrap->retryPurchaseManually($operationUuid, 'ys_helcim_js');
+
+		self::assertInstanceOf(\WP_Error::class, $result);
+		self::assertSame('ys_helcim_hosted_recovery_not_paused', $result->get_error_code());
+	}
+
+	public function testManualPurchaseRecoveryRemainsCapabilityUuidAndGatewayBound(): void
+	{
+		\YSHelcimWpDouble::reset();
+		$bootstrap = YSHelcimFctBootstrap::init();
+		$operationUuid = '00000000-0000-4000-8000-000000000917';
+		\YSHelcimWpDouble::$currentUserCapabilities['manage_options'] = false;
+		try {
+			$forbidden = $bootstrap->retryPurchaseManually($operationUuid, 'ys_helcim_js');
+			self::assertInstanceOf(\WP_Error::class, $forbidden);
+			self::assertSame('ys_helcim_hosted_recovery_forbidden', $forbidden->get_error_code());
+		} finally {
+			\YSHelcimWpDouble::reset();
+		}
+
+		$badUuid = $bootstrap->retryPurchaseManually('not-a-uuid', 'ys_helcim_js');
+		self::assertInstanceOf(\WP_Error::class, $badUuid);
+		self::assertSame('ys_helcim_hosted_recovery_invalid', $badUuid->get_error_code());
+
+		$badGateway = $bootstrap->retryPurchaseManually($operationUuid, 'ys_helcim_other');
+		self::assertInstanceOf(\WP_Error::class, $badGateway);
+		self::assertSame('ys_helcim_hosted_recovery_invalid', $badGateway->get_error_code());
 	}
 
     public function testSingleOrFarFutureEventCannotMakeRefundRecoveryPreflightPass(): void

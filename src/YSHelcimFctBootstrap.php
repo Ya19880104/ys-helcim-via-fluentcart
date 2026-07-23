@@ -106,6 +106,12 @@ final class YSHelcimFctBootstrap {
 	/** @var array<string,object>|\WP_Error|null */
 	private $hosted_recovery_runtime = null;
 
+	/** @var array<string,object>|\WP_Error|null */
+	private $inline_recovery_runtime = null;
+
+	/** @var callable|null */
+	private $recovery_clock = null;
+
 	/** @var YSHelcimInlineCheckoutCartLock|null */
 	private $inline_checkout_lock = null;
 
@@ -392,127 +398,196 @@ final class YSHelcimFctBootstrap {
 		return false;
 	}
 
-	/** Reconcile expired hosted checkout attempts from authenticated provider evidence. */
+	/** Reconcile unresolved purchases from authenticated provider evidence. */
 	public function reconcileHostedPurchases(): void {
-		$runtime = $this->hostedPurchaseRecoveryRuntime();
-		if ( is_wp_error( $runtime ) ) {
-			YSHelcimLogger::error( 'Hosted purchase recovery runtime unavailable' );
-			return;
-		}
-
-		$now                  = time();
-		$due_before           = gmdate( 'Y-m-d H:i:s', $now );
-		$created_before       = gmdate( 'Y-m-d H:i:s', $now - YSHelcimPayRecoveryService::LOOKUP_ELIGIBILITY_SECONDS );
-		$local_claimed_before = gmdate( 'Y-m-d H:i:s', $now - self::HOSTED_LOCAL_CLAIM_STALE_SECONDS );
-		$lease_until          = gmdate( 'Y-m-d H:i:s', $now + YSHelcimPayRecoveryService::RECOVERY_LEASE_SECONDS );
-		$rows = $runtime['operations']->findHostedPurchasesNeedingRecovery(
-			$created_before,
-			$due_before,
-			$local_claimed_before,
-			YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS,
-			self::HOSTED_RECOVERY_BATCH_LIMIT
-		);
-		if ( is_wp_error( $rows ) ) {
-			YSHelcimLogger::error( 'Hosted purchase recovery scan failed', array( 'error_code' => $rows->get_error_code() ) );
-			return;
-		}
-
-		foreach ( $rows as $row ) {
-			$operation_uuid = is_array( $row ) ? (string) ( $row['operation_uuid'] ?? '' ) : '';
-			if ( ! self::isUuid( $operation_uuid ) ) {
+		foreach ( array( 'ys_helcim', 'ys_helcim_js' ) as $gateway ) {
+			$runtime = $this->purchaseRecoveryRuntime( $gateway );
+			if ( is_wp_error( $runtime ) ) {
+				YSHelcimLogger::error( 'Purchase recovery runtime unavailable', array( 'gateway' => $gateway ) );
 				continue;
 			}
-			$claimed = $runtime['operations']->claimHostedRecovery(
-				$operation_uuid,
-				$due_before,
-				$local_claimed_before,
-				$lease_until,
-				YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS
-			);
-			if ( is_wp_error( $claimed ) ) {
+			$scan_now             = $this->recoveryNow();
+			$due_before           = gmdate( 'Y-m-d H:i:s', $scan_now );
+			$created_before       = gmdate( 'Y-m-d H:i:s', $scan_now - YSHelcimPayRecoveryService::LOOKUP_ELIGIBILITY_SECONDS );
+			$local_claimed_before = gmdate( 'Y-m-d H:i:s', $scan_now - self::HOSTED_LOCAL_CLAIM_STALE_SECONDS );
+			$operations = $runtime['operations'];
+			$rows = method_exists( $operations, 'findPurchasesNeedingRecovery' )
+				? $operations->findPurchasesNeedingRecovery(
+					$gateway,
+					$created_before,
+					$due_before,
+					$local_claimed_before,
+					YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS,
+					self::HOSTED_RECOVERY_BATCH_LIMIT
+				)
+				: ( 'ys_helcim' === $gateway && method_exists( $operations, 'findHostedPurchasesNeedingRecovery' )
+					? $operations->findHostedPurchasesNeedingRecovery(
+						$created_before,
+						$due_before,
+						$local_claimed_before,
+						YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS,
+						self::HOSTED_RECOVERY_BATCH_LIMIT
+					)
+					: array() );
+			if ( is_wp_error( $rows ) ) {
 				YSHelcimLogger::error(
-					'Hosted purchase recovery claim failed',
-					array( 'operation_uuid' => $operation_uuid, 'error_code' => $claimed->get_error_code() )
+					'Purchase recovery scan failed',
+					array( 'gateway' => $gateway, 'error_code' => $rows->get_error_code() )
 				);
 				continue;
 			}
-			if ( true !== $claimed ) {
-				continue;
-			}
-			$result = $runtime['service']->recover( $operation_uuid );
-			if ( is_wp_error( $result ) ) {
-				YSHelcimLogger::error(
-					'Hosted purchase recovery operation failed',
-					array( 'operation_uuid' => $operation_uuid, 'error_code' => $result->get_error_code() )
-				);
-			}
 
-			$current = $runtime['operations']->findByUuidStrict( $operation_uuid );
-			if ( is_wp_error( $current ) || ! is_array( $current ) ) {
-				YSHelcimLogger::error( 'Hosted purchase recovery state could not be verified', array( 'operation_uuid' => $operation_uuid ) );
-				continue;
-			}
-			if ( '' === (string) ( $current['active_scope_key'] ?? '' ) ) {
-				continue;
-			}
-
-			$attempt_count = (int) ( $current['recovery_attempt_count'] ?? 0 );
-			if ( $attempt_count < 1 ) {
-				// An exact approval resets the provider-query budget. If its first
-				// local bind failed, leave it immediately due for local-only replay.
-				continue;
-			}
-			$delay = YSHelcimPayRecoveryService::retryDelayAfterAttempt( $attempt_count );
-			if ( null === $delay ) {
-				$error_code = 'ys_helcim_hosted_recovery_attention_required';
-				$error_message = __( 'Automatic hosted payment recovery paused without exact proof. Check Helcim using the operation ID; the payment remains locked.', 'ys-helcim-via-fluentcart' );
-				$next_recovery_at = null;
-			} else {
-				if ( is_wp_error( $result ) ) {
-					$error_code    = (string) $result->get_error_code();
-					$error_message = (string) $result->get_error_message();
-				} else {
-					$is_local_recovery = YSHelcimOperationState::REMOTE_SUCCEEDED === (string) ( $current['remote_status'] ?? '' );
-					$persisted_code = (string) ( $current[ $is_local_recovery ? 'local_error_code' : 'remote_error_code' ] ?? '' );
-					$persisted_message = (string) ( $current[ $is_local_recovery ? 'local_error_message' : 'remote_error_message' ] ?? '' );
-					$error_code = '' !== $persisted_code
-						? $persisted_code
-						: (string) ( $result['reason'] ?? 'ys_helcim_hosted_recovery_unresolved' );
-					$error_message = '' !== $persisted_message
-						? $persisted_message
-						: __( 'Hosted payment recovery remains unresolved and will be retried with bounded backoff.', 'ys-helcim-via-fluentcart' );
+			foreach ( $rows as $row ) {
+				$operation_uuid = is_array( $row ) ? (string) ( $row['operation_uuid'] ?? '' ) : '';
+				if ( ! self::isUuid( $operation_uuid ) ) {
+					continue;
 				}
-				$next_recovery_at = gmdate( 'Y-m-d H:i:s', $now + $delay );
-			}
+				$claim_now             = $this->recoveryNow();
+				$due_before           = gmdate( 'Y-m-d H:i:s', $claim_now );
+				$local_claimed_before = gmdate( 'Y-m-d H:i:s', $claim_now - self::HOSTED_LOCAL_CLAIM_STALE_SECONDS );
+				$lease_until          = gmdate( 'Y-m-d H:i:s', $claim_now + YSHelcimPayRecoveryService::RECOVERY_LEASE_SECONDS );
+				$claimed = method_exists( $operations, 'claimPurchaseRecovery' )
+					? $operations->claimPurchaseRecovery(
+						$operation_uuid,
+						$gateway,
+						$due_before,
+						$local_claimed_before,
+						$lease_until,
+						YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS
+					)
+					: $operations->claimHostedRecovery(
+						$operation_uuid,
+						$due_before,
+						$local_claimed_before,
+						$lease_until,
+						YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS
+					);
+				if ( is_wp_error( $claimed ) ) {
+					YSHelcimLogger::error(
+						'Purchase recovery claim failed',
+						array( 'gateway' => $gateway, 'operation_uuid' => $operation_uuid, 'error_code' => $claimed->get_error_code() )
+					);
+					continue;
+				}
+				if ( true !== $claimed ) {
+					continue;
+				}
+				$result = $runtime['service']->recover( $operation_uuid );
+				if ( is_wp_error( $result ) ) {
+					YSHelcimLogger::error(
+						'Purchase recovery operation failed',
+						array( 'gateway' => $gateway, 'operation_uuid' => $operation_uuid, 'error_code' => $result->get_error_code() )
+					);
+				}
 
-			$deferred = $runtime['operations']->deferHostedRecovery(
-				$operation_uuid,
-				$attempt_count,
-				$lease_until,
-				$next_recovery_at,
-				$error_code,
-				$error_message
-			);
-			if ( is_wp_error( $deferred ) || true !== $deferred ) {
-				YSHelcimLogger::error( 'Hosted purchase recovery backoff could not be persisted', array( 'operation_uuid' => $operation_uuid ) );
+				$current = $operations->findByUuidStrict( $operation_uuid );
+				if ( is_wp_error( $current ) || ! is_array( $current ) ) {
+					YSHelcimLogger::error(
+						'Purchase recovery state could not be verified',
+						array( 'gateway' => $gateway, 'operation_uuid' => $operation_uuid )
+					);
+					continue;
+				}
+				if ( '' === (string) ( $current['active_scope_key'] ?? '' ) ) {
+					continue;
+				}
+
+				$attempt_count = (int) ( $current['recovery_attempt_count'] ?? 0 );
+				if ( $attempt_count < 1 ) {
+					// An exact approval resets the provider-query budget. If its
+					// local bind failed, leave it due for local-only replay.
+					continue;
+				}
+				$completed_at = $this->recoveryNow();
+				$delay = YSHelcimPayRecoveryService::retryDelayAfterAttempt( $attempt_count );
+				if ( null === $delay ) {
+					$error_code = 'ys_helcim' === $gateway
+						? 'ys_helcim_hosted_recovery_attention_required'
+						: 'ys_helcim_purchase_recovery_attention_required';
+					$error_message = __( 'Automatic payment recovery paused without exact proof. Check Helcim using the operation ID; the payment remains locked.', 'ys-helcim-via-fluentcart' );
+					$next_recovery_at = null;
+				} else {
+					if ( is_wp_error( $result ) ) {
+						$error_code    = (string) $result->get_error_code();
+						$error_message = (string) $result->get_error_message();
+					} else {
+						$is_local_recovery = YSHelcimOperationState::REMOTE_SUCCEEDED === (string) ( $current['remote_status'] ?? '' );
+						$persisted_code = (string) ( $current[ $is_local_recovery ? 'local_error_code' : 'remote_error_code' ] ?? '' );
+						$persisted_message = (string) ( $current[ $is_local_recovery ? 'local_error_message' : 'remote_error_message' ] ?? '' );
+						$error_code = '' !== $persisted_code
+							? $persisted_code
+							: (string) ( $result['reason'] ?? 'ys_helcim_purchase_recovery_unresolved' );
+						$error_message = '' !== $persisted_message
+							? $persisted_message
+							: __( 'Payment recovery remains unresolved and will be retried with bounded backoff.', 'ys-helcim-via-fluentcart' );
+					}
+					$next_recovery_at = gmdate( 'Y-m-d H:i:s', $completed_at + $delay );
+				}
+
+				$deferred = method_exists( $operations, 'deferPurchaseRecovery' )
+					? $operations->deferPurchaseRecovery(
+						$operation_uuid,
+						$gateway,
+						$attempt_count,
+						$lease_until,
+						$next_recovery_at,
+						$error_code,
+						$error_message
+					)
+					: $operations->deferHostedRecovery(
+						$operation_uuid,
+						$attempt_count,
+						$lease_until,
+						$next_recovery_at,
+						$error_code,
+						$error_message
+					);
+				if ( is_wp_error( $deferred ) || true !== $deferred ) {
+					YSHelcimLogger::error(
+						'Purchase recovery backoff could not be persisted',
+						array( 'gateway' => $gateway, 'operation_uuid' => $operation_uuid )
+					);
+				}
 			}
 		}
 	}
 
+	/** Return a fresh wall-clock value for each recovery scan, claim, and defer decision. */
+	private function recoveryNow(): int {
+		if ( is_callable( $this->recovery_clock ) ) {
+			try {
+				$now = ( $this->recovery_clock )();
+			} catch ( \Throwable $exception ) {
+				unset( $exception );
+				$now = null;
+			}
+			if ( is_int( $now ) && $now > 0 ) {
+				return $now;
+			}
+		}
+
+		return time();
+	}
+
 	/** Execute one administrator-requested lookup without reopening auto retries. */
 	public function retryHostedPurchaseManually( string $operation_uuid ) {
+		return $this->retryPurchaseManually( $operation_uuid, 'ys_helcim' );
+	}
+
+	/** Execute one gateway-bound administrator lookup without reopening retries. */
+	public function retryPurchaseManually( string $operation_uuid, string $gateway ) {
 		if ( ! function_exists( 'current_user_can' ) || ! current_user_can( 'manage_options' ) ) {
 			return new \WP_Error(
 				'ys_helcim_hosted_recovery_forbidden',
-				__( 'You are not allowed to retry hosted payment recovery.', 'ys-helcim-via-fluentcart' ),
+				__( 'You are not allowed to retry payment recovery.', 'ys-helcim-via-fluentcart' ),
 				array( 'status' => 403 )
 			);
 		}
 		$operation_uuid = strtolower( trim( $operation_uuid ) );
-		if ( ! self::isUuid( $operation_uuid ) ) {
-			return new \WP_Error( 'ys_helcim_hosted_recovery_invalid', __( 'The hosted payment operation identifier is invalid.', 'ys-helcim-via-fluentcart' ) );
+		if ( ! self::isUuid( $operation_uuid ) || ! in_array( $gateway, array( 'ys_helcim', 'ys_helcim_js' ), true ) ) {
+			return new \WP_Error( 'ys_helcim_hosted_recovery_invalid', __( 'The payment recovery identity is invalid.', 'ys-helcim-via-fluentcart' ) );
 		}
-		$runtime = $this->hostedPurchaseRecoveryRuntime();
+		$runtime = $this->purchaseRecoveryRuntime( $gateway );
 		if ( is_wp_error( $runtime ) ) {
 			return $runtime;
 		}
@@ -521,43 +596,72 @@ final class YSHelcimFctBootstrap {
 		$due_before           = gmdate( 'Y-m-d H:i:s', $now );
 		$local_claimed_before = gmdate( 'Y-m-d H:i:s', $now - self::HOSTED_LOCAL_CLAIM_STALE_SECONDS );
 		$lease_until          = gmdate( 'Y-m-d H:i:s', $now + YSHelcimPayRecoveryService::RECOVERY_LEASE_SECONDS );
-		$claimed = $runtime['operations']->claimPausedHostedRecovery(
-			$operation_uuid,
-			$due_before,
-			$local_claimed_before,
-			$lease_until,
-			YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS
-		);
+		$operations = $runtime['operations'];
+		$claimed = method_exists( $operations, 'claimAttentionPurchaseRecovery' )
+			? $operations->claimAttentionPurchaseRecovery(
+				$operation_uuid,
+				$gateway,
+				$due_before,
+				$local_claimed_before,
+				$lease_until,
+				YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS
+			)
+			: ( method_exists( $operations, 'claimPausedPurchaseRecovery' )
+				? $operations->claimPausedPurchaseRecovery(
+					$operation_uuid,
+					$gateway,
+					$due_before,
+					$local_claimed_before,
+					$lease_until,
+					YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS
+				)
+				: $operations->claimPausedHostedRecovery(
+					$operation_uuid,
+					$due_before,
+					$local_claimed_before,
+					$lease_until,
+					YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS
+				) );
 		if ( is_wp_error( $claimed ) ) {
 			return $claimed;
 		}
 		if ( true !== $claimed ) {
 			return new \WP_Error(
 				'ys_helcim_hosted_recovery_not_paused',
-				__( 'This hosted payment is not paused for a manual recovery attempt, or another worker already holds its lease.', 'ys-helcim-via-fluentcart' ),
+				__( 'This payment is not paused for a manual recovery attempt, or another worker already holds its lease.', 'ys-helcim-via-fluentcart' ),
 				array( 'status' => 409 )
 			);
 		}
 
 		$result = $runtime['service']->recover( $operation_uuid );
-		$current = $runtime['operations']->findByUuidStrict( $operation_uuid );
+		$current = $operations->findByUuidStrict( $operation_uuid );
 		if ( is_wp_error( $current ) || ! is_array( $current ) ) {
-			return is_wp_error( $current ) ? $current : new \WP_Error( 'ys_helcim_journal_unavailable', __( 'The hosted payment recovery journal is unavailable.', 'ys-helcim-via-fluentcart' ) );
+			return is_wp_error( $current ) ? $current : new \WP_Error( 'ys_helcim_journal_unavailable', __( 'The payment recovery journal is unavailable.', 'ys-helcim-via-fluentcart' ) );
 		}
-		if (
-			'' !== (string) ( $current['active_scope_key'] ?? '' ) &&
-			(int) ( $current['recovery_attempt_count'] ?? 0 ) >= YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS
-		) {
-			$deferred = $runtime['operations']->deferHostedRecovery(
-				$operation_uuid,
-				(int) $current['recovery_attempt_count'],
-				$lease_until,
-				null,
-				'ys_helcim_hosted_recovery_attention_required',
-				__( 'The manual lookup did not return exact payment proof. The payment remains locked for administrator review.', 'ys-helcim-via-fluentcart' )
-			);
+		if ( '' !== (string) ( $current['active_scope_key'] ?? '' ) ) {
+			$error_code = 'ys_helcim' === $gateway
+				? 'ys_helcim_hosted_recovery_attention_required'
+				: 'ys_helcim_purchase_recovery_attention_required';
+			$deferred = method_exists( $operations, 'deferPurchaseRecovery' )
+				? $operations->deferPurchaseRecovery(
+					$operation_uuid,
+					$gateway,
+					(int) $current['recovery_attempt_count'],
+					$lease_until,
+					null,
+					$error_code,
+					__( 'The manual lookup did not return exact payment proof. The payment remains locked for administrator review.', 'ys-helcim-via-fluentcart' )
+				)
+				: $operations->deferHostedRecovery(
+					$operation_uuid,
+					(int) $current['recovery_attempt_count'],
+					$lease_until,
+					null,
+					$error_code,
+					__( 'The manual lookup did not return exact payment proof. The payment remains locked for administrator review.', 'ys-helcim-via-fluentcart' )
+				);
 			if ( is_wp_error( $deferred ) || true !== $deferred ) {
-				return new \WP_Error( 'ys_helcim_journal_unavailable', __( 'The hosted payment recovery journal is unavailable.', 'ys-helcim-via-fluentcart' ) );
+				return new \WP_Error( 'ys_helcim_journal_unavailable', __( 'The payment recovery journal is unavailable.', 'ys-helcim-via-fluentcart' ) );
 			}
 		}
 
@@ -569,24 +673,31 @@ final class YSHelcimFctBootstrap {
 		$operation_uuid = isset( $_POST['operation_uuid'] )
 			? strtolower( trim( sanitize_text_field( (string) wp_unslash( $_POST['operation_uuid'] ) ) ) )
 			: '';
+		$gateway = isset( $_POST['gateway'] )
+			? sanitize_key( (string) wp_unslash( $_POST['gateway'] ) )
+			: 'ys_helcim';
 		$nonce = isset( $_POST['_ys_helcim_nonce'] )
 			? sanitize_text_field( (string) wp_unslash( $_POST['_ys_helcim_nonce'] ) )
 			: '';
+		$nonce_action = 'ys_helcim' === $gateway
+			? 'ys_helcim_retry_hosted_' . $operation_uuid
+			: 'ys_helcim_retry_purchase_' . $gateway . '_' . $operation_uuid;
 		if (
 			'POST' !== strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) ||
 			! self::isUuid( $operation_uuid ) ||
+			! in_array( $gateway, array( 'ys_helcim', 'ys_helcim_js' ), true ) ||
 			! function_exists( 'current_user_can' ) ||
 			! current_user_can( 'manage_options' ) ||
-			! wp_verify_nonce( $nonce, 'ys_helcim_retry_hosted_' . $operation_uuid )
+			! wp_verify_nonce( $nonce, $nonce_action )
 		) {
 			wp_die(
-				esc_html__( 'The hosted payment recovery request is not authorized.', 'ys-helcim-via-fluentcart' ),
+				esc_html__( 'The payment recovery request is not authorized.', 'ys-helcim-via-fluentcart' ),
 				'',
 				array( 'response' => 403 )
 			);
 		}
 
-		$result = $this->retryHostedPurchaseManually( $operation_uuid );
+		$result = $this->retryPurchaseManually( $operation_uuid, $gateway );
 		$referer = function_exists( 'wp_get_referer' ) ? wp_get_referer() : false;
 		$redirect = is_string( $referer ) && '' !== $referer ? $referer : admin_url();
 		wp_safe_redirect(
@@ -598,7 +709,7 @@ final class YSHelcimFctBootstrap {
 		exit;
 	}
 
-	/** Show durable unresolved hosted payments without exposing credentials. */
+	/** Show durable unresolved purchases without exposing credentials. */
 	public function renderHostedPurchaseAttentionNotice(): void {
 		if ( ! function_exists( 'current_user_can' ) || ! current_user_can( 'manage_options' ) ) {
 			return;
@@ -615,20 +726,42 @@ final class YSHelcimFctBootstrap {
 				. esc_html__( 'Manual Helcim check could not complete. The payment remains locked; review the operation before taking any payment action.', 'ys-helcim-via-fluentcart' )
 				. '</p></div>';
 		}
-		$runtime = $this->hostedPurchaseRecoveryRuntime();
-		if ( is_wp_error( $runtime ) ) {
-			return;
+		$rows = array();
+		foreach ( array( 'ys_helcim', 'ys_helcim_js' ) as $gateway ) {
+			$runtime = $this->purchaseRecoveryRuntime( $gateway );
+			if ( is_wp_error( $runtime ) ) {
+				continue;
+			}
+			$operations   = $runtime['operations'];
+			$gateway_rows = method_exists( $operations, 'findPurchasesNeedingAttention' )
+				? $operations->findPurchasesNeedingAttention(
+					$gateway,
+					10,
+					YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS
+				)
+				: ( 'ys_helcim' === $gateway && method_exists( $operations, 'findHostedPurchasesNeedingAttention' )
+					? $operations->findHostedPurchasesNeedingAttention(
+						10,
+						YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS
+					)
+					: array() );
+			if ( is_wp_error( $gateway_rows ) ) {
+				continue;
+			}
+			foreach ( $gateway_rows as $row ) {
+				if ( ! is_array( $row ) ) {
+					continue;
+				}
+				$row['gateway'] = $gateway;
+				$rows[]         = $row;
+			}
 		}
-		$rows = $runtime['operations']->findHostedPurchasesNeedingAttention(
-			10,
-			YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS
-		);
-		if ( is_wp_error( $rows ) || array() === $rows ) {
+		if ( array() === $rows ) {
 			return;
 		}
 
 		echo '<div class="notice notice-warning"><p><strong>'
-			. esc_html__( 'YS Helcim: hosted payments need review', 'ys-helcim-via-fluentcart' )
+			. esc_html__( 'YS Helcim: payments need review', 'ys-helcim-via-fluentcart' )
 			. '</strong></p><p>'
 			. esc_html__( 'These payments remain locked because exact Helcim proof or local completion is still missing. Check Helcim using the operation ID before taking any payment action.', 'ys-helcim-via-fluentcart' )
 			. '</p><ul>';
@@ -640,6 +773,19 @@ final class YSHelcimFctBootstrap {
 			if ( ! self::isUuid( $operation_uuid ) ) {
 				continue;
 			}
+			$gateway = (string) ( $row['gateway'] ?? '' );
+			if ( ! in_array( $gateway, array( 'ys_helcim', 'ys_helcim_js' ), true ) ) {
+				continue;
+			}
+			$method_label = 'ys_helcim' === $gateway
+				? __( 'Hosted modal', 'ys-helcim-via-fluentcart' )
+				: __( 'Inline form', 'ys-helcim-via-fluentcart' );
+			$gateway_label = sprintf(
+				/* translators: 1: human-readable payment method, 2: exact FluentCart gateway slug. */
+				__( '%1$s (%2$s)', 'ys-helcim-via-fluentcart' ),
+				$method_label,
+				$gateway
+			);
 			$details = sprintf(
 				/* translators: 1: FluentCart order ID, 2: transaction ID, 3: remote state, 4: local state, 5: UTC update time. */
 				__( 'Order %1$d / transaction %2$d / %3$s:%4$s / updated %5$s', 'ys-helcim-via-fluentcart' ),
@@ -651,6 +797,8 @@ final class YSHelcimFctBootstrap {
 			);
 			$attempt_count = max( 0, (int) ( $row['recovery_attempt_count'] ?? 0 ) );
 			$is_paused     = $attempt_count >= YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS;
+			$next_recovery = (string) ( $row['next_recovery_at'] ?? '' );
+			$manual_check_available = '' === $next_recovery || $next_recovery <= gmdate( 'Y-m-d H:i:s' );
 			if ( $is_paused ) {
 				$recovery_status = sprintf(
 					/* translators: 1: completed recovery attempts, 2: maximum automatic recovery attempts. */
@@ -658,13 +806,13 @@ final class YSHelcimFctBootstrap {
 					$attempt_count,
 					YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS
 				);
-			} elseif ( '' !== (string) ( $row['next_recovery_at'] ?? '' ) ) {
+			} elseif ( '' !== $next_recovery ) {
 				$recovery_status = sprintf(
 					/* translators: 1: completed recovery attempts, 2: maximum automatic recovery attempts, 3: next UTC check time. */
 					__( 'Automatic recovery attempt %1$d of %2$d; next check %3$s UTC.', 'ys-helcim-via-fluentcart' ),
 					$attempt_count,
 					YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS,
-					(string) $row['next_recovery_at']
+					$next_recovery
 				);
 			} else {
 				$recovery_status = sprintf(
@@ -674,13 +822,17 @@ final class YSHelcimFctBootstrap {
 					YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS
 				);
 			}
-			echo '<li><code>' . esc_html( $operation_uuid ) . '</code> — ' . esc_html( $details )
+			echo '<li><strong>' . esc_html( $gateway_label ) . '</strong> <code>' . esc_html( $operation_uuid ) . '</code> — ' . esc_html( $details )
 				. '<br><span>' . esc_html( $recovery_status ) . '</span>';
-			if ( $is_paused ) {
+			if ( $manual_check_available ) {
+				$nonce_action = 'ys_helcim' === $gateway
+					? 'ys_helcim_retry_hosted_' . $operation_uuid
+					: 'ys_helcim_retry_purchase_' . $gateway . '_' . $operation_uuid;
 				echo ' <form method="post" action="' . esc_html( admin_url( 'admin-post.php' ) ) . '" style="display:inline">'
 					. '<input type="hidden" name="action" value="ys_helcim_retry_hosted_recovery">'
 					. '<input type="hidden" name="operation_uuid" value="' . esc_html( $operation_uuid ) . '">'
-					. '<input type="hidden" name="_ys_helcim_nonce" value="' . esc_html( wp_create_nonce( 'ys_helcim_retry_hosted_' . $operation_uuid ) ) . '">'
+					. '<input type="hidden" name="gateway" value="' . esc_html( $gateway ) . '">'
+					. '<input type="hidden" name="_ys_helcim_nonce" value="' . esc_html( wp_create_nonce( $nonce_action ) ) . '">'
 					. '<button type="submit" class="button button-secondary">' . esc_html__( 'Check Helcim once', 'ys-helcim-via-fluentcart' ) . '</button></form>';
 			}
 			echo '</li>';
@@ -1050,6 +1202,18 @@ final class YSHelcimFctBootstrap {
 	}
 
 	/** @return array<string,object>|\WP_Error */
+	private function purchaseRecoveryRuntime( string $gateway ) {
+		return match ( $gateway ) {
+			'ys_helcim'    => $this->hostedPurchaseRecoveryRuntime(),
+			'ys_helcim_js' => $this->inlinePurchaseRecoveryRuntime(),
+			default        => new \WP_Error(
+				'ys_helcim_purchase_recovery_runtime_invalid',
+				__( 'The payment recovery runtime identity is invalid.', 'ys-helcim-via-fluentcart' )
+			),
+		};
+	}
+
+	/** @return array<string,object>|\WP_Error */
 	private function hostedPurchaseRecoveryRuntime() {
 		if ( null !== $this->hosted_recovery_runtime ) {
 			return $this->hosted_recovery_runtime;
@@ -1119,6 +1283,74 @@ final class YSHelcimFctBootstrap {
 		}
 
 		return $this->hosted_recovery_runtime;
+	}
+
+	/** @return array<string,object>|\WP_Error */
+	private function inlinePurchaseRecoveryRuntime() {
+		if ( null !== $this->inline_recovery_runtime ) {
+			return $this->inline_recovery_runtime;
+		}
+
+		try {
+			global $wpdb;
+			$operations = new YSHelcimOperationRepository( $wpdb );
+			$settings   = new YSHelcimJsSettings();
+			$runtime    = new YSHelcimJsPurchaseRuntime(
+				settings: $settings,
+				operations: $operations,
+				method_slug: 'ys_helcim_js',
+				terminal_meta_keys: array()
+			);
+			$service = new YSHelcimPayRecoveryService(
+				operations: $operations,
+				runtime: $runtime,
+				transaction_loader: static fn ( int $transaction_id ) => OrderTransaction::query()
+					->where( 'id', $transaction_id )
+					->first(),
+				credential_resolver: static function ( string $mode ) use ( $settings ) {
+					if ( ! in_array( $mode, array( 'test', 'live' ), true ) ) {
+						return new \WP_Error(
+							'ys_helcim_purchase_recovery_credentials_unavailable',
+							__( 'The credential for the original inline payment mode is unavailable.', 'ys-helcim-via-fluentcart' )
+						);
+					}
+
+					$api_token = trim( $settings->getApiTokenForMode( $mode ) );
+					return '' !== $api_token
+						? $api_token
+						: new \WP_Error(
+							'ys_helcim_purchase_recovery_credentials_unavailable',
+							__( 'The credential for the original inline payment mode is unavailable.', 'ys-helcim-via-fluentcart' )
+						);
+				},
+				provider_lookup: static fn ( string $invoice_number, string $api_token ) => YSHelcimApiClient::request(
+					'card-transactions',
+					array(
+						'invoiceNumber' => $invoice_number,
+						'limit'         => 1000,
+						'page'          => 1,
+					),
+					$api_token,
+					null,
+					'GET'
+				),
+				gateway: 'ys_helcim_js',
+				policy: YSHelcimPayRecoveryService::POLICY_SERVER_PURCHASE
+			);
+
+			$this->inline_recovery_runtime = array(
+				'operations' => $operations,
+				'service'    => $service,
+			);
+		} catch ( \Throwable $exception ) {
+			YSHelcimLogger::error( 'Inline purchase recovery runtime initialization failed', array( 'error' => $exception->getMessage() ) );
+			$this->inline_recovery_runtime = new \WP_Error(
+				'ys_helcim_purchase_recovery_runtime_unavailable',
+				__( 'The inline payment recovery runtime is unavailable.', 'ys-helcim-via-fluentcart' )
+			);
+		}
+
+		return $this->inline_recovery_runtime;
 	}
 
 	/** @return YSHelcimRefundAdminPage|\WP_Error */

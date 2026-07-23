@@ -58,6 +58,17 @@ final class GatewayWebhookRouteTest extends TestCase
         self::assertStringNotContainsString('payments still work normally when it is not configured', $html);
     }
 
+    public function testInlineSettingsExplainTheDeveloperAccountConfigurationContract(): void
+    {
+        $fields = (new YSHelcimJsGateway())->fields();
+        $html = strtolower((string) $fields['notice']['value']);
+
+        self::assertStringContainsString('website urls', $html);
+        self::assertStringContainsString('test mode must stay off', $html);
+        self::assertStringContainsString('card verify', $html);
+        self::assertStringContainsString('transaction processing admin', $html);
+    }
+
     #[DataProvider('gatewayClasses')]
     public function testForbiddenDevelopmentHostnameIsBlockedInsteadOfRenderedAsCopyable(string $gatewayClass): void
     {

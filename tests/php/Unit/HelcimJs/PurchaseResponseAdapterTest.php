@@ -120,6 +120,23 @@ final class PurchaseResponseAdapterTest extends TestCase
             ]),
             'authentication_rejected',
         ];
+        yield 'provider rejected an unverified card token before charging' => [
+            new \WP_Error('ys_helcim_api_error', 'Card is not verified', [
+                'kind' => 'provider',
+                'http_code' => 400,
+                'indeterminate' => false,
+                'mutation_disposition' => 'validation_rejected',
+                'provider_errors' => [
+                    'verification' => 'Card is not verified',
+                ],
+                'provider_response' => [
+                    'errors' => [
+                        'verification' => 'Card is not verified',
+                    ],
+                ],
+            ]),
+            'validation_rejected',
+        ];
     }
 
     #[DataProvider('ambiguousProviderResults')]
@@ -147,6 +164,102 @@ final class PurchaseResponseAdapterTest extends TestCase
             'kind' => 'provider',
             'http_code' => 401,
             'indeterminate' => false,
+        ])];
+        yield 'validation disposition without exact response proof' => [new \WP_Error('ys_helcim_api_error', 'Card is not verified', [
+            'kind' => 'provider',
+            'http_code' => 400,
+            'indeterminate' => false,
+            'mutation_disposition' => 'validation_rejected',
+            'provider_errors' => [
+                'verification' => 'Card is not verified',
+            ],
+        ])];
+        yield 'validation response under a different error code' => [new \WP_Error('provider_error', 'Card is not verified', [
+            'kind' => 'provider',
+            'http_code' => 400,
+            'indeterminate' => false,
+            'mutation_disposition' => 'validation_rejected',
+            'provider_errors' => [
+                'verification' => 'Card is not verified',
+            ],
+            'provider_response' => [
+                'errors' => [
+                    'verification' => 'Card is not verified',
+                ],
+            ],
+        ])];
+        yield 'validation response with the wrong provider kind' => [new \WP_Error('ys_helcim_api_error', 'Card is not verified', [
+            'kind' => 'http',
+            'http_code' => 400,
+            'indeterminate' => false,
+            'mutation_disposition' => 'validation_rejected',
+            'provider_errors' => [
+                'verification' => 'Card is not verified',
+            ],
+            'provider_response' => [
+                'errors' => [
+                    'verification' => 'Card is not verified',
+                ],
+            ],
+        ])];
+        yield 'validation response with the wrong HTTP status' => [new \WP_Error('ys_helcim_api_error', 'Card is not verified', [
+            'kind' => 'provider',
+            'http_code' => 422,
+            'indeterminate' => false,
+            'mutation_disposition' => 'validation_rejected',
+            'provider_errors' => [
+                'verification' => 'Card is not verified',
+            ],
+            'provider_response' => [
+                'errors' => [
+                    'verification' => 'Card is not verified',
+                ],
+            ],
+        ])];
+        yield 'validation response marked indeterminate' => [new \WP_Error('ys_helcim_api_error', 'Card is not verified', [
+            'kind' => 'provider',
+            'http_code' => 400,
+            'indeterminate' => true,
+            'mutation_disposition' => 'validation_rejected',
+            'provider_errors' => [
+                'verification' => 'Card is not verified',
+            ],
+            'provider_response' => [
+                'errors' => [
+                    'verification' => 'Card is not verified',
+                ],
+            ],
+        ])];
+        yield 'validation response with contradictory success proof' => [new \WP_Error('ys_helcim_api_error', 'Card is not verified', [
+            'kind' => 'provider',
+            'http_code' => 400,
+            'indeterminate' => false,
+            'mutation_disposition' => 'validation_rejected',
+            'provider_errors' => [
+                'verification' => 'Card is not verified',
+            ],
+            'provider_response' => [
+                'errors' => [
+                    'verification' => 'Card is not verified',
+                ],
+                'status' => 'APPROVED',
+            ],
+        ])];
+        yield 'validation response with extra provider error' => [new \WP_Error('ys_helcim_api_error', 'Card is not verified', [
+            'kind' => 'provider',
+            'http_code' => 400,
+            'indeterminate' => false,
+            'mutation_disposition' => 'validation_rejected',
+            'provider_errors' => [
+                'verification' => 'Card is not verified',
+                'other' => 'Rejected',
+            ],
+            'provider_response' => [
+                'errors' => [
+                    'verification' => 'Card is not verified',
+                    'other' => 'Rejected',
+                ],
+            ],
         ])];
         yield 'self-asserted decline missing allowlist details' => [new \WP_Error('ys_helcim_api_error', 'Declined', [
             'definitive_decline' => true,

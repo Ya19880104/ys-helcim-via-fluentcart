@@ -6,6 +6,7 @@ namespace YangSheep\Helcim\FluentCart\Tests\Unit\HelcimPay;
 
 use FluentCart\App\Modules\PaymentMethods\Core\BaseGatewaySettings;
 use PHPUnit\Framework\TestCase;
+use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimJsSettings;
 use YangSheep\Helcim\FluentCart\HelcimPay\YSHelcimPayRecoveryCapability;
 use YangSheep\Helcim\FluentCart\HelcimPay\YSHelcimPaySettings;
 
@@ -67,5 +68,34 @@ final class HostedRecoveryCapabilityTest extends TestCase
             self::assertSame('ys_helcim_hosted_recovery_permission_unavailable', $result->get_error_code());
         }
         self::assertArrayNotHasKey(YSHelcimPayRecoveryCapability::OPTION_NAME, \YSHelcimWpDouble::$options);
+    }
+
+    public function testInlineSettingsCanProveTheSameReadOnlyRecoveryCapability(): void
+    {
+        BaseGatewaySettings::$settingsByClass[YSHelcimJsSettings::class] = [
+            'test_api_token' => 'enc:inline-test-api-token',
+        ];
+        $calls = 0;
+        $capability = new YSHelcimPayRecoveryCapability(
+            static function (
+                string $endpoint,
+                array $payload,
+                string $token,
+                ?string $key,
+                string $method
+            ) use (&$calls): array {
+                ++$calls;
+                self::assertSame('card-transactions', $endpoint);
+                self::assertSame('GET', $method);
+                self::assertNull($key);
+                self::assertSame('inline-test-api-token', $token);
+                self::assertSame(1, $payload['limit']);
+                return [];
+            },
+            static fn (): int => 1784678400
+        );
+
+        self::assertTrue($capability->verify(new YSHelcimJsSettings()));
+        self::assertSame(1, $calls);
     }
 }

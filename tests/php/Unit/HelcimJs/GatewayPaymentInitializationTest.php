@@ -67,6 +67,73 @@ final class GatewayPaymentInitializationTest extends TestCase
         self::assertSame('ys_helcim_js_missing_credentials', $result->get_error_code());
     }
 
+    public function testSuccessfulInitializationReturnsAuthoritativeOrderBillingAvs(): void
+    {
+        BaseGatewaySettings::$settingsByClass[YSHelcimJsSettings::class]['test_webhook_verifier_token'] = 'enc:test-verifier';
+
+        $gateway = new class extends YSHelcimJsGateway {
+            protected function hasDurableRecoverySchedule(): bool
+            {
+                return true;
+            }
+
+            protected function verifyRecoveryApiAccess(): true|\WP_Error
+            {
+                return true;
+            }
+        };
+        $result = $gateway->makePaymentFromPaymentInstance($this->paymentInstance());
+
+        self::assertIsArray($result);
+        self::assertSame('123 Test Street', $result['payment_data']['cardholder_address']);
+        self::assertSame('100', $result['payment_data']['cardholder_postal_code']);
+    }
+
+    public function testPurchaseInitializationFailsClosedWhenRecurringRecoveryCannotBeScheduled(): void
+    {
+        BaseGatewaySettings::$settingsByClass[YSHelcimJsSettings::class]['test_webhook_verifier_token'] = 'enc:test-verifier';
+        $gateway = new class extends YSHelcimJsGateway {
+            protected function hasDurableRecoverySchedule(): bool
+            {
+                return false;
+            }
+
+            protected function verifyRecoveryApiAccess(): true|\WP_Error
+            {
+                return true;
+            }
+        };
+
+        $result = $gateway->makePaymentFromPaymentInstance($this->paymentInstance());
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_js_recovery_unavailable', $result->get_error_code());
+    }
+
+    public function testPurchaseInitializationFailsClosedWithoutCardTransactionReadPermission(): void
+    {
+        BaseGatewaySettings::$settingsByClass[YSHelcimJsSettings::class]['test_webhook_verifier_token'] = 'enc:test-verifier';
+        $gateway = new class extends YSHelcimJsGateway {
+            protected function hasDurableRecoverySchedule(): bool
+            {
+                return true;
+            }
+
+            protected function verifyRecoveryApiAccess(): true|\WP_Error
+            {
+                return new \WP_Error(
+                    'ys_helcim_hosted_recovery_permission_unavailable',
+                    'Read permission unavailable.'
+                );
+            }
+        };
+
+        $result = $gateway->makePaymentFromPaymentInstance($this->paymentInstance());
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_hosted_recovery_permission_unavailable', $result->get_error_code());
+    }
+
     public function testCheckoutInfoFailsBeforeCardEntryWhenRecoveryCredentialsAreMissing(): void
     {
         $gateway = new class extends YSHelcimJsGateway {
@@ -82,6 +149,69 @@ final class GatewayPaymentInitializationTest extends TestCase
         } catch (\YSHelcimWpJsonExit $response) {
             self::assertSame(503, $response->statusCode);
             self::assertSame('failed', $response->payload['status']);
+        }
+    }
+
+    public function testCheckoutInfoFailsBeforeCardEntryWhenRecurringRecoveryCannotBeScheduled(): void
+    {
+        BaseGatewaySettings::$settingsByClass[YSHelcimJsSettings::class]['test_webhook_verifier_token'] = 'enc:test-verifier';
+        $gateway = new class extends YSHelcimJsGateway {
+            public function isCurrencySupported(): bool
+            {
+                return true;
+            }
+
+            protected function hasDurableRecoverySchedule(): bool
+            {
+                return false;
+            }
+
+            protected function verifyRecoveryApiAccess(): true|\WP_Error
+            {
+                return true;
+            }
+        };
+
+        try {
+            $gateway->getOrderInfo([]);
+            self::fail('getOrderInfo must terminate through wp_send_json.');
+        } catch (\YSHelcimWpJsonExit $response) {
+            self::assertSame(503, $response->statusCode);
+            self::assertSame('failed', $response->payload['status']);
+            self::assertStringContainsString('recovery', strtolower($response->payload['message']));
+        }
+    }
+
+    public function testCheckoutInfoFailsBeforeCardEntryWithoutCardTransactionReadPermission(): void
+    {
+        BaseGatewaySettings::$settingsByClass[YSHelcimJsSettings::class]['test_webhook_verifier_token'] = 'enc:test-verifier';
+        $gateway = new class extends YSHelcimJsGateway {
+            public function isCurrencySupported(): bool
+            {
+                return true;
+            }
+
+            protected function hasDurableRecoverySchedule(): bool
+            {
+                return true;
+            }
+
+            protected function verifyRecoveryApiAccess(): true|\WP_Error
+            {
+                return new \WP_Error(
+                    'ys_helcim_hosted_recovery_permission_unavailable',
+                    'Read permission unavailable.'
+                );
+            }
+        };
+
+        try {
+            $gateway->getOrderInfo([]);
+            self::fail('getOrderInfo must terminate through wp_send_json.');
+        } catch (\YSHelcimWpJsonExit $response) {
+            self::assertSame(503, $response->statusCode);
+            self::assertSame('failed', $response->payload['status']);
+            self::assertSame('Read permission unavailable.', $response->payload['message']);
         }
     }
 
@@ -137,7 +267,13 @@ final class GatewayPaymentInitializationTest extends TestCase
     private function paymentInstance(): PaymentInstance
     {
         return new PaymentInstance(
-            (object) ['id' => 10],
+            (object) [
+                'id' => 10,
+                'billing_address' => (object) [
+                    'address_1' => '123 Test Street',
+                    'postcode' => '100',
+                ],
+            ],
             (object) [
                 'id' => 20,
                 'uuid' => 'fc-transaction-123',

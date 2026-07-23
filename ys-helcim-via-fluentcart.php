@@ -3,7 +3,7 @@
  * Plugin Name: YS Helcim via FluentCart
  * Plugin URI: https://yangsheep.com.tw
  * Description: Adds Helcim as a payment gateway for FluentCart — offering both a HelcimPay.js modal checkout and a helcim.js inline card form, complete with refunds and webhook reconciliation.
- * Version: 1.1.0-rc.2
+ * Version: 1.1.0-rc.8
  * Author: YANGSHEEP DESIGN
  * Author URI: https://yangsheep.com.tw
  * Text Domain: ys-helcim-via-fluentcart
@@ -21,7 +21,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 // ── Plugin constants ─────────────────────────────────────────────────────────
 
-define( 'YS_HELCIM_FCT_VERSION', '1.1.0-rc.2' );
+define( 'YS_HELCIM_FCT_VERSION', '1.1.0-rc.8' );
 define( 'YS_HELCIM_FCT_FILE', __FILE__ );
 define( 'YS_HELCIM_FCT_DIR', plugin_dir_path( __FILE__ ) );
 define( 'YS_HELCIM_FCT_URL', plugin_dir_url( __FILE__ ) );

@@ -32,6 +32,7 @@ class YSHelcimApiClient {
 	public const MUTATION_NEVER_SENT             = 'never_sent';
 	public const MUTATION_AUTHENTICATION_REJECTED = 'authentication_rejected';
 	public const MUTATION_DEFINITIVE_DECLINE      = 'definitive_decline';
+	public const MUTATION_VALIDATION_REJECTED     = 'validation_rejected';
 	public const MUTATION_OUTCOME_UNKNOWN         = 'outcome_unknown';
 
 	/**
@@ -211,11 +212,18 @@ class YSHelcimApiClient {
 				$decoded,
 				$safe_errors
 			);
+			$is_validation_rejection = self::isExactPurchaseValidationRejection(
+				$method,
+				$endpoint_path,
+				$http_code,
+				$decoded,
+				$safe_errors
+			);
 			$is_abnormal_status = $http_code < 200 || ( $http_code >= 300 && $http_code < 400 );
 			$is_authentication_rejection = 'POST' === $method
 				&& 'payment/purchase' === $endpoint_path
 				&& 401 === $http_code;
-			$is_ambiguous_http  = ! $is_definitive_decline && ( $is_abnormal_status
+			$is_ambiguous_http  = ! $is_definitive_decline && ! $is_validation_rejection && ( $is_abnormal_status
 				|| $is_server_error
 				|| $is_conflict
 				|| in_array( $http_code, array( 408, 425, 429 ), true ) );
@@ -224,6 +232,8 @@ class YSHelcimApiClient {
 				$mutation_disposition = self::MUTATION_DEFINITIVE_DECLINE;
 			} elseif ( $is_authentication_rejection ) {
 				$mutation_disposition = self::MUTATION_AUTHENTICATION_REJECTED;
+			} elseif ( $is_validation_rejection ) {
+				$mutation_disposition = self::MUTATION_VALIDATION_REJECTED;
 			}
 			$error_data         = array(
 				'kind'                 => $is_conflict ? 'conflict' : ( $is_ambiguous_http ? 'http' : 'provider' ),
@@ -236,6 +246,13 @@ class YSHelcimApiClient {
 			}
 			if ( $is_definitive_decline ) {
 				$error_data['definitive_decline'] = true;
+			}
+			if ( $is_validation_rejection ) {
+				$error_data['provider_response'] = array(
+					'errors' => array(
+						'verification' => 'Card is not verified',
+					),
+				);
 			}
 
 			return new \WP_Error(
@@ -272,6 +289,28 @@ class YSHelcimApiClient {
 		}
 
 		return 1 === preg_match( '/\ATransaction Declined:[^\r\n]{1,478}\z/', $safe_errors );
+	}
+
+	/**
+	 * Helcim rejects an unverified Helcim.js card token before a purchase can
+	 * be created. Only the exact documented response shape is safe to treat as
+	 * definitive; any additional success or transaction field stays unknown.
+	 */
+	private static function isExactPurchaseValidationRejection(
+		string $method,
+		string $endpoint_path,
+		int $http_code,
+		array $decoded,
+		mixed $safe_errors
+	): bool {
+		return 'POST' === $method
+			&& 'payment/purchase' === $endpoint_path
+			&& 400 === $http_code
+			&& array( 'errors' ) === array_keys( $decoded )
+			&& is_array( $decoded['errors'] )
+			&& array( 'verification' ) === array_keys( $decoded['errors'] )
+			&& 'Card is not verified' === ( $decoded['errors']['verification'] ?? null )
+			&& array( 'verification' => 'Card is not verified' ) === $safe_errors;
 	}
 
 	/**

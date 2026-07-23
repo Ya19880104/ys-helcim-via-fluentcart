@@ -24,6 +24,10 @@ if ( ! defined( 'ABSPATH' ) ) {
  * Reconciles a lost hosted callback without ever initiating another charge.
  */
 final class YSHelcimPayRecoveryService {
+	public const POLICY_HOSTED_CHECKOUT = 'hosted_checkout';
+
+	public const POLICY_SERVER_PURCHASE = 'server_purchase';
+
 	/** Helcim documents hosted checkout tokens as valid for sixty minutes. */
 	private const CHECKOUT_SESSION_TTL_SECONDS = 3600;
 
@@ -66,18 +70,38 @@ final class YSHelcimPayRecoveryService {
 		'ys_helcim_initialized_at',
 	);
 
+	private string $gateway;
+
+	private string $policy;
+
 	public function __construct(
 		private YSHelcimOperationRepository $operations,
 		private YSHelcimJsPurchaseRuntime $runtime,
 		callable $transaction_loader,
 		callable $credential_resolver,
 		callable $provider_lookup,
-		?callable $clock = null
+		?callable $clock = null,
+		string $gateway = 'ys_helcim',
+		string $policy = self::POLICY_HOSTED_CHECKOUT
 	) {
+		$expected_policy = match ( $gateway ) {
+			'ys_helcim'    => self::POLICY_HOSTED_CHECKOUT,
+			'ys_helcim_js' => self::POLICY_SERVER_PURCHASE,
+			default        => null,
+		};
+		if ( null === $expected_policy || $expected_policy !== $policy ) {
+			throw new \InvalidArgumentException( 'The purchase recovery gateway policy is invalid.' );
+		}
+
 		$this->transaction_loader   = $transaction_loader;
 		$this->credential_resolver  = $credential_resolver;
 		$this->provider_lookup      = $provider_lookup;
 		$this->clock                = $clock ?? static fn (): int => time();
+		$this->gateway              = $gateway;
+		$this->policy               = $policy;
+		if ( self::POLICY_SERVER_PURCHASE === $policy ) {
+			$this->terminal_meta_keys = array();
+		}
 	}
 
 	/**
@@ -185,12 +209,14 @@ final class YSHelcimPayRecoveryService {
 			if ( null === YSHelcimTransactionId::normalize( $candidates[0]['transactionId'] ?? null ) ) {
 				return self::ambiguous();
 			}
-			$expired = $this->checkoutMaterialExpired( $row );
-			if ( is_wp_error( $expired ) ) {
-				return $expired;
-			}
-			if ( ! $expired ) {
-				return self::result( $operation_uuid, 'pending', 'checkout_session_still_valid' );
+			if ( self::POLICY_HOSTED_CHECKOUT === $this->policy ) {
+				$expired = $this->checkoutMaterialExpired( $row );
+				if ( is_wp_error( $expired ) ) {
+					return $expired;
+				}
+				if ( ! $expired ) {
+					return self::result( $operation_uuid, 'pending', 'checkout_session_still_valid' );
+				}
 			}
 		}
 
@@ -216,7 +242,7 @@ final class YSHelcimPayRecoveryService {
 		}
 		if (
 			(int) ( $transaction->id ?? 0 ) !== (int) ( $row['transaction_id'] ?? 0 ) ||
-			'ys_helcim' !== (string) ( $transaction->payment_method ?? '' ) ||
+			$this->gateway !== (string) ( $transaction->payment_method ?? '' ) ||
 			Status::TRANSACTION_TYPE_CHARGE !== (string) ( $transaction->transaction_type ?? '' )
 		) {
 			return self::error( 'ys_helcim_hosted_recovery_transaction_mismatch', 'The hosted payment transaction identity does not match.' );
@@ -224,7 +250,7 @@ final class YSHelcimPayRecoveryService {
 
 		$purchase = YSHelcimPurchaseOperation::fromTransaction(
 			array(
-				'gateway'          => 'ys_helcim',
+				'gateway'          => $this->gateway,
 				'order_id'         => (int) ( $transaction->order_id ?? 0 ),
 				'transaction_id'   => (int) ( $transaction->id ?? 0 ),
 				'transaction_uuid' => (string) ( $transaction->uuid ?? '' ),
@@ -242,7 +268,7 @@ final class YSHelcimPayRecoveryService {
 		$correlation = strtolower( trim( (string) ( $row['provider_correlation_id'] ?? '' ) ) );
 		if (
 			! $purchase->matchesIdentityRow( $row ) ||
-			'ys_helcim' !== (string) ( $row['gateway'] ?? '' ) ||
+			$this->gateway !== (string) ( $row['gateway'] ?? '' ) ||
 			'purchase' !== (string) ( $row['operation_type'] ?? '' ) ||
 			'' === $correlation ||
 			! hash_equals( $operation_uuid, $correlation )
@@ -279,6 +305,10 @@ final class YSHelcimPayRecoveryService {
 
 	/** @return array<string,mixed>|\WP_Error */
 	private function handleEmptyLookup( array $row, OrderTransaction $transaction, string $operation_uuid ) {
+		if ( self::POLICY_SERVER_PURCHASE === $this->policy ) {
+			return self::result( $operation_uuid, 'pending', 'provider_lookup_empty_unresolved' );
+		}
+
 		$expired = $this->checkoutMaterialExpired( $row );
 		if ( is_wp_error( $expired ) ) {
 			return $expired;

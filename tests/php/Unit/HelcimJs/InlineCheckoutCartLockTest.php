@@ -6,6 +6,7 @@ namespace YangSheep\Helcim\FluentCart\Tests\Unit\HelcimJs;
 
 use PHPUnit\Framework\TestCase;
 use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimInlineCheckoutCartLock;
+use YangSheep\Helcim\FluentCart\Operations\YSHelcimPurchaseOperation;
 
 final class InlineCheckoutCartLockTest extends TestCase
 {
@@ -88,7 +89,7 @@ final class InlineCheckoutCartLockTest extends TestCase
     }
 
     /** @dataProvider nonInlinePaymentMethods */
-    public function testNonInlineCheckoutNeverLoadsOrLocksTheCart(array $data): void
+    public function testFreshNonHelcimCheckoutNeverLocksWhenHelcimIsDisabled(array $data): void
     {
         $database = new InlineCheckoutCartLockWpdb();
         $loadCalls = 0;
@@ -96,16 +97,52 @@ final class InlineCheckoutCartLockTest extends TestCase
             $database,
             static function () use (&$loadCalls): object {
                 ++$loadCalls;
-                return (object) [];
+                return (object) [
+                    'order_id' => null,
+                    'stage' => 'draft',
+                ];
             },
             static function (callable $callback): void {
                 unset($callback);
-            }
+            },
+            null,
+            null,
+            static fn (): bool => false
         );
 
         self::assertTrue($guard->validate(true, $data));
-        self::assertSame(0, $loadCalls);
+        self::assertSame(1, $loadCalls);
         self::assertSame([], $database->preparedQueries);
+    }
+
+    public function testFreshNonHelcimCheckoutUsesTheSharedLockWhenHelcimIsOperational(): void
+    {
+        $database = new InlineCheckoutCartLockWpdb();
+        $database->lockResults = ['1'];
+        $database->cartRows = [[
+            'order_id' => null,
+            'stage' => 'draft',
+        ]];
+        $shutdownCallbacks = [];
+        $guard = new YSHelcimInlineCheckoutCartLock(
+            $database,
+            static fn (): object => (object) [
+                'cart_hash' => 'fresh-cross-provider-cart',
+                'order_id' => null,
+                'stage' => 'draft',
+            ],
+            static function (callable $callback) use (&$shutdownCallbacks): void {
+                $shutdownCallbacks[] = $callback;
+            },
+            null,
+            null,
+            static fn (): bool => true
+        );
+
+        self::assertTrue($guard->validate(true, ['_fct_pay_method' => 'stripe']));
+        self::assertSame(1, $database->getLockCallCount());
+        self::assertSame(1, $database->cartReadCallCount());
+        self::assertCount(1, $shutdownCallbacks);
     }
 
     /** @return iterable<string,array{0:array<string,mixed>}> */
@@ -117,19 +154,322 @@ final class InlineCheckoutCartLockTest extends TestCase
         yield 'nested value is not the contract' => [['form_data' => ['_fct_pay_method' => 'ys_helcim_js']]];
     }
 
-    public function testExistingOrderSnapshotUsesFluentCartRetryPathWithoutTakingALock(): void
+    public function testExistingOrderWithoutATransactionUsesTheSerializedNativeRetryPath(): void
     {
         $database = new InlineCheckoutCartLockWpdb();
-        $shutdownCallbacks = [];
-        $guard = $this->guardForCart($database, (object) [
-            'cart_hash' => 'retry-cart',
+        $database->lockResults = ['1'];
+        $database->cartRows = [[
             'order_id' => '481',
             'stage' => 'intended',
-        ], $shutdownCallbacks);
+        ]];
+        $shutdownCallbacks = [];
+        $guard = $this->guardForCart(
+            $database,
+            (object) [
+                'cart_hash' => 'retry-cart',
+                'order_id' => '481',
+                'stage' => 'intended',
+            ],
+            $shutdownCallbacks,
+            static fn (int $orderId): null => null
+        );
 
         self::assertTrue($guard->validate(true, ['_fct_pay_method' => 'ys_helcim_js']));
-        self::assertSame([], $database->preparedQueries);
-        self::assertSame([], $shutdownCallbacks);
+        self::assertSame(1, $database->getLockCallCount());
+        self::assertSame(1, $database->cartReadCallCount());
+        self::assertCount(1, $shutdownCallbacks);
+    }
+
+    public function testExistingOrderRetryRejectsCrossGatewayJournalBeforeFluentCartCanRewriteTransaction(): void
+    {
+        $database = new InlineCheckoutCartLockWpdb();
+        $database->lockResults = ['1'];
+        $database->cartRows = [[
+            'order_id' => '481',
+            'stage' => 'intended',
+        ]];
+        $shutdownCallbacks = [];
+        $transaction = $this->transaction('ys_helcim');
+        $attempt = $this->purchaseRow($transaction, 'ys_helcim');
+        $loadedTransactionIds = [];
+        $guard = $this->guardForCart(
+            $database,
+            (object) [
+                'cart_hash' => 'gateway-switch-cart',
+                'order_id' => '481',
+                'stage' => 'intended',
+            ],
+            $shutdownCallbacks,
+            static fn (int $orderId): object => $transaction,
+            static function (int $transactionId) use (&$loadedTransactionIds, $attempt): array {
+                $loadedTransactionIds[] = $transactionId;
+                return [$attempt];
+            }
+        );
+
+        $result = $guard->validate(true, ['_fct_pay_method' => 'ys_helcim_js']);
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_checkout_payment_method_changed', $result->get_error_code());
+        self::assertSame([9001], $loadedTransactionIds);
+        self::assertSame(1, $database->getLockCallCount());
+        self::assertSame(1, $database->cartReadCallCount());
+        self::assertCount(1, $shutdownCallbacks);
+    }
+
+    public function testExistingOrderRetryIsSerializedBeforeReadingTheTransactionJournal(): void
+    {
+        $database = new InlineCheckoutCartLockWpdb();
+        $database->lockResults = ['1'];
+        $database->cartRows = [[
+            'order_id' => '481',
+            'stage' => 'intended',
+        ]];
+        $shutdownCallbacks = [];
+        $transaction = $this->transaction('ys_helcim_js');
+        $attempt = $this->purchaseRow($transaction, 'ys_helcim_js');
+        $guard = $this->guardForCart(
+            $database,
+            (object) [
+                'cart_hash' => 'serialized-existing-order-cart',
+                'order_id' => '481',
+                'stage' => 'intended',
+            ],
+            $shutdownCallbacks,
+            static fn (int $orderId): object => $transaction,
+            static fn (int $transactionId): array => [$attempt]
+        );
+
+        self::assertTrue($guard->validate(true, ['_fct_pay_method' => 'ys_helcim_js']));
+        self::assertSame(1, $database->getLockCallCount());
+        self::assertSame(1, $database->cartReadCallCount());
+        self::assertCount(1, $shutdownCallbacks);
+    }
+
+    public function testExistingHelcimJournalRejectsSwitchingToANonHelcimGateway(): void
+    {
+        $database = new InlineCheckoutCartLockWpdb();
+        $database->lockResults = ['1'];
+        $database->cartRows = [[
+            'order_id' => '481',
+            'stage' => 'intended',
+        ]];
+        $shutdownCallbacks = [];
+        $transaction = $this->transaction('ys_helcim_js');
+        $attempt = $this->purchaseRow($transaction, 'ys_helcim_js');
+        $guard = $this->guardForCart(
+            $database,
+            (object) [
+                'cart_hash' => 'switch-to-stripe-cart',
+                'order_id' => '481',
+                'stage' => 'intended',
+            ],
+            $shutdownCallbacks,
+            static fn (int $orderId): object => $transaction,
+            static fn (int $transactionId): array => [$attempt]
+        );
+
+        $result = $guard->validate(true, ['_fct_pay_method' => 'stripe']);
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_checkout_payment_method_changed', $result->get_error_code());
+        self::assertSame(1, $database->getLockCallCount());
+        self::assertSame(1, $database->cartReadCallCount());
+        self::assertCount(1, $shutdownCallbacks);
+    }
+
+    /** @dataProvider unsafeJournalFreeTransactions */
+    public function testExistingOrderWithoutJournalRejectsAProviderReceiptOrTerminalTransaction(
+        string $status,
+        string $vendorChargeId
+    ): void {
+        $database = new InlineCheckoutCartLockWpdb();
+        $database->lockResults = ['1'];
+        $database->cartRows = [[
+            'order_id' => '481',
+            'stage' => 'intended',
+        ]];
+        $shutdownCallbacks = [];
+        $transaction = $this->transaction('ys_helcim_js');
+        $transaction->status = $status;
+        $transaction->vendor_charge_id = $vendorChargeId;
+        $guard = $this->guardForCart(
+            $database,
+            (object) [
+                'cart_hash' => 'unsafe-journal-free-cart',
+                'order_id' => '481',
+                'stage' => 'intended',
+            ],
+            $shutdownCallbacks,
+            static fn (int $orderId): object => $transaction,
+            static fn (int $transactionId): array => []
+        );
+
+        $result = $guard->validate(true, ['_fct_pay_method' => 'ys_helcim_js']);
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_checkout_cart_unavailable', $result->get_error_code());
+    }
+
+    /** @return iterable<string,array{0:string,1:string}> */
+    public static function unsafeJournalFreeTransactions(): iterable
+    {
+        yield 'provider receipt on pending transaction' => ['pending', '51935987'];
+        yield 'succeeded without receipt' => ['succeeded', ''];
+        yield 'authorized without receipt' => ['authorized', ''];
+        yield 'refunded without receipt' => ['refunded', ''];
+    }
+
+    public function testExistingOrderRetryAllowsTheSameImmutableHelcimGatewayIdentity(): void
+    {
+        $database = new InlineCheckoutCartLockWpdb();
+        $database->lockResults = ['1'];
+        $database->cartRows = [[
+            'order_id' => '481',
+            'stage' => 'intended',
+        ]];
+        $shutdownCallbacks = [];
+        $transaction = $this->transaction('ys_helcim_js');
+        $attempt = $this->purchaseRow($transaction, 'ys_helcim_js');
+        $guard = $this->guardForCart(
+            $database,
+            (object) [
+                'cart_hash' => 'same-gateway-retry-cart',
+                'order_id' => '481',
+                'stage' => 'intended',
+            ],
+            $shutdownCallbacks,
+            static fn (int $orderId): object => $transaction,
+            static fn (int $transactionId): array => [$attempt]
+        );
+
+        self::assertTrue($guard->validate(true, ['_fct_pay_method' => 'ys_helcim_js']));
+        self::assertSame(1, $database->getLockCallCount());
+        self::assertSame(1, $database->cartReadCallCount());
+        self::assertCount(1, $shutdownCallbacks);
+    }
+
+    public function testExistingOrderRetryWithoutAHelcimJournalKeepsTheNativeRetryPath(): void
+    {
+        $database = new InlineCheckoutCartLockWpdb();
+        $database->lockResults = ['1'];
+        $database->cartRows = [[
+            'order_id' => '481',
+            'stage' => 'intended',
+        ]];
+        $shutdownCallbacks = [];
+        $transaction = $this->transaction('ys_helcim_js');
+        $guard = $this->guardForCart(
+            $database,
+            (object) [
+                'cart_hash' => 'journal-free-retry-cart',
+                'order_id' => '481',
+                'stage' => 'intended',
+            ],
+            $shutdownCallbacks,
+            static fn (int $orderId): object => $transaction,
+            static fn (int $transactionId): array => []
+        );
+
+        self::assertTrue($guard->validate(true, ['_fct_pay_method' => 'ys_helcim_js']));
+        self::assertSame(1, $database->getLockCallCount());
+        self::assertSame(1, $database->cartReadCallCount());
+        self::assertCount(1, $shutdownCallbacks);
+    }
+
+    public function testExistingOrderWithoutJournalStillRejectsChangingHelcimGateways(): void
+    {
+        $database = new InlineCheckoutCartLockWpdb();
+        $database->lockResults = ['1'];
+        $database->cartRows = [[
+            'order_id' => '481',
+            'stage' => 'intended',
+        ]];
+        $shutdownCallbacks = [];
+        $transaction = $this->transaction('ys_helcim');
+        $guard = $this->guardForCart(
+            $database,
+            (object) [
+                'cart_hash' => 'journal-free-gateway-switch-cart',
+                'order_id' => '481',
+                'stage' => 'intended',
+            ],
+            $shutdownCallbacks,
+            static fn (int $orderId): object => $transaction,
+            static fn (int $transactionId): array => []
+        );
+
+        $result = $guard->validate(true, ['_fct_pay_method' => 'ys_helcim_js']);
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_checkout_payment_method_changed', $result->get_error_code());
+        self::assertSame(1, $database->getLockCallCount());
+        self::assertSame(1, $database->cartReadCallCount());
+        self::assertCount(1, $shutdownCallbacks);
+    }
+
+    public function testJournalFreeNonHelcimRetryRemainsOwnedByItsNativeGateway(): void
+    {
+        $database = new InlineCheckoutCartLockWpdb();
+        $database->lockResults = ['1'];
+        $database->cartRows = [[
+            'order_id' => '481',
+            'stage' => 'intended',
+        ]];
+        $shutdownCallbacks = [];
+        $transaction = $this->transaction('stripe');
+        $transaction->status = 'pending';
+        $transaction->vendor_charge_id = 'pi_native_gateway_receipt';
+        $guard = $this->guardForCart(
+            $database,
+            (object) [
+                'cart_hash' => 'stripe-native-retry-cart',
+                'order_id' => '481',
+                'stage' => 'intended',
+            ],
+            $shutdownCallbacks,
+            static fn (int $orderId): object => $transaction,
+            static fn (int $transactionId): array => []
+        );
+
+        self::assertTrue($guard->validate(true, ['_fct_pay_method' => 'stripe']));
+        self::assertSame(1, $database->getLockCallCount());
+        self::assertSame(1, $database->cartReadCallCount());
+        self::assertCount(1, $shutdownCallbacks);
+    }
+
+    public function testExistingOrderRetryFailsClosedWhenTheJournalCannotBeRead(): void
+    {
+        $database = new InlineCheckoutCartLockWpdb();
+        $database->lockResults = ['1'];
+        $database->cartRows = [[
+            'order_id' => '481',
+            'stage' => 'intended',
+        ]];
+        $shutdownCallbacks = [];
+        $transaction = $this->transaction('ys_helcim_js');
+        $guard = $this->guardForCart(
+            $database,
+            (object) [
+                'cart_hash' => 'journal-error-retry-cart',
+                'order_id' => '481',
+                'stage' => 'intended',
+            ],
+            $shutdownCallbacks,
+            static fn (int $orderId): object => $transaction,
+            static fn (int $transactionId): \WP_Error => new \WP_Error(
+                'ys_helcim_journal_unavailable',
+                'The journal is unavailable.'
+            )
+        );
+
+        $result = $guard->validate(true, ['_fct_pay_method' => 'ys_helcim_js']);
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_checkout_cart_unavailable', $result->get_error_code());
+        self::assertSame(1, $database->getLockCallCount());
+        self::assertSame(1, $database->cartReadCallCount());
+        self::assertCount(1, $shutdownCallbacks);
     }
 
     /** @dataProvider failedLockResults */
@@ -313,15 +653,58 @@ final class InlineCheckoutCartLockTest extends TestCase
     private function guardForCart(
         InlineCheckoutCartLockWpdb $database,
         object $cart,
-        array &$shutdownCallbacks
+        array &$shutdownCallbacks,
+        ?callable $transactionLoader = null,
+        ?callable $purchaseAttemptLoader = null
     ): YSHelcimInlineCheckoutCartLock {
         return new YSHelcimInlineCheckoutCartLock(
             $database,
             static fn (): object => $cart,
             static function (callable $callback) use (&$shutdownCallbacks): void {
                 $shutdownCallbacks[] = $callback;
-            }
+            },
+            $transactionLoader,
+            $purchaseAttemptLoader
         );
+    }
+
+    private function transaction(string $gateway): object
+    {
+        return (object) [
+            'id' => 9001,
+            'order_id' => 481,
+            'uuid' => 'transaction-uuid-9001',
+            'payment_method' => $gateway,
+            'transaction_type' => 'charge',
+            'total' => 123,
+            'currency' => 'USD',
+            'payment_mode' => 'test',
+            'status' => 'pending',
+            'vendor_charge_id' => '',
+        ];
+    }
+
+    /** @return array<string,mixed> */
+    private function purchaseRow(object $transaction, string $gateway): array
+    {
+        $operation = YSHelcimPurchaseOperation::fromTransaction([
+            'gateway' => $gateway,
+            'order_id' => (int) $transaction->order_id,
+            'transaction_id' => (int) $transaction->id,
+            'transaction_uuid' => (string) $transaction->uuid,
+            'amount' => (int) $transaction->total,
+            'currency' => (string) $transaction->currency,
+            'payment_mode' => (string) $transaction->payment_mode,
+        ]);
+        self::assertInstanceOf(YSHelcimPurchaseOperation::class, $operation);
+
+        $record = $operation->repositoryRecord(
+            '00000000-0000-4000-8000-000000009001',
+            hash('sha256', 'attempt')
+        );
+        self::assertIsArray($record);
+
+        return $record;
     }
 
     private function draftCart(): object

@@ -362,6 +362,57 @@ final class PurchaseCoordinatorTest extends TestCase
         self::assertSame('succeeded', $rows[1]['remote_status']);
     }
 
+    public function testValidationRejectedFailureIsTerminalReplaySafeAndReleasesScopeForFreshToken(): void
+    {
+        $providerCalls = 0;
+        $binderCalls = 0;
+        $uuids = [
+            '00000000-0000-4000-8000-000000000321',
+            '00000000-0000-4000-8000-000000000322',
+        ];
+        $coordinator = $this->coordinator(
+            static function () use (&$providerCalls): array {
+                ++$providerCalls;
+                return 1 === $providerCalls
+                    ? [
+                        'outcome' => 'failed',
+                        'definitive' => true,
+                        'mutation_disposition' => 'validation_rejected',
+                    ]
+                    : self::approvedResponse('51177124');
+            },
+            static function (array $identity, string $providerId) use (&$binderCalls): array {
+                unset($identity);
+                ++$binderCalls;
+                return ['bound' => true, 'provider_transaction_id' => $providerId];
+            },
+            static function () use (&$uuids): string {
+                return (string) array_shift($uuids);
+            }
+        );
+
+        $failed = $coordinator->execute($this->transaction(), 'unverified-card-token');
+        $replayedFailure = $coordinator->execute($this->transaction(), 'unverified-card-token');
+        $succeeded = $coordinator->execute($this->transaction(), 'fresh-card-token');
+
+        self::assertSame('failed', $failed['status']);
+        self::assertSame('provider_validation_rejected', $failed['error_code']);
+        self::assertSame('failed', $replayedFailure['status']);
+        self::assertSame($failed['operation_uuid'], $replayedFailure['operation_uuid']);
+        self::assertTrue($replayedFailure['replayed']);
+        self::assertSame('succeeded', $succeeded['status']);
+        self::assertSame(2, $providerCalls, 'The failed token replay must not call the provider again.');
+        self::assertSame(1, $binderCalls, 'A validation rejection must never bind the FluentCart transaction paid.');
+
+        $rows = $this->database->allRows();
+        self::assertCount(2, $rows);
+        self::assertSame('failed', $rows[0]['remote_status']);
+        self::assertSame('provider_validation_rejected', $rows[0]['remote_error_code']);
+        self::assertNull($rows[0]['active_scope_key']);
+        self::assertNull($rows[0]['vendor_transaction_id']);
+        self::assertSame('succeeded', $rows[1]['remote_status']);
+    }
+
     public function testDelayedOldReplayCannotEnterConcurrentSuccessorOrCreateThirdCharge(): void
     {
         $providerCalls = 0;

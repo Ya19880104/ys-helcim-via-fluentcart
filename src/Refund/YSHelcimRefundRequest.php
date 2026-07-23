@@ -185,6 +185,7 @@ final class YSHelcimRefundRequest {
 			'remaining_refundable' => $transaction['remaining_refundable'],
 			'currency'             => $transaction['currency'],
 			'payment_mode'         => $transaction['payment_mode'],
+			'order_item_quantities' => $transaction['order_item_quantities'],
 			'current_mode'         => $credentials['current_mode'],
 			'api_token'            => trim( $credentials['api_token'] ),
 			'ip_address'           => $ip_address,

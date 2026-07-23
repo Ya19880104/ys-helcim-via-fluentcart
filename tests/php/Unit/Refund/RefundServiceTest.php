@@ -9,6 +9,7 @@ use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationRepository;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundPayload;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundResult;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundService;
+use YangSheep\Helcim\FluentCart\Security\YSHelcimSensitiveEnvelope;
 use YangSheep\Helcim\FluentCart\Tests\Doubles\FakeWpdb;
 
 final class RefundServiceTest extends TestCase
@@ -63,6 +64,7 @@ final class RefundServiceTest extends TestCase
             }
         );
         $request = $this->request([
+            'order_item_quantities' => [3 => 1],
             'local_payload' => YSHelcimRefundPayload::normalize([
                 'reason' => 'REST request builder',
                 'item_ids' => [3],
@@ -140,7 +142,11 @@ final class RefundServiceTest extends TestCase
                 return self::approved('refund', '51177123', 21.00);
             },
             static fn (): string => '00000000-0000-4000-8000-000000000099',
-            static fn (): string => '2026-07-21 00:00:00'
+            static fn (): string => '2026-07-21 00:00:00',
+            static fn (array $request): array => array_merge(
+                $request,
+                ['status' => 'succeeded', 'transaction_type' => 'charge']
+            )
         );
 
         $first = $service->execute($this->request());
@@ -529,6 +535,78 @@ final class RefundServiceTest extends TestCase
         self::assertSame('127.0.0.1', $calls[3][1]['ipAddress']);
     }
 
+    public function testVersionOneCreatedChildCanResumeSafelyWithFreshServerOwnedItemContext(): void
+    {
+        $responses = [
+            self::openBatchRefundError(),
+            self::sourceTransaction(),
+            ['id' => 4209764, 'closed' => false],
+            self::approved('reverse', '51177124', 21.00),
+        ];
+        $calls = [];
+        $childUuid = '00000000-0000-4000-8000-000000000099';
+        $this->database->failNextUpdateForOperationUuid = $childUuid;
+        $service = $this->service(
+            static function (...$args) use (&$responses, &$calls): array|\WP_Error {
+                $calls[] = $args;
+                return array_shift($responses);
+            }
+        );
+        $request = $this->request();
+
+        self::assertInstanceOf(\WP_Error::class, $service->execute($request));
+        $child = $this->repository->findByUuid($childUuid);
+        self::assertIsArray($child);
+        $plaintext = YSHelcimSensitiveEnvelope::decrypt($child['encrypted_material']);
+        self::assertIsString($plaintext);
+        $legacyMaterial = json_decode($plaintext, true, 512, JSON_THROW_ON_ERROR);
+        $legacyMaterial['version'] = 1;
+        unset($legacyMaterial['order_item_quantities']);
+        self::assertSame(1, $this->database->update(
+            'wp_ys_helcim_operations',
+            [
+                'encrypted_material' => YSHelcimSensitiveEnvelope::encrypt(
+                    json_encode($legacyMaterial, JSON_THROW_ON_ERROR)
+                ),
+            ],
+            ['operation_uuid' => $childUuid]
+        ));
+
+        $result = $service->execute($request);
+
+        self::assertInstanceOf(YSHelcimRefundResult::class, $result);
+        self::assertSame(YSHelcimRefundResult::SUCCEEDED, $result->status());
+        self::assertSame($childUuid, $result->effectiveOperationUuid());
+        self::assertSame(
+            ['payment/refund', 'card-transactions/51177061', 'card-batches/4209764', 'payment/reverse'],
+            array_column($calls, 0)
+        );
+    }
+
+    public function testLargeValidOrderItemSnapshotDoesNotIntroduceAnArtificialRefundLimit(): void
+    {
+        $calls = [];
+        $quantities = [];
+        for ($itemId = 1; $itemId <= 101; ++$itemId) {
+            $quantities[$itemId] = 1;
+        }
+        $service = $this->service(
+            static function (...$args) use (&$calls): array {
+                $calls[] = $args;
+                return self::approved('refund', '51177123', 21.00);
+            }
+        );
+
+        $result = $service->execute($this->request([
+            'order_item_quantities' => $quantities,
+            'local_payload' => ['item_ids' => [101]],
+        ]));
+
+        self::assertInstanceOf(YSHelcimRefundResult::class, $result);
+        self::assertSame(YSHelcimRefundResult::SUCCEEDED, $result->status());
+        self::assertCount(1, $calls);
+    }
+
     public function testCreatedChildCannotResumeWithDifferentCredential(): void
     {
         $responses = [self::openBatchRefundError(), self::sourceTransaction(), ['id' => 4209764, 'closed' => false]];
@@ -640,6 +718,224 @@ final class RefundServiceTest extends TestCase
         self::assertCount(1, $calls);
     }
 
+    public function testSequentialStaleSnapshotIsRevalidatedAfterScopeClaimBeforeProviderMutation(): void
+    {
+        $providerCalls = [];
+        $freshnessStates = [];
+        $freshContext = array_merge(
+            $this->request([
+                'amount' => 1000,
+                'refunded_total' => 1100,
+                'remaining_refundable' => 1000,
+            ]),
+            ['status' => 'succeeded', 'transaction_type' => 'charge']
+        );
+        $service = $this->service(
+            static function (...$args) use (&$providerCalls): array {
+                $providerCalls[] = $args;
+                return self::approved(
+                    'refund',
+                    (string) (51177123 + count($providerCalls) - 1),
+                    10.00
+                );
+            },
+            function (array $request) use (&$freshContext, &$freshnessStates): array {
+                $operation = $this->repository->findByUuid($request['operation_uuid']);
+                $freshnessStates[] = is_array($operation) ? $operation['remote_status'] : null;
+                return $freshContext;
+            }
+        );
+
+        $firstRequest = $freshContext;
+        $first = $service->execute($firstRequest);
+
+        self::assertSame(YSHelcimRefundResult::SUCCEEDED, $first->status());
+        self::assertTrue($this->repository->claimLocalApplying($firstRequest['operation_uuid'], 'pending'));
+        self::assertTrue(
+            $this->repository->transitionLocal(
+                $firstRequest['operation_uuid'],
+                'applying',
+                'applied'
+            )
+        );
+
+        $freshContext['refunded_total'] = 2100;
+        $freshContext['remaining_refundable'] = 0;
+        $secondRequest = array_merge(
+            $firstRequest,
+            ['operation_uuid' => '00000000-0000-4000-8000-000000000002']
+        );
+
+        $second = $service->execute($secondRequest);
+
+        self::assertCount(1, $providerCalls, 'A stale second snapshot must be rejected before another provider mutation.');
+        self::assertSame(['processing', 'processing'], $freshnessStates);
+        self::assertSame(YSHelcimRefundResult::FAILED, $second->status());
+        $secondOperation = $this->repository->findByUuid($secondRequest['operation_uuid']);
+        self::assertSame('failed', $secondOperation['remote_status']);
+        self::assertNull($secondOperation['active_scope_key']);
+    }
+
+    public function testOrderItemQuantityDriftAfterScopeClaimStopsBeforeProviderMutation(): void
+    {
+        $providerCalls = [];
+        $request = $this->request([
+            'order_item_quantities' => [101 => 2],
+            'local_payload' => [
+                'item_ids' => [101],
+                'manage_stock' => true,
+                'refunded_items' => [
+                    ['id' => 101, 'restore_quantity' => 2],
+                ],
+            ],
+        ]);
+        $freshContext = array_merge(
+            $request,
+            [
+                'status' => 'succeeded',
+                'transaction_type' => 'charge',
+                'order_item_quantities' => [101 => 1],
+            ]
+        );
+        $service = $this->service(
+            static function (...$args) use (&$providerCalls): array {
+                $providerCalls[] = $args;
+                return self::approved('refund', '51177123', 21.00);
+            },
+            static fn (): array => $freshContext
+        );
+
+        $result = $service->execute($request);
+
+        self::assertCount(
+            0,
+            $providerCalls,
+            'Changed order item quantities must be rejected after the scope claim and before a provider mutation.'
+        );
+        self::assertInstanceOf(YSHelcimRefundResult::class, $result);
+        self::assertSame(YSHelcimRefundResult::FAILED, $result->status());
+        self::assertSame('ys_helcim_refund_context_stale', $result->errorCode());
+        $operation = $this->repository->findByUuid($request['operation_uuid']);
+        self::assertSame('failed', $operation['remote_status']);
+        self::assertNull($operation['active_scope_key']);
+    }
+
+    /**
+     * @dataProvider unusableFreshnessLoaderResults
+     */
+    public function testUnusableFreshnessResultFailsClosedAfterScopeClaimWithoutProviderMutation(
+        callable $loaderResult
+    ): void {
+        $providerCalls = [];
+        $freshnessStates = [];
+        $request = $this->request();
+        $service = $this->service(
+            static function (...$args) use (&$providerCalls): array {
+                $providerCalls[] = $args;
+                return self::approved('refund', '51177123', 21.00);
+            },
+            function (array $claimedRequest, array $row) use ($loaderResult, &$freshnessStates) {
+                $operation = $this->repository->findByUuid($claimedRequest['operation_uuid']);
+                $freshnessStates[] = is_array($operation) ? $operation['remote_status'] : null;
+
+                return $loaderResult($claimedRequest, $row);
+            }
+        );
+
+        $result = $service->execute($request);
+
+        self::assertSame(['processing'], $freshnessStates);
+        self::assertCount(0, $providerCalls);
+        self::assertInstanceOf(YSHelcimRefundResult::class, $result);
+        self::assertSame(YSHelcimRefundResult::FAILED, $result->status());
+        self::assertSame('ys_helcim_refund_freshness_unavailable', $result->errorCode());
+        $operation = $this->repository->findByUuid($request['operation_uuid']);
+        self::assertSame('failed', $operation['remote_status']);
+        self::assertSame('ys_helcim_refund_freshness_unavailable', $operation['remote_error_code']);
+        self::assertNull($operation['active_scope_key']);
+    }
+
+    /**
+     * @dataProvider validWpdbTransactionIds
+     */
+    public function testDefaultFreshnessLoaderNormalizesCanonicalWpdbTransactionId(
+        int|string $databaseTransactionId
+    ): void
+    {
+        $this->repository = new YSHelcimOperationRepository(
+            $this->operationDatabaseReturningTransactionId($databaseTransactionId),
+            static fn (): string => '2026-07-21 00:00:00'
+        );
+        $providerCalls = [];
+        $loadedTransactionIds = [];
+        $request = $this->request();
+        $service = new YSHelcimRefundService(
+            $this->repository,
+            static function (...$args) use (&$providerCalls): array {
+                $providerCalls[] = $args;
+                return self::approved('refund', '51177123', 21.00);
+            },
+            static fn (): string => '00000000-0000-4000-8000-000000000099',
+            static fn (): string => '2026-07-21 00:00:00',
+            null,
+            static function () use (&$loadedTransactionIds, $request): callable {
+                return static function (int $transactionId) use (&$loadedTransactionIds, $request): array {
+                    $loadedTransactionIds[] = $transactionId;
+
+                    return array_merge(
+                        $request,
+                        ['status' => 'succeeded', 'transaction_type' => 'charge']
+                    );
+                };
+            }
+        );
+
+        $result = $service->execute($request);
+
+        self::assertSame([20], $loadedTransactionIds);
+        self::assertCount(1, $providerCalls);
+        self::assertSame(YSHelcimRefundResult::SUCCEEDED, $result->status());
+    }
+
+    /**
+     * @dataProvider invalidWpdbTransactionIds
+     */
+    public function testDefaultFreshnessLoaderRejectsUnsafeWpdbTransactionIdWithoutProviderMutation(
+        mixed $databaseTransactionId
+    ): void {
+        $this->repository = new YSHelcimOperationRepository(
+            $this->operationDatabaseReturningTransactionId($databaseTransactionId),
+            static fn (): string => '2026-07-21 00:00:00'
+        );
+        $providerCalls = [];
+        $loaderFactoryCalls = 0;
+        $request = $this->request();
+        $service = new YSHelcimRefundService(
+            $this->repository,
+            static function (...$args) use (&$providerCalls): array {
+                $providerCalls[] = $args;
+                return self::approved('refund', '51177123', 21.00);
+            },
+            static fn (): string => '00000000-0000-4000-8000-000000000099',
+            static fn (): string => '2026-07-21 00:00:00',
+            null,
+            static function () use (&$loaderFactoryCalls): callable {
+                ++$loaderFactoryCalls;
+                return static fn (): array => [];
+            }
+        );
+
+        $result = $service->execute($request);
+
+        self::assertSame(0, $loaderFactoryCalls);
+        self::assertCount(0, $providerCalls);
+        self::assertSame(YSHelcimRefundResult::FAILED, $result->status());
+        self::assertSame('ys_helcim_refund_freshness_unavailable', $result->errorCode());
+        $operation = $this->repository->findByUuid($request['operation_uuid']);
+        self::assertSame('failed', $operation['remote_status']);
+        self::assertNull($operation['active_scope_key']);
+    }
+
     /**
      * @dataProvider invalidRequestValues
      */
@@ -710,6 +1006,48 @@ final class RefundServiceTest extends TestCase
         ];
     }
 
+    /** @return array<string, array{callable}> */
+    public static function unusableFreshnessLoaderResults(): array
+    {
+        return [
+            'WP_Error' => [
+                static fn (): \WP_Error => new \WP_Error('freshness_lookup_failed', 'lookup failed'),
+            ],
+            'thrown exception' => [
+                static function (): never {
+                    throw new \RuntimeException('lookup crashed');
+                },
+            ],
+            'non-array result' => [
+                static fn (): string => 'not a refund context',
+            ],
+        ];
+    }
+
+    /** @return array<string, array{int|string}> */
+    public static function validWpdbTransactionIds(): array
+    {
+        return [
+            'integer' => [20],
+            'canonical digit string' => ['20'],
+        ];
+    }
+
+    /** @return array<string, array{mixed}> */
+    public static function invalidWpdbTransactionIds(): array
+    {
+        return [
+            'zero' => [0],
+            'negative integer' => [-20],
+            'leading zero string' => ['020'],
+            'signed string' => ['+20'],
+            'trailing characters' => ['20x'],
+            'boolean' => [true],
+            'float' => [20.0],
+            'above platform integer range' => [(string) PHP_INT_MAX . '0'],
+        ];
+    }
+
     /** @return array<string, array{string, mixed}> */
     public static function invalidRequestValues(): array
     {
@@ -726,14 +1064,48 @@ final class RefundServiceTest extends TestCase
         ];
     }
 
-    private function service(callable $api): YSHelcimRefundService
+    private function service(callable $api, ?callable $freshnessLoader = null): YSHelcimRefundService
     {
         return new YSHelcimRefundService(
             $this->repository,
             $api,
             static fn (): string => '00000000-0000-4000-8000-000000000099',
-            static fn (): string => '2026-07-21 00:00:00'
+            static fn (): string => '2026-07-21 00:00:00',
+            $freshnessLoader ?? static fn (array $request): array => array_merge(
+                $request,
+                ['status' => 'succeeded', 'transaction_type' => 'charge']
+            )
         );
+    }
+
+    private function operationDatabaseReturningTransactionId(mixed $transactionId): object
+    {
+        return new class ($this->database, $transactionId) {
+            public string $prefix;
+
+            public int $insert_id = 0;
+
+            public string $last_error = '';
+
+            public function __construct(
+                private FakeWpdb $database,
+                private mixed $transactionId
+            ) {
+                $this->prefix = $database->prefix;
+            }
+
+            public function __call(string $name, array $arguments): mixed
+            {
+                $result = $this->database->{$name}(...$arguments);
+                $this->insert_id = $this->database->insert_id;
+                $this->last_error = $this->database->last_error;
+                if ('get_row' === $name && is_array($result) && array_key_exists('transaction_id', $result)) {
+                    $result['transaction_id'] = $this->transactionId;
+                }
+
+                return $result;
+            }
+        };
     }
 
     /** @param array<string, mixed> $overrides @return array<string, mixed> */
@@ -753,6 +1125,7 @@ final class RefundServiceTest extends TestCase
                 'remaining_refundable' => 2100,
                 'currency' => 'USD',
                 'payment_mode' => 'test',
+                'order_item_quantities' => [101 => 2],
                 'current_mode' => 'test',
                 'api_token' => 'unit-test-api-token',
                 'ip_address' => '127.0.0.1',

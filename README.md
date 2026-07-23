@@ -2,13 +2,13 @@
 
 Helcim payment integration for FluentCart with durable payment operations, remote-first refunds, and signed webhook recovery.
 
-> **Release candidate — 1.1.0-rc.2**
+> **Release candidate — 1.1.0-rc.8**
 >
 > This is the dual-gateway v1.1.0 candidate: the hosted HelcimPay.js modal and the Helcim.js inline form are both registered only when their current-mode credentials and the shared durable recovery runtime are available. RC status still means pre-release; promote it only after both browser flows pass the release gates below on the development and client test environments.
 
 ## Payment methods
 
-| Payment method | Collection mode | v1.1.0-rc.2 status |
+| Payment method | Collection mode | v1.1.0-rc.8 status |
 |---|---|---|
 | **Credit card (Helcim)** (`ys_helcim`) | HelcimPay.js hosted modal; lowest PCI scope and the path for supported digital wallets | Registered for RC testing through the durable two-phase hosted coordinator |
 | **Credit card (Helcim inline form)** (`ys_helcim_js`) | Helcim.js Verify tokenization in the browser, followed by a server-side v2 purchase | Registered for RC testing when all current-mode credentials and recovery prerequisites are present |
@@ -26,9 +26,9 @@ Both payment methods use the same safety invariants: a durable operation is clai
 | Database | Transaction-safe InnoDB tables for FluentCart and the plugin operation tables |
 | HTTPS | Required for inline card entry and webhook delivery |
 | Scheduled jobs | Working WordPress Cron or an equivalent server cron that runs due WordPress events at least once per minute |
-| Helcim | A production account or dedicated Developer Test Account with the required API, Helcim.js, and webhook credentials; the hosted API token must permit `GET /card-transactions` |
+| Helcim | A production account or dedicated Developer Test Account with the required API, Helcim.js, and webhook credentials; the API token must grant Transaction Processing Admin and permit `GET /card-transactions` |
 
-The plugin fails closed when FluentCart is unavailable, storage is not transaction-safe, required credentials are missing, or durable recovery cannot be scheduled.
+The plugin fails closed when FluentCart is unavailable, storage is not transaction-safe, required credentials are missing, or its recovery event cannot be scheduled. Site operators must separately prove that WordPress Cron is actually being executed.
 
 ## Installation
 
@@ -54,22 +54,22 @@ Secret fields are encrypted with FluentCart's key helpers before storage. A miss
 
 The inline gateway requires all four values for the active mode:
 
-1. **API Token** with transaction-processing access.
+1. **API Token** with **Transaction Processing Admin** access. Purchase alone is insufficient because refund and reverse also use this token.
 2. **Helcim.js Token** from a Helcim.js configuration created as **Card Verify / Tokenize Only**.
 3. **Helcim.js Secret Key** from the same configuration.
 4. **Webhook Verifier Token** belonging to the same Helcim account and mode.
 
-The browser uses Helcim.js only to verify/tokenize the card. WordPress then calls the v2 `payment/purchase` endpoint with the verified card token. The v2 purchase transaction ID—not a legacy Verify ID—is the refundable provider identifier stored for the FluentCart transaction.
+The Helcim.js configuration must be **Active**, use the matching currency and terminal, include the checkout site's exact HTTPS origin under **Website URLs**, and have **Include XML on Response** enabled. The browser sends only the returned `xml` and `xmlHash` proof envelope to WordPress. WordPress verifies Helcim's keyed full-XML proof with the matching Secret Key, extracts the card token only from that authenticated XML, and then calls the v2 `payment/purchase` endpoint. The v2 purchase transaction ID—not the Verify ID—is the refundable provider identifier stored for the FluentCart transaction.
 
 ### Developer Test Account behavior
 
-Use Helcim's official test cards only with a dedicated Developer Test Account. The account's terminal enforces its test status.
+Use Helcim's official test cards only with a dedicated Developer Test Account. The account's terminal enforces its test status. Keep the legacy Helcim.js Configuration's **Test Mode off**.
 
 The inline Verify-to-v2-purchase flow intentionally **omits** the legacy Helcim.js `test=1` field. Sending that flag can produce a demonstration token that the v2 Payment API rejects as unverified. FluentCart Order Mode still selects the test credential set; it does not turn the deprecated SDK flag back on.
 
 ## Hosted HelcimPay.js configuration and two-phase flow
 
-The hosted gateway requires the active mode's **API Token** and **Webhook Verifier Token**. The API Access configuration must permit both hosted initialization and Card Transaction reads through `GET /card-transactions`; the latter is required to recover a lost browser callback. Hosted checkout fails closed if that read capability or the recurring recovery schedule cannot be proven. It provides the lowest PCI scope and supports Helcim-hosted payment experiences such as eligible digital wallets.
+The hosted gateway requires the active mode's **API Token** and **Webhook Verifier Token**. The API Access configuration must enable the checkout integration, grant **Transaction Processing Admin**, and permit Card Transaction reads through `GET /card-transactions`; the latter is required to recover a lost browser callback. Hosted checkout fails closed if that read capability or the recurring recovery schedule cannot be proven. It provides the lowest PCI scope and supports Helcim-hosted payment experiences such as eligible digital wallets.
 
 Hosted checkout uses a durable two-phase boundary:
 
@@ -92,6 +92,8 @@ When the browser callback is lost, the one-minute recovery worker begins provide
 - A paused or charged-but-locally-incomplete operation appears in a `manage_options` WordPress admin notice. An administrator may use **Check Helcim once** for one nonce-protected lookup; this does not reset the automatic retry budget, and an inconclusive result remains locked.
 
 Before enabling hosted checkout on each test/live credential set, confirm that a harmless filtered `GET /card-transactions` request succeeds and returns the documented root JSON list. A `401`, `403`, timeout, malformed envelope, or missing recurring event disables new hosted checkout rather than weakening recovery.
+
+The recurring event stored by WordPress is only a schedule record; it does not prove that a process is executing due events. If `DISABLE_WP_CRON` is enabled, configure and monitor an external runner that invokes WordPress cron at least once per minute. Verify that the Helcim events advance and that a deliberately due recovery operation is claimed before treating hosted recovery as available.
 
 ## Mandatory clean webhook
 
@@ -150,8 +152,8 @@ Durable local effects and stale-claim recovery depend on scheduled events:
 
 - A per-operation event retries incomplete local refund effects.
 - A bounded one-minute sweep recovers abandoned claims and processes ready outbox rows.
-- The same one-minute cadence claims due hosted lost-callback operations, applies persisted provider success locally, and schedules bounded provider lookups with durable backoff.
-- Plugin preflight fails closed when the recurring recovery events cannot be installed or repaired; hosted checkout also checks that its recovery event remains healthy.
+- The same one-minute cadence independently claims due Hosted and Inline lost-response operations, applies persisted provider success locally, and schedules bounded provider lookups with durable backoff.
+- Plugin preflight fails closed when the recurring recovery events cannot be installed or repaired; both checkout methods also prove that the recovery event is healthy and that the current API token can perform the required read-only card-transaction lookup.
 
 On low-traffic or production sites, configure a real server cron to run due WordPress events at least once per minute. If `DISABLE_WP_CRON` is enabled, an external scheduler is mandatory. Monitor the event queue and investigate repeated outbox errors; do not delete journal rows to make a report appear clean.
 
@@ -223,7 +225,7 @@ Before replacing a client site's current payment gateway:
 
 ## Known limitations
 
-- `1.1.0-rc.2` is a pre-release dual-gateway candidate and must not be promoted until every release-candidate gate above has current environment evidence.
+- `1.1.0-rc.8` is a pre-release dual-gateway candidate and must not be promoted until every release-candidate gate above has current environment evidence.
 - Only one-time purchase and refund/reverse operations are supported.
 - Subscriptions, pre-authorization/capture, and customer-facing saved cards are not supported.
 - Only USD and CAD are supported unless the gateway filter is deliberately extended and provider support is independently confirmed.

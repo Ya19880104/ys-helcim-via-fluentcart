@@ -409,16 +409,17 @@ final class FakeWpdb
 			}
 
 			if (str_contains($query['query'], 'ys_helcim_hosted_purchase_recovery_scan')) {
-				$localClaimedBefore = (string) ($query['args'][0] ?? '');
-				$cutoff = (string) ($query['args'][1] ?? '');
-				$maxAttempts = (int) ($query['args'][2] ?? 0);
-				$dueBefore = (string) ($query['args'][3] ?? '');
-				$limit = (int) ($query['args'][4] ?? 0);
+				$gateway = (string) ($query['args'][0] ?? '');
+				$localClaimedBefore = (string) ($query['args'][1] ?? '');
+				$cutoff = (string) ($query['args'][2] ?? '');
+				$maxAttempts = (int) ($query['args'][3] ?? 0);
+				$dueBefore = (string) ($query['args'][4] ?? '');
+				$limit = (int) ($query['args'][5] ?? 0);
 				$rows = array_values(array_filter(
 					$this->rows,
 					static fn (array $row): bool =>
 						($row['operation_type'] ?? null) === 'purchase' &&
-						($row['gateway'] ?? null) === 'ys_helcim' &&
+						($row['gateway'] ?? null) === $gateway &&
 						in_array(($row['remote_status'] ?? null), ['processing', 'indeterminate', 'succeeded'], true) &&
 						(
 							in_array(($row['local_status'] ?? null), ['pending', 'failed'], true) ||
@@ -457,13 +458,14 @@ final class FakeWpdb
 			}
 
 			if (str_contains($query['query'], 'ys_helcim_hosted_purchase_attention_scan')) {
-				$maxAttempts = (int) ($query['args'][0] ?? 0);
-				$limit = (int) ($query['args'][1] ?? 0);
+				$gateway = (string) ($query['args'][0] ?? '');
+				$maxAttempts = (int) ($query['args'][1] ?? 0);
+				$limit = (int) ($query['args'][2] ?? 0);
 				$rows = array_values(array_filter(
 					$this->rows,
 					static fn (array $row): bool =>
 						($row['operation_type'] ?? null) === 'purchase' &&
-						($row['gateway'] ?? null) === 'ys_helcim' &&
+						($row['gateway'] ?? null) === $gateway &&
 						!empty($row['active_scope_key']) &&
 						in_array(($row['local_status'] ?? null), ['pending', 'failed', 'applying'], true) &&
 						(

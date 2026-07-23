@@ -41,13 +41,23 @@ $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('ys-helcim-package-test
 try {
     $firstOutput = Join-Path $tempRoot 'first'
     $secondOutput = Join-Path $tempRoot 'second'
+    $defaultOutput = Join-Path $tempRoot 'default-source'
 
     $first = & $builder -SourceRoot $repoRoot -OutputDirectory $firstOutput -PassThru
     $second = & $builder -SourceRoot $repoRoot -OutputDirectory $secondOutput -PassThru
+    $defaultProcessOutput = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $builder -OutputDirectory $defaultOutput 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "The documented build command failed without an explicit SourceRoot: $($defaultProcessOutput -join ' ')"
+    }
+    $defaultZip = Join-Path $defaultOutput 'ys-helcim-via-fluentcart.zip'
 
     if ($first.FileCount -le 0) {
         throw 'The strict runtime allowlist produced an empty archive.'
     }
+    Assert-Equal `
+        -Expected $first.Sha256 `
+        -Actual (Get-FileHash -Algorithm SHA256 -LiteralPath $defaultZip).Hash.ToLowerInvariant() `
+        -Message 'The builder default SourceRoot did not resolve to the repository root.'
     Assert-Equal -Expected $first.FileCount -Actual $second.FileCount -Message 'Two builds did not include the same runtime file count.'
     Assert-Equal -Expected $first.Sha256 -Actual $second.Sha256 -Message 'Two builds from identical input were not deterministic.'
     Assert-Equal `
@@ -58,7 +68,7 @@ try {
     & $verifier -ZipPath $first.ZipPath -ManifestPath $first.ManifestPath -SourceRoot $repoRoot
 
     $manifest = Get-Content -Raw -LiteralPath $first.ManifestPath | ConvertFrom-Json
-    Assert-Equal -Expected '1.1.0-rc.2' -Actual $manifest.version -Message 'The manifest version does not match the release candidate.'
+    Assert-Equal -Expected '1.1.0-rc.8' -Actual $manifest.version -Message 'The manifest version does not match the release candidate.'
     Assert-Equal -Expected $first.FileCount -Actual $manifest.file_count -Message 'The manifest file count is incorrect.'
     Assert-Equal -Expected $first.Sha256 -Actual $manifest.archive_sha256 -Message 'The manifest archive digest is incorrect.'
 
@@ -241,6 +251,34 @@ try {
     }
 
     Assert-Equal -Expected $true -Actual $secretRejected -Message 'The verifier accepted a binary runtime file containing a recognized credential.'
+
+    $internalNameZip = Join-Path $tempRoot 'internal-environment-name.zip'
+    Copy-Item -LiteralPath $first.ZipPath -Destination $internalNameZip
+    $archive = [System.IO.Compression.ZipFile]::Open($internalNameZip, [System.IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $entry = $archive.CreateEntry('ys-helcim-via-fluentcart/assets/internal-environment.js')
+        $entry.LastWriteTime = [System.DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [System.TimeSpan]::Zero)
+        $writer = [System.IO.StreamWriter]::new($entry.Open())
+        try {
+            $writer.Write('const environmentName = "dev-client";')
+        } finally {
+            $writer.Dispose()
+        }
+    } finally {
+        $archive.Dispose()
+    }
+
+    $internalNameRejected = $false
+    try {
+        & $verifier -ZipPath $internalNameZip
+    } catch {
+        if ($_.Exception.Message -notmatch 'development|environment') {
+            throw
+        }
+        $internalNameRejected = $true
+    }
+
+    Assert-Equal -Expected $true -Actual $internalNameRejected -Message 'The verifier accepted a bare internal development environment name.'
 
     $timestampZip = Join-Path $tempRoot 'nondeterministic-timestamp.zip'
     Copy-Item -LiteralPath $first.ZipPath -Destination $timestampZip
