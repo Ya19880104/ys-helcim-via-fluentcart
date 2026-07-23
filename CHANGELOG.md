@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Generalize the public release-candidate evidence summary so the repository and release artifact do not name a specific test merchant account.
-- Clarify that purchase operations which exhaust the seven automatic provider-lookups are intentionally retained and scope-locked. They are never auto-deleted or auto-failed from an empty result; exact signed-webhook/provider evidence or the administrator's read-only **Check Helcim once** action is required to resolve them.
+- Clarify that purchase operations which exhaust seven claimed automatic recovery attempts are intentionally retained and scope-locked. They are never auto-deleted or auto-failed from an empty result; exact signed-webhook/provider evidence or the administrator's read-only **Check Helcim once** action is required to resolve them.
 
 ### RC gate
 
