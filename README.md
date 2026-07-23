@@ -2,13 +2,13 @@
 
 Helcim payment integration for FluentCart with durable payment operations, remote-first refunds, and signed webhook recovery.
 
-> **Release candidate — 1.1.0-rc.8**
+> **Release candidate — 1.1.0-rc.9**
 >
 > This is the dual-gateway v1.1.0 candidate: the hosted HelcimPay.js modal and the Helcim.js inline form are both registered only when their current-mode credentials and the shared durable recovery runtime are available. RC status still means pre-release; promote it only after both browser flows pass the release gates below on the development and client test environments.
 
 ## Payment methods
 
-| Payment method | Collection mode | v1.1.0-rc.8 status |
+| Payment method | Collection mode | v1.1.0-rc.9 status |
 |---|---|---|
 | **Credit card (Helcim)** (`ys_helcim`) | HelcimPay.js hosted modal; lowest PCI scope and the path for supported digital wallets | Registered for RC testing through the durable two-phase hosted coordinator |
 | **Credit card (Helcim inline form)** (`ys_helcim_js`) | Helcim.js Verify tokenization in the browser, followed by a server-side v2 purchase | Registered for RC testing when all current-mode credentials and recovery prerequisites are present |
@@ -81,7 +81,7 @@ Hosted checkout uses a durable two-phase boundary:
 
 If the journal cannot be created, claimed, or read back, no hosted session is shown. If initialization fails and that failure cannot be durably recorded, the scope remains locked for reconciliation instead of inviting another charge.
 
-### Hosted lost-callback recovery
+### Hosted and Inline lost-response recovery
 
 When the browser callback is lost, the one-minute recovery worker begins provider lookup after the operation is five minutes old. During the early safety window, only one exact approved result bound to that operation can resolve the remote state; persisted success resumes local completion idempotently, and recovery never sends another purchase.
 
@@ -90,6 +90,9 @@ When the browser callback is lost, the one-minute recovery worker begins provide
 - After that safety boundary, one exact declined result may resolve the operation as declined; an empty result still cannot do so.
 - The automatic provider-lookup phase is bounded to seven claimed attempts with persisted backoff. If no exact proof is available, automatic recovery pauses while the operation and active scope remain locked.
 - A paused or charged-but-locally-incomplete operation appears in a `manage_options` WordPress admin notice. An administrator may use **Check Helcim once** for one nonce-protected lookup; this does not reset the automatic retry budget, and an inconclusive result remains locked.
+- Paused operations are intentionally retained rather than auto-deleted or auto-failed. Monitor the admin notice until exact signed-webhook/provider evidence or a conclusive **Check Helcim once** result resolves the operation; an empty lookup is never authority to unlock a replacement charge.
+- Retained rows can accumulate, so operators should monitor their count and age. A row that remains after seven attempts is an expected fail-closed state, not by itself evidence that WordPress Cron stopped; expired encrypted checkout material is purged while the audit row and transaction-scoped lock remain.
+- The lock applies only to the original FluentCart transaction. It prevents another charge for that unresolved transaction without disabling the gateway or blocking a different new transaction.
 
 Before enabling hosted checkout on each test/live credential set, confirm that a harmless filtered `GET /card-transactions` request succeeds and returns the documented root JSON list. A `401`, `403`, timeout, malformed envelope, or missing recurring event disables new hosted checkout rather than weakening recovery.
 
@@ -225,7 +228,7 @@ Before replacing a client site's current payment gateway:
 
 ## Known limitations
 
-- `1.1.0-rc.8` is a pre-release dual-gateway candidate and must not be promoted until every release-candidate gate above has current environment evidence.
+- `1.1.0-rc.9` is a pre-release dual-gateway candidate and must not be promoted until every release-candidate gate above has current environment evidence.
 - Only one-time purchase and refund/reverse operations are supported.
 - Subscriptions, pre-authorization/capture, and customer-facing saved cards are not supported.
 - Only USD and CAD are supported unless the gateway filter is deliberately extended and provider support is independently confirmed.

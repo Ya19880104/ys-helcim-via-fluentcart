@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0-rc.9] - 2026-07-24
+
+### Changed
+
+- Generalize the public release-candidate evidence summary so the repository and release artifact do not name a specific test merchant account.
+- Clarify that purchase operations which exhaust the seven automatic provider-lookups are intentionally retained and scope-locked. They are never auto-deleted or auto-failed from an empty result; exact signed-webhook/provider evidence or the administrator's read-only **Check Helcim once** action is required to resolve them.
+
+### RC gate
+
+- The rc.8 payment, decline/retry, webhook/replay, and refund/reverse evidence received independent review with no P0-P2 finding. This rc.9 candidate changes only release metadata and recovery operations documentation, and still requires a clean artifact plus post-deploy parity verification before promotion.
+
 ## [1.1.0-rc.8] - 2026-07-23
 
 ### Fixed
@@ -20,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### RC gate
 
-- The authorized TEST AISALE account has current Inline, Hosted, signed-webhook, replay, decline, refund, reverse, and WordPress Cron evidence. This remains a pre-release until the rebuilt artifact is deployed and its final post-deploy browser regression and independent review are complete.
+- An authorized Helcim Developer Test Account has current Inline, Hosted, signed-webhook, replay, decline, refund, reverse, and WordPress Cron evidence. This remains a pre-release until the rebuilt artifact is deployed and its final post-deploy browser regression and independent review are complete.
 
 ## [1.1.0-rc.7] - 2026-07-23
 

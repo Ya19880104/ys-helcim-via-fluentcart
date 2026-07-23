@@ -24,7 +24,7 @@ if ($LASTEXITCODE -ne 0) {
 $pot = [System.IO.File]::ReadAllText($potPath, [System.Text.Encoding]::UTF8)
 $po = [System.IO.File]::ReadAllText($poPath, [System.Text.Encoding]::UTF8)
 foreach ($catalog in @($pot, $po)) {
-    if ($catalog -notmatch 'Project-Id-Version: YS Helcim via FluentCart 1\.1\.0-rc\.8\\n') {
+    if ($catalog -notmatch 'Project-Id-Version: YS Helcim via FluentCart 1\.1\.0-rc\.9\\n') {
         throw 'Translation catalog has a stale Project-Id-Version header.'
     }
 }
