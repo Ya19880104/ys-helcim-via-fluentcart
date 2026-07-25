@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0-rc.10] - 2026-07-26
+
+### Changed
+
+- Localized the bundled YS Plugin Hub Client (updater and marketplace admin UI) to English for the international market. All end-user-facing text — plugin-row description, admin menu and page titles, marketplace page, system-info/activity-log page, AJAX and installer messages, and JavaScript UI labels — now renders in English at source. The `ys-plugin-hub-client` textdomain, the payment/refund/recovery runtime, and the plugin's own translation catalog are unchanged, so the rc.8/rc.9 payment evidence still applies.
+
 ## [1.1.0-rc.9] - 2026-07-24
 
 ### Changed

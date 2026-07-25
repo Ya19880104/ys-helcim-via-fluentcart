@@ -2,7 +2,7 @@
 /**
  * Plugin Name: YS Plugin Hub Client
  * Plugin URI:  https://yangsheep.com.tw
- * Description: YANGSHEEP DESIGN 外掛市集客戶端 — 連接 Hub 取得更新和市集資訊。
+ * Description: YANGSHEEP DESIGN plugin marketplace client — connects to the Hub to retrieve plugin updates and marketplace information.
  * Version:     2.0.2
  * Author:      YANGSHEEP DESIGN
  * Author URI:  https://yangsheep.com.tw

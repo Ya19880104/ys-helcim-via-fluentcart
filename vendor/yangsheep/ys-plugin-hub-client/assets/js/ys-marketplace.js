@@ -198,7 +198,7 @@
                 e.preventDefault();
                 var btn = $(this);
                 var slug = btn.data('slug');
-                if (confirm(i18n.confirmDelete || '確定要刪除此外掛？此操作無法復原。')) {
+                if (confirm(i18n.confirmDelete || 'Are you sure you want to delete this plugin? This action cannot be undone.')) {
                     self.deletePlugin(btn, slug);
                 }
             });
@@ -248,7 +248,7 @@
             var self = this;
 
             self.showSkeleton();
-            self.setHubStatus('checking', i18n.connecting || '連線中...');
+            self.setHubStatus('checking', i18n.connecting || 'Connecting…');
 
             $.ajax({
                 url: config.ajaxUrl,
@@ -260,7 +260,7 @@
                 success: function (response) {
                     if (response.success && response.data) {
                         // 連線成功
-                        self.setHubStatus('ok', i18n.connected || '已連線');
+                        self.setHubStatus('ok', i18n.connected || 'Connected');
 
                         // 處理兩種格式：直接陣列或 {plugins: [...]} 物件
                         var plugins = response.data.plugins || [];
@@ -297,7 +297,7 @@
                             : i18n.connectionFail;
                         var code = (response.data && response.data.code) || '';
 
-                        self.setHubStatus('error', i18n.disconnected || '連線異常');
+                        self.setHubStatus('error', i18n.disconnected || 'Connection error');
                         self.showConnectionError(msg, code);
                         self.showError(msg);
                     }
@@ -305,16 +305,16 @@
                 error: function (xhr) {
                     var reason = '';
                     if (xhr.status === 0) {
-                        reason = i18n.networkError || 'Hub 伺服器無法連線（網路逾時或伺服器關閉）';
+                        reason = i18n.networkError || 'Cannot reach the Hub server (network timeout or server down)';
                     } else if (xhr.status >= 500) {
-                        reason = (i18n.serverError || 'Hub 伺服器錯誤') + ' (HTTP ' + xhr.status + ')';
+                        reason = (i18n.serverError || 'Hub server error') + ' (HTTP ' + xhr.status + ')';
                     } else if (xhr.status === 403) {
-                        reason = i18n.blocked || '此站台已被封鎖';
+                        reason = i18n.blocked || 'This site has been blocked';
                     } else {
-                        reason = (i18n.connectionFail || '連線失敗') + ' (HTTP ' + xhr.status + ')';
+                        reason = (i18n.connectionFail || 'Connection failed') + ' (HTTP ' + xhr.status + ')';
                     }
 
-                    self.setHubStatus('error', i18n.disconnected || '連線異常');
+                    self.setHubStatus('error', i18n.disconnected || 'Connection error');
                     self.showConnectionError(reason, 'http_' + xhr.status);
                     self.showError(reason);
                 }
@@ -351,13 +351,13 @@
             var html = '<div id="' + errorId + '" class="ys-announcement ys-announcement-warning">' +
                 '<div class="ys-announcement-content">' +
                 '<strong><span class="dashicons dashicons-warning"></span> ' +
-                this.escHtml(i18n.hubConnectionIssue || 'Hub 連線異常') + '</strong>' +
+                this.escHtml(i18n.hubConnectionIssue || 'Hub connection error') + '</strong>' +
                 '<p>' + this.escHtml(message) + '</p>';
 
             // 如果是熔斷，說明自動恢復時間
             if (code === 'circuit_breaker') {
                 html += '<p style="font-size:12px;opacity:0.8;">' +
-                    this.escHtml(i18n.circuitBreakerNote || '系統將在 30 分鐘後自動重新嘗試連線。') +
+                    this.escHtml(i18n.circuitBreakerNote || 'The system will automatically retry the connection in 30 minutes.') +
                     '</p>';
             }
 
@@ -450,10 +450,10 @@
             var priceBadgeHtml = '';
             if (priceType === 'paid') {
                 priceBadgeHtml = '<span class="ys-price-badge-paid">' +
-                    this.escHtml(priceAmount || '付費') + '</span>';
+                    this.escHtml(priceAmount || 'Paid') + '</span>';
             } else {
                 priceBadgeHtml = '<span class="ys-price-badge-free">' +
-                    this.escHtml(i18n.free || '免費') + '</span>';
+                    this.escHtml(i18n.free || 'Free') + '</span>';
             }
 
             // 狀態徽章 + 操作按鈕
@@ -467,46 +467,46 @@
                     actionHtml = '<button type="button" class="ys-btn ys-btn-external ys-btn-sm" ' +
                         'onclick="window.open(\'' + this.escAttr(externalUrl) + '\', \'_blank\')">' +
                         '<span class="dashicons dashicons-external" style="font-size:14px;width:14px;height:14px;"></span> ' +
-                        this.escHtml(i18n.viewPlugin || '查看外掛') + '</button>';
+                        this.escHtml(i18n.viewPlugin || 'View plugin') + '</button>';
                 }
             } else if (status === 'active') {
                 // 已啟用
                 badgeHtml = priceBadgeHtml +
-                    '<span class="ys-badge ys-badge-active">' + this.escHtml(i18n.active || '已啟用') + '</span>';
+                    '<span class="ys-badge ys-badge-active">' + this.escHtml(i18n.active || 'Active') + '</span>';
                 if (plugin.update_available) {
                     // 已啟用且有更新
                     actionHtml = '<button type="button" class="ys-btn ys-btn-primary ys-btn-sm ys-update-btn" ' +
                         'data-slug="' + slug + '" data-version="' + version + '">' +
-                        this.escHtml(i18n.update || '更新') + ' v' + version + '</button>';
+                        this.escHtml(i18n.update || 'Update') + ' v' + version + '</button>';
                 } else {
                     // 已啟用無更新 → 停用按鈕
                     actionHtml = '<button type="button" class="ys-btn ys-btn-muted ys-btn-sm ys-deactivate-btn" ' +
                         'data-slug="' + slug + '">' +
-                        this.escHtml(i18n.deactivate || '停用') + '</button>';
+                        this.escHtml(i18n.deactivate || 'Deactivate') + '</button>';
                 }
             } else if (status === 'installed' && plugin.update_available) {
                 // 已安裝但有更新（未啟用）
                 badgeHtml = priceBadgeHtml +
-                    '<span class="ys-badge ys-badge-installed">' + this.escHtml(i18n.installed || '已安裝') + '</span>';
+                    '<span class="ys-badge ys-badge-installed">' + this.escHtml(i18n.installed || 'Installed') + '</span>';
                 actionHtml = '<button type="button" class="ys-btn ys-btn-primary ys-btn-sm ys-update-btn" ' +
                     'data-slug="' + slug + '" data-version="' + version + '">' +
-                    this.escHtml(i18n.update || '更新') + ' v' + version + '</button>';
+                    this.escHtml(i18n.update || 'Update') + ' v' + version + '</button>';
             } else if (status === 'installed') {
                 // 已安裝未啟用 → 啟用 + 刪除按鈕
                 badgeHtml = priceBadgeHtml +
-                    '<span class="ys-badge ys-badge-installed">' + this.escHtml(i18n.installed || '已安裝') + '</span>';
+                    '<span class="ys-badge ys-badge-installed">' + this.escHtml(i18n.installed || 'Installed') + '</span>';
                 actionHtml = '<button type="button" class="ys-btn ys-btn-success ys-btn-sm ys-activate-btn" ' +
                     'data-slug="' + slug + '">' +
-                    (i18n.activate || '啟用') + '</button>' +
+                    (i18n.activate || 'Activate') + '</button>' +
                     ' <button type="button" class="ys-btn ys-btn-danger-text ys-btn-sm ys-delete-btn" ' +
                     'data-slug="' + slug + '">' +
-                    this.escHtml(i18n.deletePlugin || '刪除') + '</button>';
+                    this.escHtml(i18n.deletePlugin || 'Delete') + '</button>';
             } else {
                 // 未安裝
                 badgeHtml = priceBadgeHtml;
                 actionHtml = '<button type="button" class="ys-btn ys-btn-outline ys-btn-sm ys-install-btn" ' +
                     'data-slug="' + slug + '" data-version="' + version + '">' +
-                    this.escHtml(i18n.install || '安裝') + '</button>';
+                    this.escHtml(i18n.install || 'Install') + '</button>';
             }
 
             var versionLabel = localVersion
@@ -558,7 +558,7 @@
          */
         installPlugin: function (btn, slug, version) {
             var origText = btn.text();
-            btn.prop('disabled', true).html('<span class="ys-spinner"></span> ' + this.escHtml(i18n.installing || '安裝中...'));
+            btn.prop('disabled', true).html('<span class="ys-spinner"></span> ' + this.escHtml(i18n.installing || 'Installing…'));
 
             $.ajax({
                 url: config.ajaxUrl,
@@ -626,7 +626,7 @@
          * 啟用外掛
          */
         activatePlugin: function (btn, slug) {
-            btn.prop('disabled', true).html('<span class="ys-spinner"></span> ' + (i18n.activating || '啟用中...'));
+            btn.prop('disabled', true).html('<span class="ys-spinner"></span> ' + (i18n.activating || 'Activating…'));
 
             $.ajax({
                 url: config.ajaxUrl,
@@ -638,18 +638,18 @@
                 },
                 success: function (response) {
                     if (response.success) {
-                        Toast.show(response.data.message || (i18n.activated || '已啟用'), 'success');
+                        Toast.show(response.data.message || (i18n.activated || 'Activated'), 'success');
                         if (response.data.plugin) {
                             Marketplace.replaceCard(slug, response.data.plugin);
                         }
                     } else {
                         Toast.show(response.data.message || i18n.failed, 'error');
-                        btn.prop('disabled', false).text(i18n.activate || '啟用');
+                        btn.prop('disabled', false).text(i18n.activate || 'Activate');
                     }
                 },
                 error: function () {
                     Toast.show(i18n.failed, 'error');
-                    btn.prop('disabled', false).text(i18n.activate || '啟用');
+                    btn.prop('disabled', false).text(i18n.activate || 'Activate');
                 }
             });
         },
@@ -658,7 +658,7 @@
          * 停用外掛
          */
         deactivatePlugin: function (btn, slug) {
-            btn.prop('disabled', true).html('<span class="ys-spinner"></span> ' + (i18n.deactivating || '停用中...'));
+            btn.prop('disabled', true).html('<span class="ys-spinner"></span> ' + (i18n.deactivating || 'Deactivating…'));
 
             $.ajax({
                 url: config.ajaxUrl,
@@ -670,10 +670,10 @@
                 },
                 success: function (response) {
                     if (response.success) {
-                        Toast.show(response.data.message || '已停用', 'success');
+                        Toast.show(response.data.message || 'Deactivated', 'success');
                         // 如果是最後一個 YS 外掛 → 跳轉到外掛頁面
                         if (response.data.is_last && response.data.redirect) {
-                            Toast.show(i18n.lastPluginWarning || '最後一個 YS 外掛已停用，即將跳轉到外掛管理頁面...', 'warning');
+                            Toast.show(i18n.lastPluginWarning || 'The last YS plugin has been deactivated. Redirecting to the Plugins page…', 'warning');
                             setTimeout(function () {
                                 window.location.href = response.data.redirect;
                             }, 1500);
@@ -684,12 +684,12 @@
                         }
                     } else {
                         Toast.show(response.data.message || i18n.failed, 'error');
-                        btn.prop('disabled', false).text(i18n.deactivate || '停用');
+                        btn.prop('disabled', false).text(i18n.deactivate || 'Deactivate');
                     }
                 },
                 error: function () {
                     Toast.show(i18n.failed, 'error');
-                    btn.prop('disabled', false).text(i18n.deactivate || '停用');
+                    btn.prop('disabled', false).text(i18n.deactivate || 'Deactivate');
                 }
             });
         },
@@ -698,7 +698,7 @@
          * 刪除外掛
          */
         deletePlugin: function (btn, slug) {
-            btn.prop('disabled', true).html('<span class="ys-spinner"></span> ' + (i18n.deleting || '刪除中...'));
+            btn.prop('disabled', true).html('<span class="ys-spinner"></span> ' + (i18n.deleting || 'Deleting…'));
 
             $.ajax({
                 url: config.ajaxUrl,
@@ -710,7 +710,7 @@
                 },
                 success: function (response) {
                     if (response.success) {
-                        Toast.show(response.data.message || '已刪除', 'success');
+                        Toast.show(response.data.message || 'Deleted', 'success');
                         // 如果沒有剩餘 YS 外掛 → 跳轉
                         if (response.data.redirect) {
                             setTimeout(function () {
@@ -733,12 +733,12 @@
                         }
                     } else {
                         Toast.show(response.data.message || i18n.failed, 'error');
-                        btn.prop('disabled', false).text(i18n.deletePlugin || '刪除');
+                        btn.prop('disabled', false).text(i18n.deletePlugin || 'Delete');
                     }
                 },
                 error: function () {
                     Toast.show(i18n.failed, 'error');
-                    btn.prop('disabled', false).text(i18n.deletePlugin || '刪除');
+                    btn.prop('disabled', false).text(i18n.deletePlugin || 'Delete');
                 }
             });
         },
@@ -929,7 +929,7 @@
                 }
 
                 html += '</div>' +
-                    '<span class="ys-announcement-close dashicons dashicons-no-alt" title="' + self.escAttr(i18n.dismiss || '關閉') + '"></span>' +
+                    '<span class="ys-announcement-close dashicons dashicons-no-alt" title="' + self.escAttr(i18n.dismiss || 'Dismiss') + '"></span>' +
                     '</div>';
 
                 $wrap.append(html);

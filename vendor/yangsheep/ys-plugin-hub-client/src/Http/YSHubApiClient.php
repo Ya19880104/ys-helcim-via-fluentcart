@@ -199,7 +199,7 @@ final class YSHubApiClient {
         if ( ! YSCircuitBreaker::is_available() ) {
             return new \WP_Error(
                 'ys_hub_circuit_open',
-                __( 'Hub 連線暫時中斷（Circuit Breaker 熔斷中）', 'ys-plugin-hub-client' )
+                __( 'Hub connection temporarily interrupted (Circuit Breaker open)', 'ys-plugin-hub-client' )
             );
         }
 
@@ -224,7 +224,7 @@ final class YSHubApiClient {
         // WP_Error 處理
         if ( is_wp_error( $response ) ) {
             YSCircuitBreaker::record_failure();
-            YSHubClientLogRepo::error( 'connect', sprintf( 'HTTP 請求失敗：%s（%s）', $response->get_error_message(), $url ) );
+            YSHubClientLogRepo::error( 'connect', sprintf( 'HTTP request failed: %s (%s)', $response->get_error_message(), $url ) );
             return $response;
         }
 
@@ -239,7 +239,7 @@ final class YSHubApiClient {
                 'ys_hub_server_error',
                 sprintf(
                     /* translators: %d: HTTP 狀態碼 */
-                    __( 'Hub 伺服器錯誤 (HTTP %d)', 'ys-plugin-hub-client' ),
+                    __( 'Hub server error (HTTP %d)', 'ys-plugin-hub-client' ),
                     $status_code
                 )
             );

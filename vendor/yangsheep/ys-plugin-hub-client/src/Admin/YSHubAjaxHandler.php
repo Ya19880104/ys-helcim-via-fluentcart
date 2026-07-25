@@ -140,7 +140,7 @@ final class YSHubAjaxHandler {
 
         if ( ! current_user_can( 'install_plugins' ) ) {
             wp_send_json_error( array(
-                'message' => __( '權限不足', 'ys-plugin-hub-client' ),
+                'message' => __( 'Insufficient permissions', 'ys-plugin-hub-client' ),
             ) );
         }
 
@@ -149,7 +149,7 @@ final class YSHubAjaxHandler {
 
         if ( empty( $slug ) || empty( $version ) ) {
             wp_send_json_error( array(
-                'message' => __( '缺少必要參數', 'ys-plugin-hub-client' ),
+                'message' => __( 'Missing required parameters', 'ys-plugin-hub-client' ),
             ) );
         }
 
@@ -166,7 +166,7 @@ final class YSHubAjaxHandler {
         wp_send_json_success( array(
             'message' => sprintf(
                 /* translators: %s: 外掛 slug */
-                __( '外掛 %s 安裝成功', 'ys-plugin-hub-client' ),
+                __( 'Plugin %s installed successfully', 'ys-plugin-hub-client' ),
                 $slug
             ),
             'plugin'  => $plugin_data,
@@ -183,7 +183,7 @@ final class YSHubAjaxHandler {
 
         if ( ! current_user_can( 'update_plugins' ) ) {
             wp_send_json_error( array(
-                'message' => __( '權限不足', 'ys-plugin-hub-client' ),
+                'message' => __( 'Insufficient permissions', 'ys-plugin-hub-client' ),
             ) );
         }
 
@@ -192,7 +192,7 @@ final class YSHubAjaxHandler {
 
         if ( empty( $slug ) || empty( $version ) ) {
             wp_send_json_error( array(
-                'message' => __( '缺少必要參數', 'ys-plugin-hub-client' ),
+                'message' => __( 'Missing required parameters', 'ys-plugin-hub-client' ),
             ) );
         }
 
@@ -210,7 +210,7 @@ final class YSHubAjaxHandler {
         wp_send_json_success( array(
             'message' => sprintf(
                 /* translators: %s: 外掛 slug */
-                __( '外掛 %s 更新成功', 'ys-plugin-hub-client' ),
+                __( 'Plugin %s updated successfully', 'ys-plugin-hub-client' ),
                 $slug
             ),
             'plugin'  => $plugin_data,
@@ -241,7 +241,7 @@ final class YSHubAjaxHandler {
         YSHubApiClient::reset_instance();
 
         wp_send_json_success( array(
-            'message' => __( '設定已儲存', 'ys-plugin-hub-client' ),
+            'message' => __( 'Settings saved', 'ys-plugin-hub-client' ),
         ) );
     }
 
@@ -265,7 +265,7 @@ final class YSHubAjaxHandler {
         }
 
         wp_send_json_success( array(
-            'message' => __( '連線成功', 'ys-plugin-hub-client' ),
+            'message' => __( 'Connection successful', 'ys-plugin-hub-client' ),
             'state'   => YSCircuitBreaker::get_state(),
             'label'   => YSCircuitBreaker::get_state_label(),
             'data'    => $response,
@@ -298,7 +298,7 @@ final class YSHubAjaxHandler {
         $site_key = $response['site_key'] ?? '';
         if ( empty( $site_key ) ) {
             wp_send_json_error( array(
-                'message' => __( 'Hub 未回傳 Site Key', 'ys-plugin-hub-client' ),
+                'message' => __( 'The Hub did not return a Site Key', 'ys-plugin-hub-client' ),
             ) );
         }
 
@@ -310,7 +310,7 @@ final class YSHubAjaxHandler {
         YSHubApiClient::reset_instance();
 
         wp_send_json_success( array(
-            'message'  => __( 'Site Key 已產生並儲存', 'ys-plugin-hub-client' ),
+            'message'  => __( 'Site Key generated and saved', 'ys-plugin-hub-client' ),
             'site_key' => $site_key,
         ) );
     }
@@ -375,7 +375,7 @@ final class YSHubAjaxHandler {
             'platforms'     => $platforms,
             'categories'    => $categories,
             'announcements' => $announcements,
-            'message'       => __( '市集資料已刷新', 'ys-plugin-hub-client' ),
+            'message'       => __( 'Marketplace data refreshed', 'ys-plugin-hub-client' ),
         ) );
     }
 
@@ -388,12 +388,12 @@ final class YSHubAjaxHandler {
         self::verify_request( 'ys_hub_marketplace_nonce' );
 
         if ( ! current_user_can( 'activate_plugins' ) ) {
-            wp_send_json_error( array( 'message' => __( '權限不足', 'ys-plugin-hub-client' ) ) );
+            wp_send_json_error( array( 'message' => __( 'Insufficient permissions', 'ys-plugin-hub-client' ) ) );
         }
 
         $slug = sanitize_text_field( wp_unslash( $_POST['slug'] ?? '' ) );
         if ( empty( $slug ) ) {
-            wp_send_json_error( array( 'message' => __( '缺少外掛 slug', 'ys-plugin-hub-client' ) ) );
+            wp_send_json_error( array( 'message' => __( 'Missing plugin slug', 'ys-plugin-hub-client' ) ) );
         }
 
         // 找到外掛主檔案
@@ -410,22 +410,22 @@ final class YSHubAjaxHandler {
         }
 
         if ( empty( $plugin_file ) ) {
-            wp_send_json_error( array( 'message' => sprintf( __( '找不到外掛 %s', 'ys-plugin-hub-client' ), $slug ) ) );
+            wp_send_json_error( array( 'message' => sprintf( __( 'Plugin %s not found', 'ys-plugin-hub-client' ), $slug ) ) );
         }
 
         $result = activate_plugin( $plugin_file );
 
         if ( is_wp_error( $result ) ) {
-            YSHubClientLogRepo::error( 'activate', sprintf( '啟用 %s 失敗：%s', $slug, $result->get_error_message() ) );
+            YSHubClientLogRepo::error( 'activate', sprintf( 'Failed to activate %s: %s', $slug, $result->get_error_message() ) );
             wp_send_json_error( array( 'message' => $result->get_error_message() ) );
         }
 
-        YSHubClientLogRepo::success( 'activate', sprintf( '外掛 %s 已啟用', $slug ) );
+        YSHubClientLogRepo::success( 'activate', sprintf( 'Plugin %s activated', $slug ) );
 
         $plugin_data = self::get_updated_plugin_data( $slug, '' );
 
         wp_send_json_success( array(
-            'message' => sprintf( __( '外掛 %s 已啟用', 'ys-plugin-hub-client' ), $slug ),
+            'message' => sprintf( __( 'Plugin %s activated', 'ys-plugin-hub-client' ), $slug ),
             'plugin'  => $plugin_data,
         ) );
     }
@@ -439,12 +439,12 @@ final class YSHubAjaxHandler {
         self::verify_request( 'ys_hub_marketplace_nonce' );
 
         if ( ! current_user_can( 'activate_plugins' ) ) {
-            wp_send_json_error( array( 'message' => __( '權限不足', 'ys-plugin-hub-client' ) ) );
+            wp_send_json_error( array( 'message' => __( 'Insufficient permissions', 'ys-plugin-hub-client' ) ) );
         }
 
         $slug = sanitize_text_field( wp_unslash( $_POST['slug'] ?? '' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing
         if ( empty( $slug ) ) {
-            wp_send_json_error( array( 'message' => __( '缺少外掛 slug', 'ys-plugin-hub-client' ) ) );
+            wp_send_json_error( array( 'message' => __( 'Missing plugin slug', 'ys-plugin-hub-client' ) ) );
         }
 
         if ( ! function_exists( 'get_plugins' ) ) {
@@ -460,7 +460,7 @@ final class YSHubAjaxHandler {
         }
 
         if ( empty( $plugin_file ) ) {
-            wp_send_json_error( array( 'message' => sprintf( __( '找不到外掛 %s', 'ys-plugin-hub-client' ), $slug ) ) );
+            wp_send_json_error( array( 'message' => sprintf( __( 'Plugin %s not found', 'ys-plugin-hub-client' ), $slug ) ) );
         }
 
         // 檢查是否為最後一個啟用的 YS 外掛（停用後市集會消失）
@@ -476,12 +476,12 @@ final class YSHubAjaxHandler {
 
         deactivate_plugins( $plugin_file );
 
-        YSHubClientLogRepo::success( 'deactivate', sprintf( '外掛 %s 已停用', $slug ) );
+        YSHubClientLogRepo::success( 'deactivate', sprintf( 'Plugin %s deactivated', $slug ) );
 
         $plugin_data = self::get_updated_plugin_data( $slug, '' );
 
         wp_send_json_success( array(
-            'message'  => sprintf( __( '外掛 %s 已停用', 'ys-plugin-hub-client' ), $slug ),
+            'message'  => sprintf( __( 'Plugin %s deactivated', 'ys-plugin-hub-client' ), $slug ),
             'plugin'   => $plugin_data,
             'is_last'  => $is_last,
             'redirect' => $is_last ? admin_url( 'plugins.php' ) : '',
@@ -497,12 +497,12 @@ final class YSHubAjaxHandler {
         self::verify_request( 'ys_hub_marketplace_nonce' );
 
         if ( ! current_user_can( 'delete_plugins' ) ) {
-            wp_send_json_error( array( 'message' => __( '權限不足', 'ys-plugin-hub-client' ) ) );
+            wp_send_json_error( array( 'message' => __( 'Insufficient permissions', 'ys-plugin-hub-client' ) ) );
         }
 
         $slug = sanitize_text_field( wp_unslash( $_POST['slug'] ?? '' ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing
         if ( empty( $slug ) ) {
-            wp_send_json_error( array( 'message' => __( '缺少外掛 slug', 'ys-plugin-hub-client' ) ) );
+            wp_send_json_error( array( 'message' => __( 'Missing plugin slug', 'ys-plugin-hub-client' ) ) );
         }
 
         if ( ! function_exists( 'get_plugins' ) || ! function_exists( 'delete_plugins' ) ) {
@@ -519,7 +519,7 @@ final class YSHubAjaxHandler {
         }
 
         if ( empty( $plugin_file ) ) {
-            wp_send_json_error( array( 'message' => sprintf( __( '找不到外掛 %s', 'ys-plugin-hub-client' ), $slug ) ) );
+            wp_send_json_error( array( 'message' => sprintf( __( 'Plugin %s not found', 'ys-plugin-hub-client' ), $slug ) ) );
         }
 
         // 先停用
@@ -530,11 +530,11 @@ final class YSHubAjaxHandler {
         $result = delete_plugins( array( $plugin_file ) );
 
         if ( is_wp_error( $result ) ) {
-            YSHubClientLogRepo::error( 'delete', sprintf( '刪除 %s 失敗：%s', $slug, $result->get_error_message() ) );
+            YSHubClientLogRepo::error( 'delete', sprintf( 'Failed to delete %s: %s', $slug, $result->get_error_message() ) );
             wp_send_json_error( array( 'message' => $result->get_error_message() ) );
         }
 
-        YSHubClientLogRepo::success( 'delete', sprintf( '外掛 %s 已刪除', $slug ) );
+        YSHubClientLogRepo::success( 'delete', sprintf( 'Plugin %s deleted', $slug ) );
 
         // 檢查是否還有 YS 外掛存在
         $remaining_ys = 0;
@@ -546,7 +546,7 @@ final class YSHubAjaxHandler {
         }
 
         wp_send_json_success( array(
-            'message'  => sprintf( __( '外掛 %s 已刪除', 'ys-plugin-hub-client' ), $slug ),
+            'message'  => sprintf( __( 'Plugin %s deleted', 'ys-plugin-hub-client' ), $slug ),
             'redirect' => ( 0 === $remaining_ys ) ? admin_url( 'plugins.php' ) : '',
         ) );
     }
@@ -563,7 +563,7 @@ final class YSHubAjaxHandler {
         $log_repo->clear_all();
 
         wp_send_json_success( array(
-            'message' => __( '日誌已清除', 'ys-plugin-hub-client' ),
+            'message' => __( 'Logs cleared', 'ys-plugin-hub-client' ),
         ) );
     }
 
@@ -689,14 +689,14 @@ final class YSHubAjaxHandler {
         // 檢查 nonce
         if ( ! check_ajax_referer( $nonce_action, 'nonce', false ) ) {
             wp_send_json_error( array(
-                'message' => __( '安全驗證失敗，請重新整理頁面', 'ys-plugin-hub-client' ),
+                'message' => __( 'Security check failed. Please refresh the page.', 'ys-plugin-hub-client' ),
             ), 403 );
         }
 
         // 檢查權限
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_send_json_error( array(
-                'message' => __( '權限不足', 'ys-plugin-hub-client' ),
+                'message' => __( 'Insufficient permissions', 'ys-plugin-hub-client' ),
             ), 403 );
         }
     }

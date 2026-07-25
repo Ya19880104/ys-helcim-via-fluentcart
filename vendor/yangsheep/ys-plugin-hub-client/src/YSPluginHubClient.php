@@ -116,8 +116,8 @@ final class YSPluginHubClient {
         // 第一個子選單覆蓋（顯示為「外掛市集」）
         add_submenu_page(
             'ys-toolbox',
-            esc_html__( 'YS 外掛市集', 'ys-plugin-hub-client' ),
-            esc_html__( '外掛市集', 'ys-plugin-hub-client' ),
+            esc_html__( 'YS Plugin Marketplace', 'ys-plugin-hub-client' ),
+            esc_html__( 'Plugin Marketplace', 'ys-plugin-hub-client' ),
             'manage_options',
             'ys-toolbox', // 與 parent 同 slug → 覆蓋首頁子選單
             array( YSMarketplacePage::class, 'render' )
@@ -126,8 +126,8 @@ final class YSPluginHubClient {
         // 系統資訊子選單
         add_submenu_page(
             'ys-toolbox',
-            esc_html__( '系統資訊', 'ys-plugin-hub-client' ),
-            esc_html__( '系統資訊', 'ys-plugin-hub-client' ),
+            esc_html__( 'System info', 'ys-plugin-hub-client' ),
+            esc_html__( 'System info', 'ys-plugin-hub-client' ),
             'manage_options',
             'ys-hub-logs',
             array( $this, 'render_logs_page' )
@@ -136,7 +136,7 @@ final class YSPluginHubClient {
         // 聯絡我們（外部連結，新開視窗）
         global $submenu;
         $submenu['ys-toolbox'][] = array(
-            '<span id="ys-contact-link">' . esc_html__( '聯絡我們', 'ys-plugin-hub-client' ) . ' <span class="dashicons dashicons-external" style="font-size:12px;width:12px;height:12px;vertical-align:text-top;"></span></span>',
+            '<span id="ys-contact-link">' . esc_html__( 'Contact us', 'ys-plugin-hub-client' ) . ' <span class="dashicons dashicons-external" style="font-size:12px;width:12px;height:12px;vertical-align:text-top;"></span></span>',
             'manage_options',
             'https://yangsheep.com.tw/contact-us/',
         );
@@ -186,7 +186,7 @@ final class YSPluginHubClient {
     public function admin_footer_text( string $text ): string {
         $ys_credit = sprintf(
             /* translators: %s: YANGSHEEP CLOUD link */
-            __( '由 %s 開發與維護', 'ys-plugin-hub-client' ),
+            __( 'Developed and maintained by %s', 'ys-plugin-hub-client' ),
             '<a href="https://yangsheep.com.tw" target="_blank" rel="noopener noreferrer" style="text-decoration:none;">YANGSHEEP CLOUD</a>'
         );
 

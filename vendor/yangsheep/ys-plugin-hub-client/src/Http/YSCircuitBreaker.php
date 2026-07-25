@@ -100,7 +100,7 @@ class YSCircuitBreaker {
         if ( $state['failures'] >= self::FAILURE_THRESHOLD ) {
             $state['status']    = 'open';
             $state['opened_at'] = time();
-            YSHubClientLogRepo::warning( 'circuit_breaker', sprintf( '熔斷器觸發（連續失敗 %d 次），暫停 Hub 連線 30 分鐘', $state['failures'] ) );
+            YSHubClientLogRepo::warning( 'circuit_breaker', sprintf( 'Circuit breaker tripped (%d consecutive failures); pausing Hub connection for 30 minutes', $state['failures'] ) );
         }
 
         set_site_transient( self::TRANSIENT_KEY, $state, DAY_IN_SECONDS );
@@ -138,13 +138,13 @@ class YSCircuitBreaker {
 
         switch ( $state ) {
             case 'closed':
-                return __( '正常', 'ys-plugin-hub-client' );
+                return __( 'Normal', 'ys-plugin-hub-client' );
             case 'open':
-                return __( '熔斷中', 'ys-plugin-hub-client' );
+                return __( 'Tripped', 'ys-plugin-hub-client' );
             case 'half_open':
-                return __( '嘗試恢復', 'ys-plugin-hub-client' );
+                return __( 'Recovering', 'ys-plugin-hub-client' );
             default:
-                return __( '未知', 'ys-plugin-hub-client' );
+                return __( 'Unknown', 'ys-plugin-hub-client' );
         }
     }
 

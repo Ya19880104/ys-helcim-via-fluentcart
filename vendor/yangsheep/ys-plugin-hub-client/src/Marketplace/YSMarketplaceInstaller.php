@@ -34,7 +34,7 @@ final class YSMarketplaceInstaller {
         if ( empty( $download_url ) ) {
             return new \WP_Error(
                 'ys_hub_no_download_url',
-                __( '無法取得下載連結', 'ys-plugin-hub-client' )
+                __( 'Unable to get the download link', 'ys-plugin-hub-client' )
             );
         }
 
@@ -49,30 +49,30 @@ final class YSMarketplaceInstaller {
         $skin     = new \WP_Ajax_Upgrader_Skin();
         $upgrader = new \Plugin_Upgrader( $skin );
 
-        YSHubClientLogRepo::info( 'install', sprintf( '開始安裝 %s v%s', $slug, $version ), array( 'url' => $download_url ) );
+        YSHubClientLogRepo::info( 'install', sprintf( 'Started installing %s v%s', $slug, $version ), array( 'url' => $download_url ) );
 
         $result = $upgrader->install( $download_url );
 
         if ( is_wp_error( $result ) ) {
-            YSHubClientLogRepo::error( 'install', sprintf( '安裝 %s 失敗：%s', $slug, $result->get_error_message() ) );
+            YSHubClientLogRepo::error( 'install', sprintf( 'Failed to install %s: %s', $slug, $result->get_error_message() ) );
             return $result;
         }
 
         if ( is_wp_error( $skin->result ) ) {
-            YSHubClientLogRepo::error( 'install', sprintf( '安裝 %s 失敗：%s', $slug, $skin->result->get_error_message() ) );
+            YSHubClientLogRepo::error( 'install', sprintf( 'Failed to install %s: %s', $slug, $skin->result->get_error_message() ) );
             return $skin->result;
         }
 
         if ( ! $result ) {
             $feedback = $skin->get_upgrade_messages();
-            YSHubClientLogRepo::error( 'install', sprintf( '安裝 %s 失敗（未知原因）', $slug ), array( 'feedback' => $feedback ) );
+            YSHubClientLogRepo::error( 'install', sprintf( 'Failed to install %s (unknown reason)', $slug ), array( 'feedback' => $feedback ) );
             return new \WP_Error(
                 'ys_hub_install_failed',
-                __( '安裝失敗', 'ys-plugin-hub-client' )
+                __( 'Installation failed', 'ys-plugin-hub-client' )
             );
         }
 
-        YSHubClientLogRepo::success( 'install', sprintf( '外掛 %s v%s 安裝成功', $slug, $version ) );
+        YSHubClientLogRepo::success( 'install', sprintf( 'Plugin %s v%s installed successfully', $slug, $version ) );
         return true;
     }
 
@@ -92,7 +92,7 @@ final class YSMarketplaceInstaller {
                 'ys_hub_plugin_not_found',
                 sprintf(
                     /* translators: %s: 外掛 slug */
-                    __( '找不到外掛 %s', 'ys-plugin-hub-client' ),
+                    __( 'Plugin %s not found', 'ys-plugin-hub-client' ),
                     $slug
                 )
             );
@@ -103,7 +103,7 @@ final class YSMarketplaceInstaller {
         if ( empty( $download_url ) ) {
             return new \WP_Error(
                 'ys_hub_no_download_url',
-                __( '無法取得下載連結', 'ys-plugin-hub-client' )
+                __( 'Unable to get the download link', 'ys-plugin-hub-client' )
             );
         }
 
@@ -134,24 +134,24 @@ final class YSMarketplaceInstaller {
 
         set_site_transient( 'update_plugins', $transient );
 
-        YSHubClientLogRepo::info( 'update', sprintf( '開始更新 %s → v%s（啟用: %s）', $slug, $version, $was_active ? 'yes' : 'no' ) );
+        YSHubClientLogRepo::info( 'update', sprintf( 'Started updating %s → v%s (active: %s)', $slug, $version, $was_active ? 'yes' : 'no' ) );
 
         $result = $upgrader->upgrade( $plugin_file );
 
         if ( is_wp_error( $result ) ) {
-            YSHubClientLogRepo::error( 'update', sprintf( '更新 %s 失敗：%s', $slug, $result->get_error_message() ) );
+            YSHubClientLogRepo::error( 'update', sprintf( 'Failed to update %s: %s', $slug, $result->get_error_message() ) );
             return $result;
         }
 
         if ( is_wp_error( $skin->result ) ) {
-            YSHubClientLogRepo::error( 'update', sprintf( '更新 %s 失敗：%s', $slug, $skin->result->get_error_message() ) );
+            YSHubClientLogRepo::error( 'update', sprintf( 'Failed to update %s: %s', $slug, $skin->result->get_error_message() ) );
             return $skin->result;
         }
 
         if ( ! $result ) {
             return new \WP_Error(
                 'ys_hub_update_failed',
-                __( '更新失敗', 'ys-plugin-hub-client' )
+                __( 'Update failed', 'ys-plugin-hub-client' )
             );
         }
 
@@ -160,16 +160,16 @@ final class YSMarketplaceInstaller {
             $activate_result = activate_plugin( $plugin_file, '', $was_network_active, true );
             if ( is_wp_error( $activate_result ) ) {
                 YSHubClientLogRepo::error( 'update', sprintf(
-                    '更新 %s 成功但重新啟用失敗：%s',
+                    'Updated %s successfully but reactivation failed: %s',
                     $slug,
                     $activate_result->get_error_message()
                 ) );
                 // 更新本身成功，回傳成功但附帶警告
             } else {
-                YSHubClientLogRepo::success( 'update', sprintf( '外掛 %s 已更新至 v%s 並重新啟用', $slug, $version ) );
+                YSHubClientLogRepo::success( 'update', sprintf( 'Plugin %s updated to v%s and reactivated', $slug, $version ) );
             }
         } else {
-            YSHubClientLogRepo::success( 'update', sprintf( '外掛 %s 已更新至 v%s（未啟用）', $slug, $version ) );
+            YSHubClientLogRepo::success( 'update', sprintf( 'Plugin %s updated to v%s (not activated)', $slug, $version ) );
         }
 
         // 清除更新快取
