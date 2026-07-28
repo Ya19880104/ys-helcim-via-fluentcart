@@ -72,19 +72,6 @@ spl_autoload_register( function ( $class ) {
 } );
 
 /* ──────────────────────────────────────────────
- * HPOS 相容宣告
- * ────────────────────────────────────────────── */
-add_action( 'before_woocommerce_init', function () {
-    if ( class_exists( \Automattic\WooCommerce\Utilities\FeaturesUtil::class ) ) {
-        \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility(
-            'custom_order_tables',
-            __FILE__,
-            true
-        );
-    }
-} );
-
-/* ──────────────────────────────────────────────
  * Activation Hook — 建立資料表
  * ────────────────────────────────────────────── */
 register_activation_hook( __FILE__, function () {

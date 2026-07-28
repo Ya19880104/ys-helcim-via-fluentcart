@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0-rc.12] - 2026-07-26
+
+### Fixed
+
+- Sync the bundled YS Plugin Hub Client with the upstream fix that drops its WooCommerce HPOS compatibility declaration. The `before_woocommerce_init` hook is meaningless for a FluentCart-only plugin and was raising errors on sites without WooCommerce.
+
 ## [1.1.0-rc.11] - 2026-07-26
 
 ### Added
