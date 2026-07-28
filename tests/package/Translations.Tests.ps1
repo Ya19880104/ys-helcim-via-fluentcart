@@ -23,9 +23,16 @@ if ($LASTEXITCODE -ne 0) {
 
 $pot = [System.IO.File]::ReadAllText($potPath, [System.Text.Encoding]::UTF8)
 $po = [System.IO.File]::ReadAllText($poPath, [System.Text.Encoding]::UTF8)
+# Derive the expected version from the plugin header instead of pinning a literal,
+# so a routine version bump cannot leave this assertion behind and fail the build.
+$pluginHeader = [System.IO.File]::ReadAllText((Join-Path $repoRoot 'ys-helcim-via-fluentcart.php'), [System.Text.Encoding]::UTF8)
+if ($pluginHeader -notmatch '(?m)^\s*\*\s*Version:\s*(\S+)\s*$') {
+    throw 'Could not read the plugin version from the plugin header.'
+}
+$expectedCatalogHeader = 'Project-Id-Version: YS Helcim via FluentCart ' + $Matches[1] + '\n'
 foreach ($catalog in @($pot, $po)) {
-    if ($catalog -notmatch 'Project-Id-Version: YS Helcim via FluentCart 1\.1\.0-rc\.9\\n') {
-        throw 'Translation catalog has a stale Project-Id-Version header.'
+    if (-not $catalog.Contains($expectedCatalogHeader)) {
+        throw "Translation catalog Project-Id-Version does not match the plugin header ($($Matches[1]))."
     }
 }
 

@@ -499,6 +499,25 @@ class YSHelcimPayGateway extends AbstractPaymentGateway {
 				'type'        => 'text',
 				'placeholder' => __( 'Pay with credit card (Helcim)', 'ys-helcim-via-fluentcart' ),
 			),
+			'google_pay'             => array(
+				'value'   => 'account',
+				'label'   => __( 'Google Pay', 'ys-helcim-via-fluentcart' ),
+				'type'    => 'radio',
+				'options' => array(
+					'account' => array(
+						'label' => __( 'Use Helcim account setting', 'ys-helcim-via-fluentcart' ),
+						'text'  => __( 'Recommended. Whether Google Pay appears is controlled in your Helcim account.', 'ys-helcim-via-fluentcart' ),
+					),
+					'on'      => array(
+						'label' => __( 'Always on', 'ys-helcim-via-fluentcart' ),
+						'text'  => __( 'Offer Google Pay in the checkout window even if the account default is off.', 'ys-helcim-via-fluentcart' ),
+					),
+					'off'     => array(
+						'label' => __( 'Always off', 'ys-helcim-via-fluentcart' ),
+						'text'  => __( 'Never offer Google Pay, regardless of the account default.', 'ys-helcim-via-fluentcart' ),
+					),
+				),
+			),
 			'debug_mode'             => array(
 				'value'   => 'no',
 				'label'   => __( 'Debug logging', 'ys-helcim-via-fluentcart' ),

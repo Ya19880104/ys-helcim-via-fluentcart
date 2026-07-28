@@ -68,7 +68,14 @@ try {
     & $verifier -ZipPath $first.ZipPath -ManifestPath $first.ManifestPath -SourceRoot $repoRoot
 
     $manifest = Get-Content -Raw -LiteralPath $first.ManifestPath | ConvertFrom-Json
-    Assert-Equal -Expected '1.1.0-rc.9' -Actual $manifest.version -Message 'The manifest version does not match the release candidate.'
+    # Read the expected version from the plugin header rather than pinning a literal,
+    # so a routine version bump cannot leave this assertion behind and fail the build.
+    $pluginHeader = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'ys-helcim-via-fluentcart.php')
+    if ($pluginHeader -notmatch '(?m)^\s*\*\s*Version:\s*(\S+)\s*$') {
+        throw 'Could not read the plugin version from the plugin header.'
+    }
+    $expectedVersion = $Matches[1]
+    Assert-Equal -Expected $expectedVersion -Actual $manifest.version -Message 'The manifest version does not match the plugin header.'
     Assert-Equal -Expected $first.FileCount -Actual $manifest.file_count -Message 'The manifest file count is incorrect.'
     Assert-Equal -Expected $first.Sha256 -Actual $manifest.archive_sha256 -Message 'The manifest archive digest is incorrect.'
 

@@ -321,6 +321,75 @@ final class YSHelcimPayProcessorTest extends TestCase
         self::assertFalse($payload['confirmationScreen']);
     }
 
+    /**
+     * Helcim rejects a nested object for digitalWallet with HTTP 400
+     * ("digital Wallet must be a valid Non-empty String"), which would stop the
+     * checkout modal from opening at all, so the value must stay a JSON string.
+     *
+     * @dataProvider googlePayPreferences
+     */
+    public function testGooglePayPreferenceIsSentAsAJsonStringOrOmittedEntirely(
+        ?string $setting,
+        ?string $expected
+    ): void {
+        $settings = ['test_api_token' => 'enc:test-api-secret'];
+        if (null !== $setting) {
+            $settings['google_pay'] = $setting;
+        }
+        BaseGatewaySettings::$settingsByClass[YSHelcimPaySettings::class] = $settings;
+
+        $result = $this->processorWithCurrentSettings()->initialize($this->paymentInstance());
+
+        self::assertIsArray($result);
+        $payload = $this->apiCalls[0]['payload'];
+
+        if (null === $expected) {
+            self::assertArrayNotHasKey('digitalWallet', $payload);
+            return;
+        }
+
+        self::assertIsString($payload['digitalWallet']);
+        self::assertSame($expected, $payload['digitalWallet']);
+    }
+
+    /** @return array<string, array{0: ?string, 1: ?string}> */
+    public static function googlePayPreferences(): array
+    {
+        return [
+            'unset inherits the Helcim account default' => [null, null],
+            'account inherits the Helcim account default' => ['account', null],
+            'on overrides the account default' => ['on', '{"google-pay":1}'],
+            'off overrides the account default' => ['off', '{"google-pay":0}'],
+            'an unknown value falls back to the account default' => ['sometimes', null],
+        ];
+    }
+
+    /** Rebuild the processor so it picks up settings changed inside a test. */
+    private function processorWithCurrentSettings(): YSHelcimPayProcessor
+    {
+        return new YSHelcimPayProcessor(
+            new YSHelcimPaySettings(),
+            operations: $this->repository,
+            api_request: function (
+                string $endpoint,
+                array $payload,
+                string $apiToken,
+                ?string $idempotencyKey = null,
+                string $method = 'POST'
+            ): array {
+                $row = $this->repository->findByUuid(self::OPERATION_UUID);
+                $this->apiCalls[] = compact('endpoint', 'payload', 'apiToken', 'idempotencyKey', 'method', 'row');
+                return [
+                    'checkoutToken' => 'hosted-checkout-token-741',
+                    'secretToken' => self::SECRET_TOKEN,
+                ];
+            },
+            uuid_factory: static fn (): string => self::OPERATION_UUID,
+            confirm_token_factory: static fn (): string => self::CONFIRM_TOKEN,
+            initialization_clock: static fn (): int => strtotime('2026-07-22 00:00:00 UTC')
+        );
+    }
+
     public function testConfirmAjaxRejectsAnInvalidNonceBeforeConsumingTheOneTimeToken(): void
     {
         $paymentData = $this->initializePaymentData();

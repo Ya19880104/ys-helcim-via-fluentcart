@@ -280,6 +280,18 @@ class YSHelcimPayProcessor {
 			'invoiceRequest' => $invoice,
 		);
 
+		// Google Pay. Helcim expects digitalWallet as a JSON-encoded *string*; passing a
+		// nested array is rejected with HTTP 400 "digital Wallet must be a valid Non-empty
+		// String", which would block the checkout modal entirely. Omitting the key inherits
+		// the merchant's Helcim account default, so only send it for an explicit override.
+		$google_pay = $this->settings->getGooglePayMode();
+		if ( 'account' !== $google_pay ) {
+			$wallet = wp_json_encode( array( 'google-pay' => 'on' === $google_pay ? 1 : 0 ) );
+			if ( is_string( $wallet ) && '' !== $wallet ) {
+				$payload['digitalWallet'] = $wallet;
+			}
+		}
+
 		try {
 			$filtered = apply_filters( 'ys_helcim_fct_initialize_args', $payload, $this->legacy_payment_instance );
 			$filtered = apply_filters( 'ys_helcim_fct_initialize_args_v2', $filtered, $identity, $correlation );

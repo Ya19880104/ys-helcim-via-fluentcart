@@ -67,6 +67,8 @@ class YSHelcimPaySettings extends BaseGatewaySettings implements YSHelcimModeApi
 			// Historical pre-mode setting. Read only as a current-mode migration fallback.
 			'webhook_verifier_token'      => '',
 			'checkout_button_text'   => '',
+			// account = send nothing and inherit the Helcim account default; on/off override it per session.
+			'google_pay'             => 'account',
 			'debug_mode'             => 'no',
 		);
 	}
@@ -155,6 +157,22 @@ class YSHelcimPaySettings extends BaseGatewaySettings implements YSHelcimModeApi
 		}
 
 		return YSHelcimSecretStorage::decrypt( $this->get( $mode . '_webhook_verifier_token' ) );
+	}
+
+	/**
+	 * Google Pay preference for the hosted checkout modal.
+	 *
+	 * 'account' leaves the request untouched so Helcim applies the merchant's own
+	 * account-level default; 'on' and 'off' override it for this session only.
+	 * Unknown stored values fall back to 'account' so a malformed setting can never
+	 * change how customers are charged.
+	 *
+	 * @return string One of 'account', 'on', 'off'.
+	 */
+	public function getGooglePayMode(): string {
+		$mode = strtolower( trim( (string) $this->get( 'google_pay' ) ) );
+
+		return in_array( $mode, array( 'on', 'off' ), true ) ? $mode : 'account';
 	}
 
 	/**
