@@ -2,16 +2,16 @@
 
 Helcim payment integration for FluentCart with durable payment operations, remote-first refunds, and signed webhook recovery.
 
-> **Release candidate — 1.1.0-rc.17**
+> **Stable release — 1.1.0**
 >
-> This is the dual-gateway v1.1.0 candidate: the hosted HelcimPay.js modal and the Helcim.js inline form are both registered only when their current-mode credentials and the shared durable recovery runtime are available. RC status still means pre-release; promote it only after both browser flows pass the release gates below on the development and client test environments.
+> This is the reviewed dual-gateway v1.1.0 release: the hosted HelcimPay.js modal and the Helcim.js inline form are both registered only when their current-mode credentials and the shared durable recovery runtime are available. Every deployment must still pass the environment, browser, provider, and runtime verification gates below.
 
 ## Payment methods
 
-| Payment method | Collection mode | v1.1.0-rc.17 status |
+| Payment method | Collection mode | v1.1.0 status |
 |---|---|---|
-| **Credit card (Helcim)** (`ys_helcim`) | HelcimPay.js hosted modal; lowest PCI scope and the path for supported digital wallets | Registered for RC testing through the durable two-phase hosted coordinator |
-| **Credit card (Helcim inline form)** (`ys_helcim_js`) | Helcim.js Verify tokenization in the browser, followed by a server-side v2 purchase | Registered for RC testing when all current-mode credentials and recovery prerequisites are present |
+| **Credit card (Helcim)** (`ys_helcim`) | HelcimPay.js hosted modal; lowest PCI scope and the path for supported digital wallets | Available through the durable two-phase hosted coordinator |
+| **Credit card (Helcim inline form)** (`ys_helcim_js`) | Helcim.js Verify tokenization in the browser, followed by a server-side v2 purchase | Available when all current-mode credentials and recovery prerequisites are present |
 
 Both payment methods use the same safety invariants: a durable operation is claimed before the hosted session can be exposed or an inline purchase can be sent, provider success requires a valid transaction ID and exact proof, and a lost response remains reconcilable without creating a second charge.
 
@@ -246,7 +246,7 @@ Before replacing a client site's current payment gateway:
 
 ## Known limitations
 
-- `1.1.0-rc.17` is a pre-release dual-gateway candidate and must not be promoted until every release-candidate gate above has current environment evidence.
+- Production deployment requires current credentials, recurring cron execution, and current evidence for every release gate above.
 - Only one-time purchase and refund/reverse operations are supported.
 - Subscriptions, pre-authorization/capture, and customer-facing saved cards are not supported.
 - Only USD and CAD are supported unless the gateway filter is deliberately extended and provider support is independently confirmed.
