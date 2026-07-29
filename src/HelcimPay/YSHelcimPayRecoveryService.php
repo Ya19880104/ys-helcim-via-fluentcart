@@ -14,6 +14,7 @@ use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimJsPurchaseRuntime;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationRepository;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationState;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimPurchaseOperation;
+use YangSheep\Helcim\FluentCart\Support\YSHelcimLogger;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimTransactionId;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -382,16 +383,27 @@ final class YSHelcimPayRecoveryService {
 
 		// One automatic late-proof follow-up: an approval indexed only after both reads
 		// above still gets picked up without waiting for a webhook or an administrator.
+		// A scheduling failure never blocks the release (webhook and the manual check
+		// remain available), but it is always logged, never swallowed.
+		$scheduled = false;
 		try {
 			$now = ( $this->clock )();
 			if ( is_int( $now ) && $now > 0 ) {
-				$this->operations->scheduleCanceledFollowUp(
+				$scheduled = $this->operations->scheduleCanceledFollowUp(
 					$operation_uuid,
 					gmdate( 'Y-m-d H:i:s', $now + self::PROVIDER_INDEX_GRACE_SECONDS )
 				);
 			}
 		} catch ( \Throwable $exception ) {
 			unset( $exception );
+			$scheduled = false;
+		}
+		if ( true !== $scheduled ) {
+			YSHelcimLogger::log(
+				'ERROR',
+				'Released checkout could not schedule its automatic late-proof follow-up; webhook and manual check remain the only channels',
+				array( 'operation_uuid' => $operation_uuid )
+			);
 		}
 
 		return self::result( $operation_uuid, 'canceled', 'session_expired_no_charge_found' );

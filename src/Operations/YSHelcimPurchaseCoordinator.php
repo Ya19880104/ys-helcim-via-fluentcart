@@ -521,6 +521,29 @@ final class YSHelcimPurchaseCoordinator {
 		return self::result( $row, self::ATTENTION_REQUIRED, 'operation_terminal_without_payment', $replayed );
 	}
 
+	/**
+	 * Persist a binding mismatch so it survives the request and reaches an
+	 * administrator: provider money moved but the local records point elsewhere.
+	 *
+	 * Only a pending local status is downgraded (the CAS inside recordLocalFailure
+	 * refuses everything else), so an already-applied binding is never touched. The
+	 * durable local_failed + error row is what the attention scan surfaces.
+	 */
+	private function persistBindingMismatch( array $row, string $message ): void {
+		if ( YSHelcimOperationState::LOCAL_PENDING !== (string) ( $row['local_status'] ?? '' ) ) {
+			return;
+		}
+		try {
+			$this->operations->recordLocalFailure(
+				strtolower( (string) ( $row['operation_uuid'] ?? '' ) ),
+				'provider_id_mismatch',
+				$message
+			);
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+		}
+	}
+
 	/** @return array<string, mixed> */
 	private function completeLocalBinding(
 		YSHelcimPurchaseOperation $operation,
@@ -534,12 +557,14 @@ final class YSHelcimPurchaseCoordinator {
 		}
 
 		if ( null !== $incoming_id && ! hash_equals( $provider_id, $incoming_id ) ) {
+			$this->persistBindingMismatch( $row, 'A different provider transaction is already bound.' );
 			return self::result( $row, self::ATTENTION_REQUIRED, 'provider_id_mismatch', $replayed );
 		}
 
 		$local_status = (string) ( $row['local_status'] ?? '' );
 		$inspection = $this->inspectLocalBinding( $operation, $row, $provider_id );
 		if ( 'mismatch' === $inspection['status'] ) {
+			$this->persistBindingMismatch( $row, 'A different provider transaction is already present locally.' );
 			return self::result( $row, self::ATTENTION_REQUIRED, 'provider_id_mismatch', $replayed );
 		}
 		if ( 'unknown' === $inspection['status'] ) {

@@ -830,11 +830,30 @@ final class YSHelcimOperationRepository {
 			SELECT * FROM {$this->table}
 			WHERE operation_type = 'purchase'
 			AND gateway = %s
-			AND active_scope_key IS NOT NULL
-			AND local_status IN ('pending', 'failed', 'applying')
 			AND (
-				remote_status IN ('indeterminate', 'succeeded')
-				OR recovery_attempt_count >= %d
+				(
+					active_scope_key IS NOT NULL
+					AND local_status IN ('pending', 'failed', 'applying')
+					AND (
+						remote_status IN ('indeterminate', 'succeeded')
+						OR recovery_attempt_count >= %d
+					)
+				)
+				OR (
+					-- Released expired checkouts: the scope is free by design, but the
+					-- administrator must still be able to run a manual late-proof check.
+					remote_status = 'canceled'
+					AND local_status = 'pending'
+					AND active_scope_key IS NULL
+				)
+				OR (
+					-- A provider charge proven but locally unbindable (for example a
+					-- late approval colliding with another bound charge): remote money
+					-- moved, local records did not, so an administrator must see it.
+					remote_status = 'succeeded'
+					AND local_status = 'failed'
+					AND active_scope_key IS NULL
+				)
 			)
 			ORDER BY updated_at ASC, id ASC
 			LIMIT %d",
@@ -1305,19 +1324,42 @@ final class YSHelcimOperationRepository {
 		return 1 === $updated;
 	}
 
-	/** Consume (clear) a released checkout's one-shot late-proof schedule. */
-	public function clearCanceledFollowUp( string $operation_uuid ): void {
-		$this->database->update(
-			$this->table,
-			array(
-				'next_recovery_at' => null,
-				'updated_at'       => ( $this->clock )(),
-			),
-			array(
-				'operation_uuid' => strtolower( $operation_uuid ),
-				'remote_status'  => YSHelcimOperationState::REMOTE_CANCELED,
-			)
-		);
+	/**
+	 * Atomically consume a released checkout's one-shot late-proof schedule.
+	 *
+	 * The compare-and-swap includes the due time the caller observed, so when two
+	 * workers race, exactly one consumes the schedule and runs the check; the
+	 * loser (0 rows) must skip. A database failure surfaces as WP_Error instead
+	 * of being swallowed into an every-minute retry loop.
+	 *
+	 * @return bool|\WP_Error True when THIS caller consumed the schedule.
+	 */
+	public function clearCanceledFollowUp( string $operation_uuid, string $expected_check_at ) {
+		if ( 1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $expected_check_at ) ) {
+			return false;
+		}
+		try {
+			$updated = $this->database->update(
+				$this->table,
+				array(
+					'next_recovery_at' => null,
+					'updated_at'       => ( $this->clock )(),
+				),
+				array(
+					'operation_uuid'   => strtolower( $operation_uuid ),
+					'remote_status'    => YSHelcimOperationState::REMOTE_CANCELED,
+					'next_recovery_at' => $expected_check_at,
+				)
+			);
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return self::journalUnavailable();
+		}
+		if ( false === $updated ) {
+			return self::journalUnavailable();
+		}
+
+		return 1 === $updated;
 	}
 
 	/**
@@ -1418,29 +1460,33 @@ final class YSHelcimOperationRepository {
 			&& hash_equals( $ciphertext, (string) ( $stored['encrypted_material'] ?? '' ) );
 	}
 
-	public function rotateConfirmToken( string $operation_uuid, string $token_hash, string $expires_at ) {
+	/**
+	 * @param string $expected_hash The confirm-token hash the CALLER observed in its
+	 *                              blocker snapshot. The compare-and-swap runs against
+	 *                              this value — never a re-read — so two racing resumes
+	 *                              that saw the same snapshot produce exactly one
+	 *                              winner by construction.
+	 * @return bool|\WP_Error
+	 */
+	public function rotateConfirmToken( string $operation_uuid, string $token_hash, string $expires_at, string $expected_hash ) {
 		if (
 			1 !== preg_match( '/\A[0-9a-f]{64}\z/', $token_hash ) ||
+			1 !== preg_match( '/\A[0-9a-f]{64}\z/', $expected_hash ) ||
 			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $expires_at )
 		) {
 			return false;
 		}
 
 		$current = $this->findByUuid( $operation_uuid );
-		$previous_hash = (string) ( $current['confirm_token_hash'] ?? '' );
 		if (
 			null === $current ||
 			YSHelcimOperationState::REMOTE_PROCESSING !== (string) ( $current['remote_status'] ?? '' ) ||
 			YSHelcimOperationState::LOCAL_PENDING !== (string) ( $current['local_status'] ?? '' ) ||
-			null === ( $current['active_scope_key'] ?? null ) ||
-			1 !== preg_match( '/\A[0-9a-f]{64}\z/', $previous_hash )
+			null === ( $current['active_scope_key'] ?? null )
 		) {
 			return false;
 		}
 
-		// Compare-and-swap on the previously observed hash: when two resume requests
-		// race, exactly one rotation wins and the loser reports the attempt unresolved
-		// instead of both browsers believing they hold a valid confirm token.
 		$updated = $this->database->update(
 			$this->table,
 			array(
@@ -1451,7 +1497,7 @@ final class YSHelcimOperationRepository {
 			array(
 				'operation_uuid'     => strtolower( $operation_uuid ),
 				'remote_status'      => YSHelcimOperationState::REMOTE_PROCESSING,
-				'confirm_token_hash' => $previous_hash,
+				'confirm_token_hash' => $expected_hash,
 			)
 		);
 		if ( false === $updated ) {

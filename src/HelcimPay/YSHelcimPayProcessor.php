@@ -466,23 +466,44 @@ class YSHelcimPayProcessor {
 			$envelope = null;
 		}
 		$plaintext = '';
-		$checkout_token = is_array( $envelope ) ? (string) ( $envelope['checkout_token'] ?? '' ) : '';
-		$secret_token   = is_array( $envelope ) ? (string) ( $envelope['secret_token'] ?? '' ) : '';
+		// Strict types BEFORE any cast: an envelope carrying arrays or numbers is
+		// malformed and refused, never coerced into strings like "Array".
+		$checkout_token = is_array( $envelope ) ? ( $envelope['checkout_token'] ?? null ) : null;
+		$secret_token   = is_array( $envelope ) ? ( $envelope['secret_token'] ?? null ) : null;
+		$envelope_uuid  = is_array( $envelope ) ? ( $envelope['operation_uuid'] ?? null ) : null;
+		$envelope_v     = is_array( $envelope ) ? ( $envelope['v'] ?? null ) : null;
 		// Operation binding: material swapped in from any other row is refused.
 		if (
 			! is_array( $envelope )
-			|| 2 !== (int) ( $envelope['v'] ?? 0 )
-			|| strtolower( (string) ( $envelope['operation_uuid'] ?? '' ) ) !== $blocker_uuid
-			|| '' === $checkout_token
-			|| '' === $secret_token
+			|| 2 !== $envelope_v
+			|| ! is_string( $envelope_uuid )
+			|| strtolower( $envelope_uuid ) !== $blocker_uuid
+			|| ! is_string( $checkout_token ) || '' === $checkout_token
+			|| ! is_string( $secret_token ) || '' === $secret_token
 		) {
 			return null;
 		}
 		$envelope = null;
 
+		// A webhook or recovery worker may have completed this operation while the
+		// shopper was clicking: re-read the transaction and only restore meta while
+		// it is still a pending charge with no provider receipt.
+		$fresh = $this->loadExactTransaction( (int) $transaction->id );
+		if (
+			is_wp_error( $fresh )
+			|| (string) $fresh->uuid !== (string) $transaction->uuid
+			|| Status::TRANSACTION_PENDING !== (string) $fresh->status
+			|| ! self::isEmptyProviderId( $fresh->vendor_charge_id ?? null )
+		) {
+			return null;
+		}
+
 		// Rebuild the browser-session meta the confirmation service depends on.
-		$persisted = $this->persistBrowserSession(
-			$transaction,
+		// writeBrowserSession has NO failure side effects: a resumed session is
+		// already exposed at Helcim, so on any storage failure the operation must
+		// simply stay processing + locked and the shopper sees "unresolved".
+		$written = $this->writeBrowserSession(
+			$fresh,
 			array(
 				'operation_uuid' => $blocker_uuid,
 				'checkout_token' => $checkout_token,
@@ -490,7 +511,7 @@ class YSHelcimPayProcessor {
 			)
 		);
 		$secret_token = '';
-		if ( true !== $persisted ) {
+		if ( true !== $written ) {
 			return null;
 		}
 
@@ -505,10 +526,17 @@ class YSHelcimPayProcessor {
 			return null;
 		}
 
+		// CAS against the hash observed in THIS request's blocker snapshot: two
+		// racing resumes that read the same snapshot get exactly one winner.
+		$snapshot_hash = (string) ( $blocker['confirm_token_hash'] ?? '' );
+		if ( 1 !== preg_match( '/\A[0-9a-f]{64}\z/', $snapshot_hash ) ) {
+			return null;
+		}
 		$rotated = $this->operations->rotateConfirmToken(
 			$blocker_uuid,
 			hash( 'sha256', $confirm_token ),
-			gmdate( 'Y-m-d H:i:s', $now + self::CONFIRM_TOKEN_TTL_SECONDS )
+			gmdate( 'Y-m-d H:i:s', $now + self::CONFIRM_TOKEN_TTL_SECONDS ),
+			$snapshot_hash
 		);
 		if ( true !== $rotated ) {
 			return null;
@@ -694,10 +722,28 @@ class YSHelcimPayProcessor {
 	/**
 	 * Persist encrypted confirmation material before any token reaches the browser.
 	 *
+	 * FRESH sessions only: on any storage failure the never-exposed session is
+	 * safely failed and its scope released. A RESUMED session must never take that
+	 * path — its Helcim window is already exposed — so resume uses
+	 * writeBrowserSession() directly and keeps the operation locked on failure.
+	 *
 	 * @param array<string, mixed> $session
 	 * @return true|\WP_Error
 	 */
 	private function persistBrowserSession( OrderTransaction $transaction, array $session ) {
+		if ( true === $this->writeBrowserSession( $transaction, $session ) ) {
+			return true;
+		}
+
+		return $this->failUnexposedSession( (string) $session['operation_uuid'], (int) $transaction->id );
+	}
+
+	/**
+	 * Write and verify the browser-session meta. No state side effects on failure.
+	 *
+	 * @param array<string, mixed> $session
+	 */
+	private function writeBrowserSession( OrderTransaction $transaction, array $session ): bool {
 		try {
 			$secret_ciphertext = Helper::encryptKey( (string) $session['secret_token'] );
 		} catch ( \Throwable $exception ) {
@@ -710,12 +756,12 @@ class YSHelcimPayProcessor {
 			! is_callable( array( Helper::class, 'isValueEncrypted' ) ) ||
 			! Helper::isValueEncrypted( $secret_ciphertext )
 		) {
-			return $this->failUnexposedSession( (string) $session['operation_uuid'], (int) $transaction->id );
+			return false;
 		}
 
 		$fresh = $this->loadExactTransaction( (int) $transaction->id );
 		if ( is_wp_error( $fresh ) || (string) $fresh->uuid !== (string) $transaction->uuid ) {
-			return $this->failUnexposedSession( (string) $session['operation_uuid'], (int) $transaction->id );
+			return false;
 		}
 		$meta = is_array( $fresh->meta ?? null ) ? $fresh->meta : array();
 		unset( $meta['ys_helcim_card_token'] );
@@ -742,7 +788,7 @@ class YSHelcimPayProcessor {
 			! hash_equals( $secret_ciphertext, (string) ( $verified_meta[ self::META_SECRET_TOKEN ] ?? '' ) ) ||
 			! hash_equals( (string) $session['operation_uuid'], (string) ( $verified_meta[ self::META_OPERATION_UUID ] ?? '' ) )
 		) {
-			return $this->failUnexposedSession( (string) $session['operation_uuid'], (int) $transaction->id );
+			return false;
 		}
 
 		return true;

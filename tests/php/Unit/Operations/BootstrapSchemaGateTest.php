@@ -1077,6 +1077,54 @@ final class BootstrapSchemaGateTest extends TestCase
 		self::assertSame('ys_helcim_hosted_recovery_attention_required', $events[2][5]);
 	}
 
+	public function testManualCheckOnAReleasedCanceledCheckoutGoesStraightToRecover(): void
+	{
+		$events = [];
+		$operationUuid = '00000000-0000-4000-8000-000000000917';
+		$operations = new class($events, $operationUuid) {
+			public function __construct(private array &$events, private string $uuid) {}
+			public function findByUuid(string $uuid): ?array
+			{
+				return [
+					'operation_uuid' => $this->uuid,
+					'remote_status' => 'canceled',
+					'local_status' => 'pending',
+					'active_scope_key' => null,
+				];
+			}
+			public function claimAttentionPurchaseRecovery(): bool
+			{
+				$this->events[] = ['claim-attention'];
+				return false;
+			}
+			public function claimPausedHostedRecovery(): bool
+			{
+				$this->events[] = ['claim-paused'];
+				return false;
+			}
+		};
+		$service = new class($events) {
+			public function __construct(private array &$events) {}
+			public function recover(string $uuid): array
+			{
+				$this->events[] = ['recover', $uuid];
+				return ['status' => 'canceled', 'reason' => 'no_late_proof_found'];
+			}
+		};
+		$bootstrap = YSHelcimFctBootstrap::init();
+		$property = new \ReflectionProperty($bootstrap, 'hosted_recovery_runtime');
+		$property->setValue($bootstrap, ['operations' => $operations, 'service' => $service]);
+
+		$result = $bootstrap->retryHostedPurchaseManually($operationUuid);
+
+		self::assertIsArray($result);
+		self::assertSame('canceled', $result['status']);
+		self::assertSame('no_late_proof_found', $result['reason']);
+		// A released checkout owns no scope and no lease budget: the check must
+		// bypass the lease machinery entirely, never report "not paused".
+		self::assertSame([['recover', $operationUuid]], $events);
+	}
+
 	public function testManualInlineRecoveryUsesGatewayBoundPausedLeaseAndReturnsToAttention(): void
 	{
 		$events = [];

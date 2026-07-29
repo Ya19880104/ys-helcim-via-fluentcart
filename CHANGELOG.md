@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0-rc.16] - 2026-07-29
+
+### Fixed
+
+- A meta-restore failure during a session resume no longer releases the live Helcim session. The resume path now writes the browser session without any failure side effects; on error the blocker stays `processing` with its scope locked and the shopper gets the unresolved-attempt message, so a session that is still exposed at Helcim can never be marked failed by a local storage hiccup.
+- The administrator's "Check Helcim once" action now works on a released (canceled) checkout: it bypasses the lease machinery (a released checkout owns no scope and no lease budget, so the paused-lease claim could never accept it and reported "not paused") and runs the read-only late-proof check directly.
+- A provider-bound transaction id mismatch (remote money moved, local records point at a different charge) is now persisted as a durable `failed` local state with `provider_id_mismatch`, instead of evaporating with the request; both the released-checkout and the mismatch-failed shapes now surface in the administrator attention scan.
+- Confirm-token rotation CAS now compares against the caller's own snapshot hash instead of a fresh re-read, closing the re-read race window; the canceled follow-up consume is an atomic compare-and-swap on the scheduled time, and both schedule and clear failures are logged, never swallowed.
+- Envelope validation is strictly typed: non-string fields are refused before any cast, and a resume re-checks the fresh transaction is still pending and unbound before re-exposing the session.
+
+### Added
+
+- Tests: resume restore-failure keeps the session locked; malformed (non-string) envelope refused; stale-snapshot rotation loses the CAS; attention scan surfaces released and mismatch-failed operations; released-checkout manual check goes straight to recover; deploy gate aborts unless every PHP mtime was refreshed (OPcache staleness guard).
+
 ## [1.1.0-rc.15] - 2026-07-29
 
 ### Fixed

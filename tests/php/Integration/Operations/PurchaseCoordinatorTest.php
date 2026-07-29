@@ -583,7 +583,12 @@ final class PurchaseCoordinatorTest extends TestCase
         self::assertSame('attention_required', $result['status']);
         self::assertSame('provider_id_mismatch', $result['error_code']);
         self::assertSame(0, $binderCalls);
-        self::assertSame('pending', $this->repository->findByUuid(self::OPERATION_UUID)['local_status']);
+        // Provider money moved but local records point at a DIFFERENT charge: this
+        // must survive the request as a durable, administrator-visible failure —
+        // never a transient array that evaporates (independent review P1).
+        $row = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('failed', $row['local_status']);
+        self::assertSame('provider_id_mismatch', $row['local_error_code']);
     }
 
     public function testCrashAfterExactBindBeforeJournalApplyRecoversOnNextCallback(): void

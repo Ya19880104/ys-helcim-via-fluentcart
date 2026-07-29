@@ -586,6 +586,127 @@ final class YSHelcimPayProcessorTest extends TestCase
     }
 
     /**
+     * P1: a resumed session is already exposed at Helcim, so a meta-restore failure
+     * must keep it processing + LOCKED and report unresolved — never fail/release it
+     * the way a never-exposed fresh session would.
+     */
+    public function testResumeRestoreFailureKeepsTheLiveSessionLockedAndProcessing(): void
+    {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+
+        // Storage breaks between the attempts (save failures on the transaction).
+        OrderTransaction::$saveResult = false;
+
+        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID);
+        $result = $second->initialize($this->paymentInstance());
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_previous_attempt_unresolved', $result->get_error_code());
+
+        $blocker = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('processing', $blocker['remote_status'], 'an exposed session must NEVER be failed by a restore error');
+        self::assertNotNull($blocker['active_scope_key'], 'the scope must stay locked');
+        self::assertSame(
+            hash('sha256', self::CONFIRM_TOKEN),
+            (string) $blocker['confirm_token_hash'],
+            'the confirm token must not rotate when the restore failed'
+        );
+    }
+
+    /** A malformed envelope (arrays where strings belong) is refused, never coerced. */
+    public function testResumeRefusesAMalformedEnvelopeWithNonStringFields(): void
+    {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+
+        $malformed = Helper::encryptKey(json_encode([
+            'v' => 2,
+            'operation_uuid' => self::OPERATION_UUID,
+            'checkout_token' => ['nested' => 'array'],
+            'secret_token' => 12345,
+        ]));
+        self::assertIsString($malformed);
+        self::assertTrue($this->repository->storeCheckoutMaterial(self::OPERATION_UUID, $malformed, '2026-07-22 01:10:00'));
+
+        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID);
+        $result = $second->initialize($this->paymentInstance());
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_previous_attempt_unresolved', $result->get_error_code());
+        self::assertSame('processing', $this->repository->findByUuid(self::OPERATION_UUID)['remote_status']);
+    }
+
+    /** The rotation CAS runs against the caller's snapshot: a stale snapshot loses. */
+    public function testConfirmTokenRotationIsACompareAndSwapOnTheCallerSnapshot(): void
+    {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+        $snapshot = hash('sha256', self::CONFIRM_TOKEN);
+
+        $first = $this->repository->rotateConfirmToken(
+            self::OPERATION_UUID,
+            hash('sha256', 'winner-token'),
+            '2026-07-22 00:20:00',
+            $snapshot
+        );
+        self::assertTrue($first);
+
+        $second = $this->repository->rotateConfirmToken(
+            self::OPERATION_UUID,
+            hash('sha256', 'loser-token'),
+            '2026-07-22 00:20:00',
+            $snapshot
+        );
+        self::assertFalse($second, 'the same stale snapshot must lose the race by construction');
+        self::assertSame(
+            hash('sha256', 'winner-token'),
+            (string) $this->repository->findByUuid(self::OPERATION_UUID)['confirm_token_hash']
+        );
+    }
+
+    /** Released and mismatch-failed operations must surface in the attention scan. */
+    public function testAttentionScanSurfacesReleasedAndMismatchFailedOperations(): void
+    {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+
+        // Released checkout: canceled / pending / scope NULL.
+        self::assertTrue($this->repository->transitionRemote(self::OPERATION_UUID, 'processing', 'indeterminate'));
+        self::assertTrue(
+            $this->repository->transitionRemote(
+                self::OPERATION_UUID,
+                'indeterminate',
+                'canceled',
+                ['error_code' => 'ys_helcim_session_expired_released']
+            )
+        );
+
+        $rows = $this->repository->findPurchasesNeedingAttention('ys_helcim', 10, 7);
+        self::assertIsArray($rows);
+        $uuids = array_map(static fn (array $r): string => (string) $r['operation_uuid'], $rows);
+        self::assertContains(self::OPERATION_UUID, $uuids, 'a released checkout must be administrator-visible');
+
+        // Late-proof bound remotely, locally mismatch-failed: succeeded / failed / scope NULL.
+        self::assertTrue(
+            $this->repository->transitionRemote(
+                self::OPERATION_UUID,
+                'canceled',
+                'succeeded',
+                ['vendor_transaction_id' => '51999002']
+            )
+        );
+        self::assertTrue(
+            $this->repository->recordLocalFailure(
+                self::OPERATION_UUID,
+                'provider_id_mismatch',
+                'A different provider transaction is already bound.'
+            )
+        );
+
+        $rows = $this->repository->findPurchasesNeedingAttention('ys_helcim', 10, 7);
+        self::assertIsArray($rows);
+        $uuids = array_map(static fn (array $r): string => (string) $r['operation_uuid'], $rows);
+        self::assertContains(self::OPERATION_UUID, $uuids, 'a provider-paid but locally unbindable charge must be administrator-visible');
+    }
+
+    /**
      * Deterministic behavior at the resume/expiry boundaries.
      *
      * @dataProvider blockerAgeBoundaries

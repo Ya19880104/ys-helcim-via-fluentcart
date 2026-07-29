@@ -466,11 +466,27 @@ final class FakeWpdb
 					static fn (array $row): bool =>
 						($row['operation_type'] ?? null) === 'purchase' &&
 						($row['gateway'] ?? null) === $gateway &&
-						!empty($row['active_scope_key']) &&
-						in_array(($row['local_status'] ?? null), ['pending', 'failed', 'applying'], true) &&
 						(
-							in_array(($row['remote_status'] ?? null), ['indeterminate', 'succeeded'], true) ||
-							(int) ($row['recovery_attempt_count'] ?? 0) >= $maxAttempts
+							(
+								!empty($row['active_scope_key']) &&
+								in_array(($row['local_status'] ?? null), ['pending', 'failed', 'applying'], true) &&
+								(
+									in_array(($row['remote_status'] ?? null), ['indeterminate', 'succeeded'], true) ||
+									(int) ($row['recovery_attempt_count'] ?? 0) >= $maxAttempts
+								)
+							) ||
+							(
+								// Released expired checkouts (scope free, manual late-proof check).
+								($row['remote_status'] ?? null) === 'canceled' &&
+								($row['local_status'] ?? null) === 'pending' &&
+								empty($row['active_scope_key'])
+							) ||
+							(
+								// Remote charge proven but locally unbindable.
+								($row['remote_status'] ?? null) === 'succeeded' &&
+								($row['local_status'] ?? null) === 'failed' &&
+								empty($row['active_scope_key'])
+							)
 						)
 				));
 				usort($rows, static fn (array $left, array $right): int =>

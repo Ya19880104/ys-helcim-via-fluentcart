@@ -583,11 +583,25 @@ final class YSHelcimFctBootstrap {
 
 		foreach ( $rows as $row ) {
 			$operation_uuid = is_array( $row ) ? (string) ( $row['operation_uuid'] ?? '' ) : '';
-			if ( ! self::isUuid( $operation_uuid ) ) {
+			$scheduled_at   = is_array( $row ) ? (string) ( $row['next_recovery_at'] ?? '' ) : '';
+			if ( ! self::isUuid( $operation_uuid ) || '' === $scheduled_at ) {
 				continue;
 			}
-			// Consume the one-shot schedule first so a failing lookup can never loop.
-			$operations->clearCanceledFollowUp( $operation_uuid );
+			// Atomic consume-then-check: the CAS on the observed due time makes one
+			// worker the sole owner; a second concurrent worker gets 0 rows and skips.
+			// A database failure is logged, never silently retried forever.
+			$consumed = $operations->clearCanceledFollowUp( $operation_uuid, $scheduled_at );
+			if ( is_wp_error( $consumed ) ) {
+				YSHelcimLogger::log(
+					'ERROR',
+					'Released-checkout follow-up schedule could not be consumed',
+					array( 'operation_uuid' => $operation_uuid, 'error_code' => $consumed->get_error_code() )
+				);
+				continue;
+			}
+			if ( true !== $consumed ) {
+				continue;
+			}
 			$result = $runtime['service']->recover( $operation_uuid );
 			if ( is_wp_error( $result ) ) {
 				YSHelcimLogger::info(
@@ -636,6 +650,23 @@ final class YSHelcimFctBootstrap {
 		$runtime = $this->purchaseRecoveryRuntime( $gateway );
 		if ( is_wp_error( $runtime ) ) {
 			return $runtime;
+		}
+
+		// A released expired checkout owns no scope and no lease budget, so the
+		// lease-based claim below can never accept it. Its manual late-proof check
+		// goes straight to recover(): the canceled semantics there are read-only
+		// unless exact approval proof appears, and the optimistic state transition
+		// makes concurrent invocations safe.
+		$released = method_exists( $runtime['operations'], 'findByUuid' )
+			? $runtime['operations']->findByUuid( $operation_uuid )
+			: null;
+		if (
+			is_array( $released )
+			&& 'canceled' === (string) ( $released['remote_status'] ?? '' )
+			&& 'pending' === (string) ( $released['local_status'] ?? '' )
+			&& null === ( $released['active_scope_key'] ?? null )
+		) {
+			return $runtime['service']->recover( $operation_uuid );
 		}
 
 		$now                  = time();
