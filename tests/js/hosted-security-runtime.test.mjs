@@ -183,10 +183,16 @@ describe('HelcimPay hosted checkout runtime security boundaries', () => {
     }
   });
 
-  it('treats modal hide without signed proof as indeterminate and keeps reload events locked', async () => {
+  it('reopens checkout after modal hide without any release request, ready to resume the same session', async () => {
     const counters = {};
     let orderCalls = 0;
-    const window = createCheckout(() => Promise.resolve(jsonResponse({ payment_args: {} })));
+    let ajaxCalls = 0;
+    const window = createCheckout((url) => {
+      if (String(url).includes('admin-ajax')) {
+        ajaxCalls += 1;
+      }
+      return Promise.resolve(jsonResponse({ payment_args: {} }));
+    });
     window.appendHelcimPayIframe = () => {};
     window.removeHelcimPayIframe = () => {};
     const checkoutDetail = detail(() => {
@@ -197,19 +203,19 @@ describe('HelcimPay hosted checkout runtime security boundaries', () => {
     try {
       await render(window, checkoutDetail);
       await begin(window);
+      const ajaxBeforeHide = ajaxCalls;
       window.dispatchEvent(providerMessage(window, 'HIDE'));
       await flushPromises();
 
-      expect(window.document.querySelector('.ys-helcim-pay-button').disabled).toBe(true);
-      expect(counters.disabled).toBe(1);
+      // The server keeps the session; the browser must NOT call any release endpoint.
+      expect(ajaxCalls).toBe(ajaxBeforeHide);
+      // The shopper can immediately try again (the server resumes the same session).
+      expect(window.document.querySelector('.ys-helcim-pay-button').disabled).toBe(false);
+      expect(counters.enabled).toBe(1);
+      expect(window.document.querySelector('.ys-helcim-error').textContent).toMatch(/closed|reopen/i);
 
-      window.dispatchEvent(new window.CustomEvent(
-        'fluent_cart_load_payments_ys_helcim',
-        { detail: checkoutDetail },
-      ));
-      await flushPromises();
-      expect(window.document.querySelector('.ys-helcim-error').textContent).toMatch(/refresh|contact|duplicate/i);
-      expect(orderCalls).toBe(1);
+      await begin(window);
+      expect(orderCalls).toBe(2);
     } finally {
       window.close();
     }

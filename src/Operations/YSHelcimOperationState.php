@@ -44,16 +44,22 @@ final class YSHelcimOperationState {
 			self::REMOTE_DECLINED,
 			self::REMOTE_FAILED,
 			self::REMOTE_INDETERMINATE,
+			// A checkout whose Helcim session provably expired unclaimed may be
+			// released; canceled keeps the door open for exact late approval proof.
+			self::REMOTE_CANCELED,
 		),
 		self::REMOTE_INDETERMINATE => array(
 			self::REMOTE_SUCCEEDED,
 			self::REMOTE_DECLINED,
 			self::REMOTE_FAILED,
+			self::REMOTE_CANCELED,
 		),
 		self::REMOTE_SUCCEEDED     => array(),
 		self::REMOTE_DECLINED      => array(),
 		self::REMOTE_FAILED        => array(),
-		self::REMOTE_CANCELED      => array(),
+		// Exact late approval proof (webhook or recovery lookup) may still complete a
+		// released checkout, so a real charge can never become an unrecordable orphan.
+		self::REMOTE_CANCELED      => array( self::REMOTE_SUCCEEDED ),
 		self::REMOTE_EXPIRED       => array(),
 	);
 

@@ -230,24 +230,29 @@ final class YSHelcimPayRecoveryService {
 	}
 
 	/**
-	 * Release a hosted checkout the shopper closed, once the provider proves no charge exists.
+	 * Release a hosted checkout whose Helcim session has provably expired unclaimed.
 	 *
-	 * Closing the payment window is the single most common way a checkout ends without a
-	 * result. Treating every close as indeterminate strands the order forever, so this
-	 * asks Helcim directly for the exact operation instead of waiting for the bounded
-	 * recovery worker.
+	 * A live session is never released here: Helcim offers no way to cancel a
+	 * checkoutToken, so a session younger than the provider's own validity window
+	 * could still charge in another tab. Release requires ALL of:
+	 *   1. the operation is an in-flight hosted purchase that still owns its scope,
+	 *   2. its stored identity matches the current transaction exactly (anti-drift),
+	 *   3. the session is past the checkout-material expiry boundary — dead by
+	 *      Helcim's own 60-minute rule, so no NEW charge can ever be created,
+	 *   4. two consecutive authenticated reads find no transaction (charge detection
+	 *      for anything created before expiry, not "proof of absence").
 	 *
-	 * Safety: the caller must already have consumed the operation's one-time confirm
-	 * token, so only the browser that opened this modal can reach here. The scope is
-	 * released only after two consecutive authenticated empty reads (guarding against
-	 * provider indexing lag). Any found transaction, ambiguous payload, credential
-	 * problem, or journal error leaves the operation locked exactly as before.
+	 * The release target is REMOTE_CANCELED, which keeps accepting exact late
+	 * approval proof: if a pre-expiry charge surfaces afterwards via webhook or
+	 * recovery, it still binds and completes locally instead of becoming an orphan.
 	 *
 	 * @param string $operation_uuid Exact operation to release.
-	 * @param int    $settle_seconds Gap between the two confirmation reads.
-	 * @return array<string,mixed>|\WP_Error 'canceled' when released; 'found' when the caller must reconcile instead.
+	 * @param int    $settle_seconds Gap between the two charge-detection reads.
+	 * @return array<string,mixed>|\WP_Error 'canceled' when released; 'found' when a
+	 *                        provider transaction exists; 'live' when the session has
+	 *                        not expired yet and nothing may be released.
 	 */
-	public function releaseClosedCheckout( string $operation_uuid, int $settle_seconds = 2 ) {
+	public function releaseExpiredCheckout( string $operation_uuid, int $settle_seconds = 2 ) {
 		$operation_uuid = strtolower( trim( $operation_uuid ) );
 		if ( ! self::isUuid( $operation_uuid ) ) {
 			return self::error( 'ys_helcim_hosted_cancel_invalid', 'The hosted payment operation identifier is invalid.' );
@@ -269,10 +274,6 @@ final class YSHelcimPayRecoveryService {
 			return self::error( 'ys_helcim_hosted_cancel_missing', 'The hosted payment operation could not be found.' );
 		}
 
-		// Only an unresolved attempt that still owns its scope may be released this way.
-		// processing = the modal was opened and nothing came back; indeterminate = bounded
-		// recovery already observed the checkout material expire (the Helcim session is
-		// dead, so a late charge on it is no longer possible). Both are safe to verify.
 		$remote_status = (string) ( $row['remote_status'] ?? '' );
 		$local_status  = (string) ( $row['local_status'] ?? '' );
 		$active_scope  = (string) ( $row['active_scope_key'] ?? '' );
@@ -292,7 +293,26 @@ final class YSHelcimPayRecoveryService {
 		if ( is_wp_error( $loaded ) ) {
 			return $loaded;
 		}
+		// Anti-drift: the stored operation must still describe this exact transaction
+		// (amount, currency, mode, binding) and carry its own uuid as the provider
+		// correlation, or nothing may be verified or released against it.
+		if (
+			! $loaded['purchase']->matchesIdentityRow( $row )
+			|| $operation_uuid !== strtolower( (string) ( $row['provider_correlation_id'] ?? '' ) )
+		) {
+			return self::error( 'ys_helcim_hosted_cancel_conflict', 'The hosted payment operation is not safely cancellable.' );
+		}
 		$identity = $loaded['purchase']->identity();
+
+		// A session inside Helcim's validity window could still charge in another
+		// tab; it must expire before any release is even considered.
+		$expired = $this->checkoutMaterialExpired( $row );
+		if ( is_wp_error( $expired ) ) {
+			return $expired;
+		}
+		if ( true !== $expired ) {
+			return self::result( $operation_uuid, 'live', 'checkout_session_still_valid' );
+		}
 
 		try {
 			$api_token = ( $this->credential_resolver )( (string) $identity['payment_mode'] );
@@ -338,13 +358,14 @@ final class YSHelcimPayRecoveryService {
 
 		// Optimistic transition from the status read above: if recovery or a webhook moved
 		// the row meanwhile, this fails and the operation stays locked exactly as before.
+		// CANCELED (not FAILED) so exact late approval proof can still bind and complete.
 		$released = $this->operations->transitionRemote(
 			$operation_uuid,
 			$remote_status,
-			YSHelcimOperationState::REMOTE_FAILED,
+			YSHelcimOperationState::REMOTE_CANCELED,
 			array(
-				'error_code'    => 'ys_helcim_customer_closed_checkout',
-				'error_message' => 'The shopper closed the payment window and Helcim confirmed no transaction exists.',
+				'error_code'    => 'ys_helcim_session_expired_released',
+				'error_message' => 'The Helcim checkout session expired unclaimed and no transaction was found; the payment scope was released.',
 			)
 		);
 		if ( is_wp_error( $released ) ) {
@@ -354,7 +375,7 @@ final class YSHelcimPayRecoveryService {
 			return self::journalUnavailable();
 		}
 
-		return self::result( $operation_uuid, 'canceled', 'provider_confirmed_no_charge' );
+		return self::result( $operation_uuid, 'canceled', 'session_expired_no_charge_found' );
 	}
 
 	/** @return array{transaction:OrderTransaction,purchase:YSHelcimPurchaseOperation}|\WP_Error */

@@ -436,7 +436,14 @@ final class YSHelcimPurchaseCoordinator {
 				return $this->completeLocalBinding( $operation, $row, $provider_id, true );
 			}
 
-			if ( ! in_array( $remote_status, array( YSHelcimOperationState::REMOTE_PROCESSING, YSHelcimOperationState::REMOTE_INDETERMINATE ), true ) ) {
+			// canceled = a released expired checkout; exact late approval proof must
+			// still bind so a pre-expiry charge can never become an unrecordable orphan.
+			$bindable = array(
+				YSHelcimOperationState::REMOTE_PROCESSING,
+				YSHelcimOperationState::REMOTE_INDETERMINATE,
+				YSHelcimOperationState::REMOTE_CANCELED,
+			);
+			if ( ! in_array( $remote_status, $bindable, true ) ) {
 				return self::result( $row, self::ATTENTION_REQUIRED, 'attempt_status_conflict', true );
 			}
 

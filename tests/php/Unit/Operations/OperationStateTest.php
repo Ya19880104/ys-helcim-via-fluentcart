@@ -20,10 +20,19 @@ final class OperationStateTest extends TestCase
 
     public function testRemoteTerminalStatesCannotRestart(): void
     {
-        foreach (['succeeded', 'declined', 'failed', 'canceled', 'expired'] as $state) {
+        foreach (['succeeded', 'declined', 'failed', 'expired'] as $state) {
             foreach (YSHelcimOperationState::remoteStates() as $candidate) {
                 self::assertFalse(YSHelcimOperationState::canTransitionRemote($state, $candidate));
             }
+        }
+
+        // canceled = a released expired checkout. Its ONLY legal exit is exact late
+        // approval proof; everything else stays forbidden.
+        foreach (YSHelcimOperationState::remoteStates() as $candidate) {
+            self::assertSame(
+                'succeeded' === $candidate,
+                YSHelcimOperationState::canTransitionRemote('canceled', $candidate)
+            );
         }
     }
 
@@ -32,9 +41,10 @@ final class OperationStateTest extends TestCase
         self::assertTrue(YSHelcimOperationState::canTransitionRemote('indeterminate', 'succeeded'));
         self::assertTrue(YSHelcimOperationState::canTransitionRemote('indeterminate', 'failed'));
         self::assertFalse(YSHelcimOperationState::canTransitionRemote('indeterminate', 'processing'));
-        self::assertFalse(YSHelcimOperationState::canTransitionRemote('indeterminate', 'canceled'));
+        // Expired-session release: both in-flight states may be released to canceled.
+        self::assertTrue(YSHelcimOperationState::canTransitionRemote('indeterminate', 'canceled'));
+        self::assertTrue(YSHelcimOperationState::canTransitionRemote('processing', 'canceled'));
         self::assertFalse(YSHelcimOperationState::canTransitionRemote('indeterminate', 'expired'));
-        self::assertFalse(YSHelcimOperationState::canTransitionRemote('processing', 'canceled'));
         self::assertFalse(YSHelcimOperationState::canTransitionRemote('processing', 'expired'));
     }
 

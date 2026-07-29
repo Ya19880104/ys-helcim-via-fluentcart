@@ -105,12 +105,16 @@ class YSHelcimPayProcessor {
 		$this->confirmation = new YSHelcimPayConfirmationService( $operations, $runtime );
 		$this->operations   = $operations;
 		$this->runtime      = $runtime;
+		$this->clock        = $initialization_clock ?? static fn (): int => time();
 	}
 
 	private YSHelcimOperationRepository $operations;
 
 	/** Shared purchase runtime, reused to build the scope-release verifier on demand. */
 	private YSHelcimJsPurchaseRuntime $runtime;
+
+	/** Unix-time source shared with the initialization coordinator (injectable in tests). */
+	private $clock;
 
 	/**
 	 * Create and persist a provider checkout session for one exact FC transaction.
@@ -143,24 +147,13 @@ class YSHelcimPayProcessor {
 		try {
 			$session = $this->initialization->begin( $identity );
 
-			// The scope is still held by a previous attempt (closed browser, crashed tab,
-			// pre-fix leftover). Ask Helcim whether that attempt actually charged; when it
-			// provably did not, release it and retry once so the shopper is never stranded.
+			// The scope is still held by a previous attempt (closed or crashed browser,
+			// second tab). A live Helcim session can never be revoked, so it is resumed
+			// as-is — the same checkoutToken allows at most one successful charge — and
+			// only a session past Helcim's own validity window may be verified and
+			// released. Either way the shopper is not stranded.
 			if ( is_wp_error( $session ) && 'ys_helcim_scope_busy' === $session->get_error_code() ) {
-				$outcome = $this->releaseAbandonedScopeBlocker( $identity );
-				if ( 'released' === $outcome ) {
-					$session = $this->initialization->begin( $identity );
-				} elseif ( 'found' === $outcome ) {
-					$session = self::error(
-						'ys_helcim_previous_attempt_needs_review',
-						'A previous payment attempt on this order needs review. Please contact the store before paying again.'
-					);
-				} else {
-					$session = self::error(
-						'ys_helcim_previous_attempt_unresolved',
-						'Your previous payment attempt is still being verified. Please wait a moment and try again.'
-					);
-				}
+				$session = $this->resumeOrReleaseBlockedScope( $identity, $transaction );
 			}
 		} finally {
 			$this->legacy_payment_instance = $previous_payment_instance;
@@ -169,9 +162,11 @@ class YSHelcimPayProcessor {
 			return $session;
 		}
 
-		$stored = $this->persistBrowserSession( $transaction, $session );
-		if ( is_wp_error( $stored ) ) {
-			return $stored;
+		if ( empty( $session['resumed'] ) ) {
+			$stored = $this->persistBrowserSession( $transaction, $session );
+			if ( is_wp_error( $stored ) ) {
+				return $stored;
+			}
 		}
 
 		YSHelcimLogger::info(
@@ -273,43 +268,160 @@ class YSHelcimPayProcessor {
 		);
 	}
 
+	/** Must stay inside Helcim's 60-minute checkoutToken validity, with margin for card entry. */
+	private const RESUME_WINDOW_SECONDS = 3300;
+
+	/** Mirrors the initialization coordinator's confirm-token lifetime. */
+	private const CONFIRM_TOKEN_TTL_SECONDS = 900;
+
 	/**
-	 * Verify-and-release the abandoned operation that is blocking this transaction's scope.
+	 * The transaction's payment scope is held by an earlier attempt. Resolve it safely:
 	 *
-	 * Runs the same two-read Helcim verification as the modal-close release: only a
-	 * provider-proven uncharged attempt is released. A found transaction, credential
-	 * problem, lookup failure, or ineligible blocker leaves everything locked.
+	 * 1. RESUME — a young in-flight session is re-exposed with the SAME checkoutToken
+	 *    (Helcim allows at most one successful charge per token, so a second tab can
+	 *    never double-charge) after rotating the one-time confirm token so only the
+	 *    newest browser can confirm.
+	 * 2. RELEASE — a session past Helcim's own validity window is verified and moved
+	 *    to canceled by the recovery service, then initialization retries once.
+	 * 3. Anything else (identity drift, provider transaction found, gray zone between
+	 *    resume window and expiry, lookup failure) keeps the scope locked with an
+	 *    honest shopper-facing message.
 	 *
 	 * @param array<string, int|string> $identity Server-loaded transaction identity.
-	 * @return string 'released' when the scope is free again, 'found' when a provider
-	 *                transaction exists, 'unavailable' for every other outcome.
+	 * @return array<string,mixed>|\WP_Error A session array (fresh or resumed) or an error.
 	 */
-	private function releaseAbandonedScopeBlocker( array $identity ): string {
+	private function resumeOrReleaseBlockedScope( array $identity, OrderTransaction $transaction ) {
+		$needs_review = static fn (): \WP_Error => self::error(
+			'ys_helcim_previous_attempt_needs_review',
+			'A previous payment attempt on this order needs review. Please contact the store before paying again.'
+		);
+		$unresolved = static fn (): \WP_Error => self::error(
+			'ys_helcim_previous_attempt_unresolved',
+			'Your previous payment attempt is still being verified. Please wait a moment and try again.'
+		);
+
 		try {
 			$operation = YSHelcimPurchaseOperation::fromTransaction( $identity );
 			if ( is_wp_error( $operation ) ) {
-				return 'unavailable';
+				return $unresolved();
 			}
 
 			$blocker = $this->operations->findActiveByScope( $operation->scopeKey() );
 			if ( ! is_array( $blocker ) ) {
-				// The conflicting attempt resolved concurrently; the retry will settle it.
-				return 'released';
+				// The conflicting attempt resolved concurrently; one retry settles it.
+				return $this->initialization->begin( $identity );
 			}
 
-			$remote = (string) ( $blocker['remote_status'] ?? '' );
+			$blocker_uuid = strtolower( (string) ( $blocker['operation_uuid'] ?? '' ) );
+			$remote       = (string) ( $blocker['remote_status'] ?? '' );
+			// Full identity and correlation verification: gateway, operation type,
+			// amount/currency/mode binding, and self-correlation must all match, or
+			// nothing about this blocker may be trusted, resumed, or released.
 			if (
 				self::GATEWAY_SLUG !== (string) ( $blocker['gateway'] ?? '' )
 				|| 'purchase' !== (string) ( $blocker['operation_type'] ?? '' )
 				|| YSHelcimOperationState::LOCAL_PENDING !== (string) ( $blocker['local_status'] ?? '' )
+				|| ! $operation->matchesIdentityRow( $blocker )
+				|| $blocker_uuid !== strtolower( (string) ( $blocker['provider_correlation_id'] ?? '' ) )
 				|| ! in_array(
 					$remote,
 					array( YSHelcimOperationState::REMOTE_PROCESSING, YSHelcimOperationState::REMOTE_INDETERMINATE ),
 					true
 				)
 			) {
-				return 'unavailable';
+				return $unresolved();
 			}
+
+			if (
+				YSHelcimOperationState::REMOTE_PROCESSING === $remote
+				&& $this->blockerAgeSeconds( $blocker ) < self::RESUME_WINDOW_SECONDS
+			) {
+				$resumed = $this->resumeExposedSession( $blocker_uuid, $transaction );
+				return is_array( $resumed ) ? $resumed : $unresolved();
+			}
+
+			$outcome = $this->releaseExpiredBlocker( $blocker_uuid );
+			if ( 'canceled' === $outcome ) {
+				return $this->initialization->begin( $identity );
+			}
+			return 'found' === $outcome ? $needs_review() : $unresolved();
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return $unresolved();
+		}
+	}
+
+	/**
+	 * Re-expose the stored Helcim session for this transaction with a fresh one-time
+	 * confirm token. Returns null when the stored material does not belong to the
+	 * blocking operation or the token rotation loses its race.
+	 *
+	 * @return array<string,mixed>|null
+	 */
+	private function resumeExposedSession( string $blocker_uuid, OrderTransaction $transaction ): ?array {
+		$meta           = is_array( $transaction->meta ?? null ) ? $transaction->meta : array();
+		$checkout_token = (string) ( $meta[ self::META_CHECKOUT_TOKEN ] ?? '' );
+		$meta_operation = strtolower( (string) ( $meta[ self::META_OPERATION_UUID ] ?? '' ) );
+		if ( '' === $checkout_token || $meta_operation !== $blocker_uuid ) {
+			return null;
+		}
+
+		try {
+			$confirm_token = rtrim( strtr( base64_encode( random_bytes( 32 ) ), '+/', '-_' ), '=' );
+			$now           = ( $this->clock )();
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return null;
+		}
+		if ( ! is_int( $now ) || $now <= 0 ) {
+			return null;
+		}
+
+		$rotated = $this->operations->rotateConfirmToken(
+			$blocker_uuid,
+			hash( 'sha256', $confirm_token ),
+			gmdate( 'Y-m-d H:i:s', $now + self::CONFIRM_TOKEN_TTL_SECONDS )
+		);
+		if ( true !== $rotated ) {
+			return null;
+		}
+
+		YSHelcimLogger::info(
+			'Resumed the existing hosted checkout session',
+			array( 'operation_uuid' => $blocker_uuid )
+		);
+
+		return array(
+			'operation_uuid' => $blocker_uuid,
+			'confirm_token'  => $confirm_token,
+			'checkout_token' => $checkout_token,
+			'resumed'        => true,
+		);
+	}
+
+	/** Age of the blocking operation row in seconds (PHP_INT_MAX when unreadable). */
+	private function blockerAgeSeconds( array $blocker ): int {
+		$created = strtotime( ( (string) ( $blocker['created_at'] ?? '' ) ) . ' UTC' );
+		try {
+			$now = ( $this->clock )();
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return PHP_INT_MAX;
+		}
+		if ( false === $created || ! is_int( $now ) || $now <= 0 ) {
+			return PHP_INT_MAX;
+		}
+
+		return max( 0, $now - $created );
+	}
+
+	/**
+	 * Ask the recovery service to verify and release one expired blocking operation.
+	 *
+	 * @return string 'canceled' | 'found' | 'unavailable'
+	 */
+	private function releaseExpiredBlocker( string $blocker_uuid ): string {
+		try {
 
 			$service = new YSHelcimPayRecoveryService(
 				operations: $this->operations,
@@ -340,8 +452,7 @@ class YSHelcimPayProcessor {
 				)
 			);
 
-			$blocker_uuid = (string) ( $blocker['operation_uuid'] ?? '' );
-			$result       = $service->releaseClosedCheckout( $blocker_uuid );
+			$result = $service->releaseExpiredCheckout( $blocker_uuid );
 			if ( is_wp_error( $result ) ) {
 				YSHelcimLogger::info(
 					'Blocked hosted scope could not be released',
@@ -356,13 +467,12 @@ class YSHelcimPayProcessor {
 			$status = (string) ( $result['status'] ?? '' );
 			if ( 'canceled' === $status ) {
 				YSHelcimLogger::info(
-					'Released an abandoned hosted attempt so checkout can continue',
+					'Released an expired hosted attempt so checkout can continue',
 					array( 'operation_uuid' => $blocker_uuid )
 				);
-				return 'released';
 			}
 
-			return 'found' === $status ? 'found' : 'unavailable';
+			return in_array( $status, array( 'canceled', 'found' ), true ) ? $status : 'unavailable';
 		} catch ( \Throwable $exception ) {
 			unset( $exception );
 			return 'unavailable';

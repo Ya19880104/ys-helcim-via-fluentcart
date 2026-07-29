@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0-rc.14] - 2026-07-29
+
+### Fixed
+
+- Replace the rc.13 close-and-release flow, which independent review proved unsafe: it could release an operation whose Helcim payment window was still open in another tab, allowing two provider sessions (and potentially two charges) for one transaction, with the first marked terminally failed and its late result unbindable.
+- A blocked checkout now RESUMES the existing Helcim session instead: the same checkoutToken is re-exposed to the newest browser (Helcim permits at most one successful charge per token, so a second tab can never double-charge) after rotating the one-time confirm token so older tabs can no longer confirm. Closing the payment window simply re-enables the button; no release request is sent.
+- Only a session past Helcim's own validity window may be released, after full identity/correlation verification and two authenticated charge-detection reads. Empty reads are treated as charge detection, never as proof of absence.
+- A released checkout now becomes `canceled` instead of `failed`, and exact late approval proof still binds through the webhook resolver and purchase coordinator, so a pre-expiry charge can never become an unrecordable orphan.
+- Removed the browser-triggered cancellation AJAX endpoint entirely; the release decision is now exclusively server-side and expiry-gated.
+
 ## [1.1.0-rc.13] - 2026-07-28
 
 ### Fixed

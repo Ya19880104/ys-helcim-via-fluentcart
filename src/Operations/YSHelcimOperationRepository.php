@@ -1265,6 +1265,62 @@ final class YSHelcimOperationRepository {
 	}
 
 	/** Atomically consume the operation's one-time public confirmation token. */
+	/**
+	 * Replace an in-flight hosted checkout's one-time confirm token.
+	 *
+	 * Used when the same provider session is re-exposed to the shopper (for example
+	 * after they closed the payment window and pressed pay again): the newest browser
+	 * receives a fresh token and every previously issued token stops working, so only
+	 * one confirmation path exists per session at any time.
+	 *
+	 * @param string $operation_uuid Operation whose token is rotated.
+	 * @param string $token_hash     sha256 hash of the freshly minted token.
+	 * @param string $expires_at     SQL timestamp the new token expires at.
+	 * @return bool|\WP_Error True when rotated; false when the operation is not an
+	 *                        in-flight processing attempt; WP_Error on storage loss.
+	 */
+	public function rotateConfirmToken( string $operation_uuid, string $token_hash, string $expires_at ) {
+		if (
+			1 !== preg_match( '/\A[0-9a-f]{64}\z/', $token_hash ) ||
+			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $expires_at )
+		) {
+			return false;
+		}
+
+		$current = $this->findByUuid( $operation_uuid );
+		if (
+			null === $current ||
+			YSHelcimOperationState::REMOTE_PROCESSING !== (string) ( $current['remote_status'] ?? '' ) ||
+			YSHelcimOperationState::LOCAL_PENDING !== (string) ( $current['local_status'] ?? '' ) ||
+			null === ( $current['active_scope_key'] ?? null )
+		) {
+			return false;
+		}
+
+		$updated = $this->database->update(
+			$this->table,
+			array(
+				'confirm_token_hash'       => $token_hash,
+				'confirm_token_expires_at' => $expires_at,
+				'updated_at'               => ( $this->clock )(),
+			),
+			array(
+				'operation_uuid' => strtolower( $operation_uuid ),
+				'remote_status'  => YSHelcimOperationState::REMOTE_PROCESSING,
+			)
+		);
+		if ( false === $updated ) {
+			return self::journalUnavailable();
+		}
+		if ( 1 !== $updated ) {
+			return false;
+		}
+
+		$stored = $this->findByUuid( $operation_uuid );
+		return is_array( $stored )
+			&& hash_equals( $token_hash, (string) ( $stored['confirm_token_hash'] ?? '' ) );
+	}
+
 	public function consumeConfirmToken( string $operation_uuid, string $presented_token ) {
 		$current = $this->findByUuid( $operation_uuid );
 		if (

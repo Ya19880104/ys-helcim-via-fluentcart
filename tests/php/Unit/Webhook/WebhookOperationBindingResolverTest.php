@@ -48,6 +48,24 @@ final class WebhookOperationBindingResolverTest extends TestCase
         );
     }
 
+    /** A released (canceled) checkout must still match so exact late proof can bind. */
+    public function testMatchesAReleasedCanceledCheckoutForLateProofBinding(): void
+    {
+        $row = $this->row();
+        $row['remote_status'] = 'canceled';
+        $resolver = new YSHelcimWebhookOperationBindingResolver(
+            static fn (): array => $row
+        );
+
+        self::assertSame(
+            [
+                'status' => 'matched',
+                'binding' => ['gateway' => 'ys_helcim_js', 'mode' => 'test'],
+            ],
+            $resolver->resolve(['invoiceNumber' => self::UUID])
+        );
+    }
+
     public function testRejectsUnknownMalformedOrUnsafeOperationState(): void
     {
         $row = $this->row();

@@ -368,62 +368,52 @@ final class YSHelcimPayProcessorTest extends TestCase
     private const SECOND_CONFIRM_TOKEN = 'hosted-confirm-token-with-thirty-two-chars-742';
 
     /**
-     * A shopper abandons the modal without any browser event (crash, killed tab, pre-fix
-     * leftover), then presses pay again: the blocked initialize must verify the abandoned
-     * attempt with Helcim, release it, and open a fresh session in the same request.
+     * A shopper closes the modal (or opens a second tab) and presses pay again while the
+     * Helcim session is still young: the SAME session must be re-exposed — same checkout
+     * token, same operation, no release, no new provider session — with only the one-time
+     * confirm token rotated so the older browser can no longer confirm.
      */
-    public function testInitializeReleasesAProvenUnchargedBlockerAndRetriesOnce(): void
+    public function testInitializeResumesAYoungBlockingSessionInsteadOfReleasingIt(): void
     {
         self::assertIsArray($this->processor->initialize($this->paymentInstance()));
 
         $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID);
         $result = $second->initialize($this->paymentInstance());
 
-        self::assertIsArray($result, 'the retry after releasing the blocker must succeed');
-        self::assertSame(self::SECOND_OPERATION_UUID, $result['payment_data']['operation_uuid']);
+        self::assertIsArray($result, 'the blocked attempt must resume the existing session');
+        self::assertSame(self::OPERATION_UUID, $result['payment_data']['operation_uuid'], 'the ORIGINAL operation is resumed');
+        self::assertSame('hosted-checkout-token-741', $result['payment_data']['checkout_token'], 'the SAME provider session is re-exposed');
 
         $blocker = $this->repository->findByUuid(self::OPERATION_UUID);
-        self::assertSame('failed', $blocker['remote_status']);
-        self::assertNull($blocker['active_scope_key']);
-        self::assertSame('ys_helcim_customer_closed_checkout', $blocker['remote_error_code']);
+        self::assertSame('processing', $blocker['remote_status'], 'a live session is never released');
+        self::assertNotNull($blocker['active_scope_key']);
+        self::assertNull($this->repository->findByUuid(self::SECOND_OPERATION_UUID), 'no second operation may exist');
 
-        $lookups = array_values(array_filter(
-            $this->apiCalls,
-            static fn (array $call): bool => 'card-transactions' === $call['endpoint']
-        ));
-        self::assertCount(2, $lookups, 'release requires two consecutive authenticated empty reads');
-        self::assertSame(self::OPERATION_UUID, $lookups[0]['payload']['invoiceNumber']);
-        self::assertSame(self::OPERATION_UUID, $lookups[1]['payload']['invoiceNumber']);
-
-        $fresh = $this->repository->findByUuid(self::SECOND_OPERATION_UUID);
-        self::assertSame('processing', $fresh['remote_status']);
-        self::assertNotNull($fresh['active_scope_key']);
-    }
-
-    /** A blocker with any provider transaction must stay locked and open no new session. */
-    public function testInitializeRefusesWhenTheBlockerHasAProviderTransaction(): void
-    {
-        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
-
-        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID, [['transactionId' => 51900001]]);
-        $result = $second->initialize($this->paymentInstance());
-
-        self::assertInstanceOf(\WP_Error::class, $result);
-        self::assertSame('ys_helcim_previous_attempt_needs_review', $result->get_error_code());
-
-        $blocker = $this->repository->findByUuid(self::OPERATION_UUID);
-        self::assertSame('processing', $blocker['remote_status']);
-        self::assertNotNull($blocker['active_scope_key'], 'a possibly-charged attempt must stay locked');
-
-        $sessions = array_filter(
-            $this->apiCalls,
-            static fn (array $call): bool => 'helcim-pay/initialize' === $call['endpoint']
+        $newToken = (string) $result['payment_data']['confirm_token'];
+        self::assertNotSame(self::CONFIRM_TOKEN, $newToken);
+        self::assertFalse(
+            $this->repository->consumeConfirmToken(self::OPERATION_UUID, self::CONFIRM_TOKEN),
+            'the previously issued confirm token must stop working'
         );
-        self::assertCount(1, $sessions, 'no second checkout session may be created');
+        self::assertTrue(
+            $this->repository->consumeConfirmToken(self::OPERATION_UUID, $newToken),
+            'only the freshly rotated confirm token may confirm'
+        );
+
+        $providerCalls = array_values(array_filter(
+            $this->apiCalls,
+            static fn (array $call): bool => in_array($call['endpoint'], ['card-transactions', 'helcim-pay/initialize'], true)
+        ));
+        self::assertCount(1, $providerCalls, 'resume makes NO provider request (the one call is the first initialize)');
+        self::assertSame('helcim-pay/initialize', $providerCalls[0]['endpoint']);
     }
 
-    /** Bounded recovery marks stale leftovers indeterminate; those must release the same way. */
-    public function testInitializeReleasesAnIndeterminateLeftoverBlocker(): void
+    /**
+     * Only a session past Helcim's own validity window may be verified and released, and
+     * the release target is canceled (not failed) so exact late proof can still bind.
+     * Indeterminate = bounded recovery already observed the expiry.
+     */
+    public function testInitializeReleasesAnExpiredIndeterminateBlockerToCanceledAndRetries(): void
     {
         self::assertIsArray($this->processor->initialize($this->paymentInstance()));
         self::assertTrue(
@@ -437,8 +427,74 @@ final class YSHelcimPayProcessorTest extends TestCase
         self::assertSame(self::SECOND_OPERATION_UUID, $result['payment_data']['operation_uuid']);
 
         $blocker = $this->repository->findByUuid(self::OPERATION_UUID);
-        self::assertSame('failed', $blocker['remote_status']);
+        self::assertSame('canceled', $blocker['remote_status'], 'released checkouts stay reachable for late proof');
         self::assertNull($blocker['active_scope_key']);
+        self::assertSame('ys_helcim_session_expired_released', $blocker['remote_error_code']);
+
+        $lookups = array_values(array_filter(
+            $this->apiCalls,
+            static fn (array $call): bool => 'card-transactions' === $call['endpoint']
+        ));
+        self::assertCount(2, $lookups, 'release requires two consecutive charge-detection reads');
+        self::assertSame(self::OPERATION_UUID, $lookups[0]['payload']['invoiceNumber']);
+
+        $fresh = $this->repository->findByUuid(self::SECOND_OPERATION_UUID);
+        self::assertSame('processing', $fresh['remote_status']);
+        self::assertNotNull($fresh['active_scope_key']);
+    }
+
+    /** An expired blocker with any provider transaction must stay locked and open no new session. */
+    public function testInitializeRefusesWhenTheExpiredBlockerHasAProviderTransaction(): void
+    {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+        self::assertTrue(
+            $this->repository->transitionRemote(self::OPERATION_UUID, 'processing', 'indeterminate')
+        );
+
+        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID, [['transactionId' => 51900001]]);
+        $result = $second->initialize($this->paymentInstance());
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_previous_attempt_needs_review', $result->get_error_code());
+
+        $blocker = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('indeterminate', $blocker['remote_status']);
+        self::assertNotNull($blocker['active_scope_key'], 'a possibly-charged attempt must stay locked');
+
+        $sessions = array_filter(
+            $this->apiCalls,
+            static fn (array $call): bool => 'helcim-pay/initialize' === $call['endpoint']
+        );
+        self::assertCount(1, $sessions, 'no second checkout session may be created');
+    }
+
+    /** Exact late approval proof must still bind a released (canceled) checkout. */
+    public function testACanceledReleasedCheckoutStillAcceptsExactLateApprovalProof(): void
+    {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+        self::assertTrue($this->repository->transitionRemote(self::OPERATION_UUID, 'processing', 'indeterminate'));
+        self::assertTrue(
+            $this->repository->transitionRemote(
+                self::OPERATION_UUID,
+                'indeterminate',
+                'canceled',
+                ['error_code' => 'ys_helcim_session_expired_released']
+            )
+        );
+
+        self::assertTrue(
+            $this->repository->transitionRemote(
+                self::OPERATION_UUID,
+                'canceled',
+                'succeeded',
+                ['vendor_transaction_id' => '51999001']
+            ),
+            'canceled -> succeeded must be a legal transition for late proof'
+        );
+
+        $row = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('succeeded', $row['remote_status']);
+        self::assertSame('51999001', (string) $row['vendor_transaction_id']);
     }
 
     /**
