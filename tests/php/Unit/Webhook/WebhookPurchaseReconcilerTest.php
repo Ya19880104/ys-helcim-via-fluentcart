@@ -134,6 +134,46 @@ final class WebhookPurchaseReconcilerTest extends TestCase
         self::assertSame(1, $calls);
     }
 
+    /**
+     * A released expired checkout (canceled) receiving exact late approval proof must
+     * flow through the runtime and complete, not die at the state gate as 409.
+     */
+    public function testExactLateApprovalProofBindsAReleasedCanceledCheckout(): void
+    {
+        $row = $this->operation();
+        $row['remote_status'] = 'canceled';
+        $row['active_scope_key'] = null;
+        $calls = [];
+        $runtime = new class($calls) {
+            public function __construct(private array &$calls) {}
+            public function reconcileProviderProof(object $transaction, string $uuid, array $proof): array
+            {
+                $this->calls[] = [$uuid, $proof['outcome'] ?? null];
+                return [
+                    'status' => 'succeeded',
+                    'remote_status' => 'succeeded',
+                    'local_status' => 'applied',
+                    'error_code' => null,
+                ];
+            }
+        };
+        $reconciler = new YSHelcimWebhookPurchaseReconciler(
+            static fn (): array => $row,
+            static fn (): object => (object) ['id' => 20],
+            static fn (): object => $runtime
+        );
+
+        $result = $reconciler->reconcile(
+            $this->proof(),
+            '51177123',
+            [['gateway' => 'ys_helcim_js', 'mode' => 'test']]
+        );
+
+        self::assertSame(['code' => 200, 'message' => 'payment reconciled'], $result);
+        self::assertCount(1, $calls);
+        self::assertSame([self::OPERATION_UUID, 'succeeded'], $calls[0]);
+    }
+
     public function testUnknownInvoiceCorrelationNeverSelectsByAmountOrRecency(): void
     {
         $operationReads = 0;

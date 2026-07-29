@@ -420,7 +420,7 @@ final class YSHelcimPayProcessorTest extends TestCase
             $this->repository->transitionRemote(self::OPERATION_UUID, 'processing', 'indeterminate')
         );
 
-        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID);
+        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID, [], self::clockAtAge(4200));
         $result = $second->initialize($this->paymentInstance());
 
         self::assertIsArray($result);
@@ -430,6 +430,7 @@ final class YSHelcimPayProcessorTest extends TestCase
         self::assertSame('canceled', $blocker['remote_status'], 'released checkouts stay reachable for late proof');
         self::assertNull($blocker['active_scope_key']);
         self::assertSame('ys_helcim_session_expired_released', $blocker['remote_error_code']);
+        self::assertNotNull($blocker['next_recovery_at'], 'a released checkout schedules exactly one late-proof follow-up');
 
         $lookups = array_values(array_filter(
             $this->apiCalls,
@@ -451,7 +452,7 @@ final class YSHelcimPayProcessorTest extends TestCase
             $this->repository->transitionRemote(self::OPERATION_UUID, 'processing', 'indeterminate')
         );
 
-        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID, [['transactionId' => 51900001]]);
+        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID, [['transactionId' => 51900001]], self::clockAtAge(4200));
         $result = $second->initialize($this->paymentInstance());
 
         self::assertInstanceOf(\WP_Error::class, $result);
@@ -503,8 +504,134 @@ final class YSHelcimPayProcessorTest extends TestCase
      *
      * @param array<int,array<string,mixed>> $lookupResponse Provider list returned for card-transactions.
      */
-    private function scopeAwareProcessor(string $operationUuid, array $lookupResponse = []): YSHelcimPayProcessor
+    /**
+     * The decisive resumed-payment chain: FluentCart wipes the transaction meta on
+     * retry, the resume rebuilds it from the operation-bound envelope, and the
+     * browser then confirms an exact approval with the ROTATED token — ending in an
+     * immediate receipt and applied local state, exactly like a fresh payment.
+     */
+    public function testResumeRebuildsBrowserSessionMetaAndTheRotatedTokenConfirms(): void
     {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+
+        // FluentCart checkout retry wipes the transaction meta.
+        OrderTransaction::query()->where('id', 20)->first()->fill(['meta' => []])->save();
+        self::assertSame([], OrderTransaction::allRecords()[20]['meta']);
+
+        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID);
+        $resumed = $second->initialize($this->paymentInstance());
+        self::assertIsArray($resumed);
+        self::assertSame(self::OPERATION_UUID, $resumed['payment_data']['operation_uuid']);
+
+        $meta = OrderTransaction::allRecords()[20]['meta'];
+        self::assertSame(self::OPERATION_UUID, $meta['ys_helcim_operation_uuid'] ?? null, 'the confirmation correlation meta must be rebuilt');
+        self::assertSame('hosted-checkout-token-741', $meta['ys_helcim_checkout_token'] ?? null);
+        self::assertNotSame('', (string) ($meta['ys_helcim_secret_token_enc'] ?? ''), 'the provider secret must be rebuilt for hash validation');
+
+        $event = $this->approvedEvent(self::OPERATION_UUID);
+        $_POST = [
+            'transaction_uuid' => $resumed['payment_data']['transaction_uuid'],
+            'operation_uuid' => $resumed['payment_data']['operation_uuid'],
+            'confirm_token' => $resumed['payment_data']['confirm_token'],
+            'nonce' => $resumed['payment_data']['confirm_nonce'],
+            'event_data' => json_encode($event),
+            'hash' => $this->hash($event),
+        ];
+
+        try {
+            $second->handleConfirmAjax();
+            self::fail('Expected wp_send_json to terminate the request.');
+        } catch (\YSHelcimWpJsonExit $response) {
+            self::assertSame(200, $response->statusCode, 'a resumed payment must confirm exactly like a fresh one');
+            self::assertSame('success', $response->payload['status']);
+        }
+
+        self::assertSame('51177991', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+        self::assertSame('paid', Order::allRecords()[10]['payment_status']);
+        $row = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('succeeded', $row['remote_status']);
+        self::assertSame('applied', $row['local_status']);
+    }
+
+    /** Resume material copied from another operation must be refused untouched (anti-swap). */
+    public function testResumeRefusesMaterialSwappedFromAnotherOperation(): void
+    {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+
+        $foreign = Helper::encryptKey(json_encode([
+            'v' => 2,
+            'operation_uuid' => self::SECOND_OPERATION_UUID,
+            'checkout_token' => 'stolen-checkout-token',
+            'secret_token' => 'stolen-secret-token',
+        ]));
+        self::assertIsString($foreign);
+        self::assertTrue($this->repository->storeCheckoutMaterial(self::OPERATION_UUID, $foreign, '2026-07-22 01:10:00'));
+
+        OrderTransaction::query()->where('id', 20)->first()->fill(['meta' => []])->save();
+
+        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID);
+        $result = $second->initialize($this->paymentInstance());
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_previous_attempt_unresolved', $result->get_error_code());
+
+        $blocker = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('processing', $blocker['remote_status'], 'a swapped envelope must change nothing');
+        self::assertSame(
+            hash('sha256', self::CONFIRM_TOKEN),
+            (string) $blocker['confirm_token_hash'],
+            'the confirm token must NOT rotate on a refused resume'
+        );
+        self::assertSame([], OrderTransaction::allRecords()[20]['meta'], 'no meta may be rebuilt from foreign material');
+    }
+
+    /**
+     * Deterministic behavior at the resume/expiry boundaries.
+     *
+     * @dataProvider blockerAgeBoundaries
+     */
+    public function testBlockedScopeBehaviorAtTheExactTimeBoundaries(int $age, string $expectation): void
+    {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+
+        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID, [], self::clockAtAge($age));
+        $result = $second->initialize($this->paymentInstance());
+
+        if ('resume' === $expectation) {
+            self::assertIsArray($result);
+            self::assertSame(self::OPERATION_UUID, $result['payment_data']['operation_uuid']);
+            return;
+        }
+        if ('cooling' === $expectation) {
+            self::assertInstanceOf(\WP_Error::class, $result);
+            self::assertSame('ys_helcim_previous_attempt_cooling', $result->get_error_code());
+            self::assertSame('processing', $this->repository->findByUuid(self::OPERATION_UUID)['remote_status']);
+            return;
+        }
+
+        self::assertIsArray($result, 'at the expiry boundary the blocker releases and a fresh session opens');
+        self::assertSame(self::SECOND_OPERATION_UUID, $result['payment_data']['operation_uuid']);
+        self::assertSame('canceled', $this->repository->findByUuid(self::OPERATION_UUID)['remote_status']);
+    }
+
+    /** @return array<string, array{0:int,1:string}> */
+    public static function blockerAgeBoundaries(): array
+    {
+        return [
+            'one second inside the resume window (54:59)' => [3299, 'resume'],
+            'exactly at the resume boundary (55:00)' => [3300, 'cooling'],
+            'one second before expiry (69:59)' => [4199, 'cooling'],
+            'exactly at the expiry boundary (70:00)' => [4200, 'released'],
+        ];
+    }
+
+    private function scopeAwareProcessor(
+        string $operationUuid,
+        array $lookupResponse = [],
+        ?int $nowEpoch = null
+    ): YSHelcimPayProcessor {
+        $now = $nowEpoch ?? strtotime('2026-07-22 00:05:00 UTC');
+
         return new YSHelcimPayProcessor(
             new YSHelcimPaySettings(),
             operations: $this->repository,
@@ -526,8 +653,14 @@ final class YSHelcimPayProcessorTest extends TestCase
             },
             uuid_factory: static fn (): string => $operationUuid,
             confirm_token_factory: static fn (): string => self::SECOND_CONFIRM_TOKEN,
-            initialization_clock: static fn (): int => strtotime('2026-07-22 00:05:00 UTC')
+            initialization_clock: static fn (): int => $now
         );
+    }
+
+    /** Blockers are created at 2026-07-22 00:00:00; this maps an age to a clock value. */
+    private static function clockAtAge(int $ageSeconds): int
+    {
+        return strtotime('2026-07-22 00:00:00 UTC') + $ageSeconds;
     }
 
     /** Rebuild the processor so it picks up settings changed inside a test. */

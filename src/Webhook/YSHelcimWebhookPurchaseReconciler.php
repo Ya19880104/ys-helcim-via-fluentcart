@@ -83,6 +83,8 @@ final class YSHelcimWebhookPurchaseReconciler {
 					YSHelcimOperationState::REMOTE_INDETERMINATE,
 					YSHelcimOperationState::REMOTE_SUCCEEDED,
 					YSHelcimOperationState::REMOTE_DECLINED,
+					// A released expired checkout: exact late approval proof still binds.
+					YSHelcimOperationState::REMOTE_CANCELED,
 				),
 				true
 			)

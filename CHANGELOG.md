@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0-rc.15] - 2026-07-29
+
+### Fixed
+
+- A resumed hosted checkout can now actually be confirmed. FluentCart wipes the transaction meta on every checkout retry, which silently destroyed the operation correlation and provider secret the confirmation service depends on; the resume envelope now carries the full material (checkout token AND provider secret), is operation-bound and self-describing, and the browser-session meta is rebuilt from it before the rotated confirm token is issued. A resumed payment confirms exactly like a fresh one; envelope material swapped in from another operation is refused untouched.
+- Exact late approval proof now truly binds a released (canceled) checkout through every layer: the webhook reconciler state gate, bounded recovery eligibility, the purchase coordinator, and local binding. An empty read or a late decline leaves the released checkout untouched; each release also schedules exactly one automatic late-proof follow-up so an approval indexed after the release reads is still picked up without waiting for a webhook or an administrator.
+- Confirm-token rotation is now a compare-and-swap on the previously observed hash, so two racing resume requests produce exactly one valid token.
+- The 55-70 minute gray zone gets an honest message ("try again in about 15 minutes") instead of the generic wait-a-moment copy.
+
+### Added
+
+- Deterministic boundary tests at 54:59 / 55:00 / 69:59 / 70:00, an end-to-end resumed-payment confirmation test over wiped meta, material tamper/swap tests, and released-checkout late-proof tests across webhook, recovery, and coordinator layers.
+
 ## [1.1.0-rc.14] - 2026-07-29
 
 ### Fixed

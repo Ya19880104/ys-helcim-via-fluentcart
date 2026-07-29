@@ -550,6 +550,52 @@ final class YSHelcimFctBootstrap {
 				}
 			}
 		}
+
+		$this->checkReleasedCheckoutsForLateProof();
+	}
+
+	/**
+	 * One-shot automatic late-proof check for released (canceled) hosted checkouts.
+	 *
+	 * Each released checkout is scheduled exactly one follow-up lookup at release
+	 * time; an approval indexed after the release reads still completes locally,
+	 * while any other outcome simply consumes the schedule. Webhooks and the manual
+	 * administrator check remain available afterwards.
+	 */
+	private function checkReleasedCheckoutsForLateProof(): void {
+		$runtime = $this->purchaseRecoveryRuntime( 'ys_helcim' );
+		if ( is_wp_error( $runtime ) || ! is_array( $runtime ) ) {
+			return;
+		}
+		$operations = $runtime['operations'];
+		if (
+			! method_exists( $operations, 'findCanceledNeedingLateProofCheck' ) ||
+			! method_exists( $operations, 'clearCanceledFollowUp' )
+		) {
+			return;
+		}
+
+		$due_before = gmdate( 'Y-m-d H:i:s', $this->recoveryNow() );
+		$rows       = $operations->findCanceledNeedingLateProofCheck( 'ys_helcim', $due_before, 5 );
+		if ( is_wp_error( $rows ) || ! is_array( $rows ) ) {
+			return;
+		}
+
+		foreach ( $rows as $row ) {
+			$operation_uuid = is_array( $row ) ? (string) ( $row['operation_uuid'] ?? '' ) : '';
+			if ( ! self::isUuid( $operation_uuid ) ) {
+				continue;
+			}
+			// Consume the one-shot schedule first so a failing lookup can never loop.
+			$operations->clearCanceledFollowUp( $operation_uuid );
+			$result = $runtime['service']->recover( $operation_uuid );
+			if ( is_wp_error( $result ) ) {
+				YSHelcimLogger::info(
+					'Released-checkout late-proof check did not resolve',
+					array( 'operation_uuid' => $operation_uuid, 'error_code' => $result->get_error_code() )
+				);
+			}
+		}
 	}
 
 	/** Return a fresh wall-clock value for each recovery scan, claim, and defer decision. */

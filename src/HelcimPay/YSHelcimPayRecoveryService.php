@@ -206,6 +206,11 @@ final class YSHelcimPayRecoveryService {
 			return is_wp_error( $outcome ) ? $outcome : self::ambiguous();
 		}
 		if ( 'declined' === $outcome['outcome'] ) {
+			// A released checkout already reflects "no charge"; a late DECLINE changes
+			// nothing and must not push a terminal row through another transition.
+			if ( YSHelcimOperationState::REMOTE_CANCELED === (string) ( $row['remote_status'] ?? '' ) ) {
+				return self::result( $operation_uuid, 'canceled', 'late_decline_changes_nothing' );
+			}
 			if ( null === YSHelcimTransactionId::normalize( $candidates[0]['transactionId'] ?? null ) ) {
 				return self::ambiguous();
 			}
@@ -375,6 +380,20 @@ final class YSHelcimPayRecoveryService {
 			return self::journalUnavailable();
 		}
 
+		// One automatic late-proof follow-up: an approval indexed only after both reads
+		// above still gets picked up without waiting for a webhook or an administrator.
+		try {
+			$now = ( $this->clock )();
+			if ( is_int( $now ) && $now > 0 ) {
+				$this->operations->scheduleCanceledFollowUp(
+					$operation_uuid,
+					gmdate( 'Y-m-d H:i:s', $now + self::PROVIDER_INDEX_GRACE_SECONDS )
+				);
+			}
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+		}
+
 		return self::result( $operation_uuid, 'canceled', 'session_expired_no_charge_found' );
 	}
 
@@ -447,6 +466,14 @@ final class YSHelcimPayRecoveryService {
 				&& ( YSHelcimOperationState::LOCAL_APPLIED === $local_status || '' !== $active_scope );
 		}
 
+		// A released expired checkout keeps accepting exact late approval proof.
+		// Its scope is already free, so recovery may look it up but must never
+		// re-lock, re-schedule, or transition it on anything short of that proof.
+		if ( YSHelcimOperationState::REMOTE_CANCELED === $remote_status ) {
+			return YSHelcimOperationState::LOCAL_PENDING === $local_status
+				&& '' === $active_scope;
+		}
+
 		return YSHelcimOperationState::REMOTE_DECLINED === $remote_status
 			&& YSHelcimOperationState::LOCAL_PENDING === $local_status
 			&& '' === $active_scope;
@@ -454,6 +481,11 @@ final class YSHelcimPayRecoveryService {
 
 	/** @return array<string,mixed>|\WP_Error */
 	private function handleEmptyLookup( array $row, OrderTransaction $transaction, string $operation_uuid ) {
+		// A released checkout stays exactly as it is on an empty read: it is already
+		// terminal-released and only exact approval proof may ever move it.
+		if ( YSHelcimOperationState::REMOTE_CANCELED === (string) ( $row['remote_status'] ?? '' ) ) {
+			return self::result( $operation_uuid, 'canceled', 'no_late_proof_found' );
+		}
 		if ( self::POLICY_SERVER_PURCHASE === $this->policy ) {
 			return self::result( $operation_uuid, 'pending', 'provider_lookup_empty_unresolved' );
 		}

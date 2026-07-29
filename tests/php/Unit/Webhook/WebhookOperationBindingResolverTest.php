@@ -66,6 +66,25 @@ final class WebhookOperationBindingResolverTest extends TestCase
         );
     }
 
+    /** The HOSTED gateway variant of the released-checkout late-proof match. */
+    public function testMatchesAReleasedCanceledHostedCheckoutForLateProofBinding(): void
+    {
+        $row = $this->row();
+        $row['gateway'] = 'ys_helcim';
+        $row['remote_status'] = 'canceled';
+        $resolver = new YSHelcimWebhookOperationBindingResolver(
+            static fn (): array => $row
+        );
+
+        self::assertSame(
+            [
+                'status' => 'matched',
+                'binding' => ['gateway' => 'ys_helcim', 'mode' => 'test'],
+            ],
+            $resolver->resolve(['invoiceNumber' => self::UUID])
+        );
+    }
+
     public function testRejectsUnknownMalformedOrUnsafeOperationState(): void
     {
         $row = $this->row();

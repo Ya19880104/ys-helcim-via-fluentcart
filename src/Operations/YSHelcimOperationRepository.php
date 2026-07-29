@@ -1280,6 +1280,90 @@ final class YSHelcimOperationRepository {
 	 *                        in-flight processing attempt; WP_Error on storage loss.
 	 */
 	/**
+	 * Schedule the single automatic late-proof check for a released checkout.
+	 *
+	 * @return bool|\WP_Error
+	 */
+	public function scheduleCanceledFollowUp( string $operation_uuid, string $check_at ) {
+		if ( 1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $check_at ) ) {
+			return false;
+		}
+		$updated = $this->database->update(
+			$this->table,
+			array(
+				'next_recovery_at' => $check_at,
+				'updated_at'       => ( $this->clock )(),
+			),
+			array(
+				'operation_uuid' => strtolower( $operation_uuid ),
+				'remote_status'  => YSHelcimOperationState::REMOTE_CANCELED,
+			)
+		);
+		if ( false === $updated ) {
+			return self::journalUnavailable();
+		}
+		return 1 === $updated;
+	}
+
+	/** Consume (clear) a released checkout's one-shot late-proof schedule. */
+	public function clearCanceledFollowUp( string $operation_uuid ): void {
+		$this->database->update(
+			$this->table,
+			array(
+				'next_recovery_at' => null,
+				'updated_at'       => ( $this->clock )(),
+			),
+			array(
+				'operation_uuid' => strtolower( $operation_uuid ),
+				'remote_status'  => YSHelcimOperationState::REMOTE_CANCELED,
+			)
+		);
+	}
+
+	/**
+	 * Released checkouts whose one-shot late-proof check is due.
+	 *
+	 * @return array<int,array<string,mixed>>|\WP_Error
+	 */
+	public function findCanceledNeedingLateProofCheck( string $gateway, string $due_before, int $limit ) {
+		if (
+			! in_array( $gateway, array( 'ys_helcim', 'ys_helcim_js' ), true ) ||
+			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $due_before ) ||
+			$limit < 1 || $limit > 100
+		) {
+			return self::invalidOperation();
+		}
+		if ( property_exists( $this->database, 'last_error' ) ) {
+			$this->database->last_error = '';
+		}
+		$query = $this->database->prepare(
+			"SELECT * FROM {$this->table}
+			WHERE operation_type = 'purchase'
+			AND gateway = %s
+			AND remote_status = 'canceled'
+			AND local_status = 'pending'
+			AND active_scope_key IS NULL
+			AND next_recovery_at IS NOT NULL
+			AND next_recovery_at <= %s
+			ORDER BY next_recovery_at ASC, id ASC
+			LIMIT %d",
+			$gateway,
+			$due_before,
+			$limit
+		);
+		try {
+			$rows = $this->database->get_results( $query, ARRAY_A );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return self::journalUnavailable();
+		}
+		if ( ! is_array( $rows ) || '' !== (string) ( $this->database->last_error ?? '' ) ) {
+			return self::journalUnavailable();
+		}
+		return array_values( $rows );
+	}
+
+	/**
 	 * Persist the encrypted checkout material on the operation row itself.
 	 *
 	 * FluentCart rewrites the transaction row (including its meta) on every checkout
@@ -1343,15 +1427,20 @@ final class YSHelcimOperationRepository {
 		}
 
 		$current = $this->findByUuid( $operation_uuid );
+		$previous_hash = (string) ( $current['confirm_token_hash'] ?? '' );
 		if (
 			null === $current ||
 			YSHelcimOperationState::REMOTE_PROCESSING !== (string) ( $current['remote_status'] ?? '' ) ||
 			YSHelcimOperationState::LOCAL_PENDING !== (string) ( $current['local_status'] ?? '' ) ||
-			null === ( $current['active_scope_key'] ?? null )
+			null === ( $current['active_scope_key'] ?? null ) ||
+			1 !== preg_match( '/\A[0-9a-f]{64}\z/', $previous_hash )
 		) {
 			return false;
 		}
 
+		// Compare-and-swap on the previously observed hash: when two resume requests
+		// race, exactly one rotation wins and the loser reports the attempt unresolved
+		// instead of both browsers believing they hold a valid confirm token.
 		$updated = $this->database->update(
 			$this->table,
 			array(
@@ -1360,8 +1449,9 @@ final class YSHelcimOperationRepository {
 				'updated_at'               => ( $this->clock )(),
 			),
 			array(
-				'operation_uuid' => strtolower( $operation_uuid ),
-				'remote_status'  => YSHelcimOperationState::REMOTE_PROCESSING,
+				'operation_uuid'     => strtolower( $operation_uuid ),
+				'remote_status'      => YSHelcimOperationState::REMOTE_PROCESSING,
+				'confirm_token_hash' => $previous_hash,
 			)
 		);
 		if ( false === $updated ) {

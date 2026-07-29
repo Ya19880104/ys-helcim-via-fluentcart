@@ -78,6 +78,66 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
         );
     }
 
+    /** Move the seeded in-flight operation into the released (canceled) state. */
+    private function releaseSeededOperation(): void
+    {
+        self::assertTrue(
+            $this->repository->transitionRemote(
+                self::OPERATION_UUID,
+                'processing',
+                'canceled',
+                ['error_code' => 'ys_helcim_session_expired_released']
+            )
+        );
+        self::assertNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
+    }
+
+    /** Late approval proof must bind a released checkout end to end: canceled -> succeeded -> local applied. */
+    public function testExactLateApprovalBindsAReleasedCanceledCheckoutEndToEnd(): void
+    {
+        $this->releaseSeededOperation();
+        $this->lookupResult = [$this->providerTransaction('APPROVED', '51178851')];
+
+        $result = $this->service->recover(self::OPERATION_UUID);
+
+        self::assertIsArray($result);
+        self::assertSame('succeeded', $result['status'], var_export($result, true));
+        self::assertSame('51178851', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+        self::assertSame('paid', Order::allRecords()[10]['payment_status']);
+        $row = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('succeeded', $row['remote_status']);
+        self::assertSame('applied', $row['local_status']);
+    }
+
+    /** An empty read never moves a released checkout: it stays canceled, untouched. */
+    public function testEmptyLookupLeavesAReleasedCheckoutUntouched(): void
+    {
+        $this->releaseSeededOperation();
+        $this->lookupResult = [];
+
+        $result = $this->service->recover(self::OPERATION_UUID);
+
+        self::assertIsArray($result);
+        self::assertSame('canceled', $result['status']);
+        $row = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('canceled', $row['remote_status']);
+        self::assertSame('pending', $row['local_status']);
+        self::assertSame(Status::TRANSACTION_PENDING, OrderTransaction::allRecords()[20]['status']);
+    }
+
+    /** A late DECLINE proves no money moved; the released checkout must not transition. */
+    public function testLateDeclineChangesNothingOnAReleasedCheckout(): void
+    {
+        $this->releaseSeededOperation();
+        $this->lookupResult = [$this->providerTransaction('DECLINED', '51178852')];
+
+        $result = $this->service->recover(self::OPERATION_UUID);
+
+        self::assertIsArray($result);
+        self::assertSame('canceled', $result['status']);
+        self::assertSame('canceled', $this->repository->findByUuid(self::OPERATION_UUID)['remote_status']);
+    }
+
     public function testExactApprovedLookupReconcilesThroughTheDurableRuntime(): void
     {
         $this->lookupResult = [$this->providerTransaction('APPROVED', '51178841')];

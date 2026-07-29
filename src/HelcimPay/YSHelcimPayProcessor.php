@@ -167,10 +167,14 @@ class YSHelcimPayProcessor {
 			if ( is_wp_error( $stored ) ) {
 				return $stored;
 			}
-			// FluentCart wipes transaction meta on every checkout retry, so the checkout
-			// token is also stored (encrypted) on the operation row: that copy is what a
-			// later blocked attempt resumes from. Failure only disables resume, never payment.
-			$this->storeResumeMaterial( (string) $session['operation_uuid'], (string) $session['checkout_token'] );
+			// FluentCart wipes transaction meta on every checkout retry, so the full
+			// resume envelope (checkout token + provider secret) is also stored on the
+			// operation row. Failure only disables resume, never payment.
+			$this->storeResumeMaterial(
+				(string) $session['operation_uuid'],
+				(string) $session['checkout_token'],
+				(string) $session['secret_token']
+			);
 		}
 
 		YSHelcimLogger::info(
@@ -303,6 +307,13 @@ class YSHelcimPayProcessor {
 			'ys_helcim_previous_attempt_unresolved',
 			'Your previous payment attempt is still being verified. Please wait a moment and try again.'
 		);
+		// Gray zone between the resume window and the session-expiry boundary: the
+		// previous window can neither be reused nor proven dead yet, and the wait can
+		// genuinely last up to about 15 minutes, so the copy must say so.
+		$cooling = static fn (): \WP_Error => self::error(
+			'ys_helcim_previous_attempt_cooling',
+			'A previous payment window for this order may still be open. Please try again in about 15 minutes, or contact the store.'
+		);
 
 		try {
 			$operation = YSHelcimPurchaseOperation::fromTransaction( $identity );
@@ -336,17 +347,24 @@ class YSHelcimPayProcessor {
 				return $unresolved();
 			}
 
+			$age = $this->blockerAgeSeconds( $blocker );
+			if ( YSHelcimOperationState::REMOTE_PROCESSING === $remote && $age < self::RESUME_WINDOW_SECONDS ) {
+				$resumed = $this->resumeExposedSession( $blocker_uuid, $blocker, $transaction );
+				return is_array( $resumed ) ? $resumed : $unresolved();
+			}
 			if (
 				YSHelcimOperationState::REMOTE_PROCESSING === $remote
-				&& $this->blockerAgeSeconds( $blocker ) < self::RESUME_WINDOW_SECONDS
+				&& $age < YSHelcimPayRecoveryService::EXPIRED_MATERIAL_CLEANUP_SECONDS
 			) {
-				$resumed = $this->resumeExposedSession( $blocker_uuid, $blocker );
-				return is_array( $resumed ) ? $resumed : $unresolved();
+				return $cooling();
 			}
 
 			$outcome = $this->releaseExpiredBlocker( $blocker_uuid );
 			if ( 'canceled' === $outcome ) {
 				return $this->initialization->begin( $identity );
+			}
+			if ( 'live' === $outcome ) {
+				return $cooling();
 			}
 			return 'found' === $outcome ? $needs_review() : $unresolved();
 		} catch ( \Throwable $exception ) {
@@ -356,18 +374,33 @@ class YSHelcimPayProcessor {
 	}
 
 	/**
-	 * Encrypt and persist the checkout token on the operation row for later resume.
+	 * Encrypt and persist the full resume envelope on the operation row.
+	 *
+	 * FluentCart wipes transaction meta on every checkout retry, so everything a
+	 * resumed confirmation needs — checkout token AND provider secret — must survive
+	 * on the operation row. The envelope is self-describing and operation-bound so a
+	 * ciphertext copied onto a different row can never be accepted.
 	 * Best-effort: a failure is logged and only disables resume for this session.
 	 */
-	private function storeResumeMaterial( string $operation_uuid, string $checkout_token ): void {
+	private function storeResumeMaterial( string $operation_uuid, string $checkout_token, string $secret_token ): void {
 		try {
-			$ciphertext = Helper::encryptKey( $checkout_token );
+			$envelope   = wp_json_encode(
+				array(
+					'v'              => 2,
+					'operation_uuid' => strtolower( $operation_uuid ),
+					'checkout_token' => $checkout_token,
+					'secret_token'   => $secret_token,
+				)
+			);
+			$ciphertext = is_string( $envelope ) ? Helper::encryptKey( $envelope ) : false;
 			$now        = ( $this->clock )();
 		} catch ( \Throwable $exception ) {
 			unset( $exception );
 			$ciphertext = false;
 			$now        = 0;
 		}
+		$envelope     = '';
+		$secret_token = '';
 		$stored = false;
 		if (
 			is_string( $ciphertext ) && '' !== $ciphertext
@@ -398,24 +431,66 @@ class YSHelcimPayProcessor {
 
 	/**
 	 * Re-expose the stored Helcim session with a fresh one-time confirm token.
-	 * Returns null when no resume material survives or the token rotation loses
-	 * its race — the caller then reports the attempt as unresolved.
+	 *
+	 * The confirmation service authenticates the browser result against transaction
+	 * meta (operation uuid + encrypted provider secret) that FluentCart wiped on the
+	 * retry, so the meta is rebuilt from the operation-bound envelope BEFORE the new
+	 * confirm token is issued: a resumed payment must confirm exactly like a fresh one.
+	 *
+	 * Returns null when no valid envelope survives, the envelope belongs to another
+	 * operation, the meta cannot be rebuilt, or the token rotation loses its race —
+	 * the caller then reports the attempt as unresolved.
 	 *
 	 * @param array<string,mixed> $blocker The blocking operation row.
 	 * @return array<string,mixed>|null
 	 */
-	private function resumeExposedSession( string $blocker_uuid, array $blocker ): ?array {
+	private function resumeExposedSession( string $blocker_uuid, array $blocker, OrderTransaction $transaction ): ?array {
 		$ciphertext = (string) ( $blocker['encrypted_material'] ?? '' );
 		if ( '' === $ciphertext ) {
 			return null;
 		}
 		try {
-			$checkout_token = Helper::decryptKey( $ciphertext );
+			$plaintext = Helper::decryptKey( $ciphertext );
 		} catch ( \Throwable $exception ) {
 			unset( $exception );
-			$checkout_token = false;
+			$plaintext = false;
 		}
-		if ( ! is_string( $checkout_token ) || '' === trim( $checkout_token ) ) {
+		if ( ! is_string( $plaintext ) || '' === trim( $plaintext ) ) {
+			return null;
+		}
+
+		try {
+			$envelope = json_decode( $plaintext, true, 4, JSON_THROW_ON_ERROR );
+		} catch ( \JsonException $exception ) {
+			unset( $exception );
+			$envelope = null;
+		}
+		$plaintext = '';
+		$checkout_token = is_array( $envelope ) ? (string) ( $envelope['checkout_token'] ?? '' ) : '';
+		$secret_token   = is_array( $envelope ) ? (string) ( $envelope['secret_token'] ?? '' ) : '';
+		// Operation binding: material swapped in from any other row is refused.
+		if (
+			! is_array( $envelope )
+			|| 2 !== (int) ( $envelope['v'] ?? 0 )
+			|| strtolower( (string) ( $envelope['operation_uuid'] ?? '' ) ) !== $blocker_uuid
+			|| '' === $checkout_token
+			|| '' === $secret_token
+		) {
+			return null;
+		}
+		$envelope = null;
+
+		// Rebuild the browser-session meta the confirmation service depends on.
+		$persisted = $this->persistBrowserSession(
+			$transaction,
+			array(
+				'operation_uuid' => $blocker_uuid,
+				'checkout_token' => $checkout_token,
+				'secret_token'   => $secret_token,
+			)
+		);
+		$secret_token = '';
+		if ( true !== $persisted ) {
 			return null;
 		}
 
@@ -502,7 +577,8 @@ class YSHelcimPayProcessor {
 					$api_token,
 					null,
 					'GET'
-				)
+				),
+				clock: $this->clock
 			);
 
 			$result = $service->releaseExpiredCheckout( $blocker_uuid );
@@ -525,7 +601,7 @@ class YSHelcimPayProcessor {
 				);
 			}
 
-			return in_array( $status, array( 'canceled', 'found' ), true ) ? $status : 'unavailable';
+			return in_array( $status, array( 'canceled', 'found', 'live' ), true ) ? $status : 'unavailable';
 		} catch ( \Throwable $exception ) {
 			unset( $exception );
 			return 'unavailable';
