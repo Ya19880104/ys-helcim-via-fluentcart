@@ -187,6 +187,12 @@ class YSHelcimPaySettings extends BaseGatewaySettings implements YSHelcimModeApi
 	/**
 	 * Get the checkout button text (returns a default when unset).
 	 *
+	 * The button opens a secure payment window rather than submitting a card, and that
+	 * window can also offer Google Pay, so the default wording avoids promising "credit
+	 * card" only. When Google Pay is explicitly forced on we can name it; otherwise its
+	 * availability depends on the Helcim account and the shopper's device, so the wording
+	 * stays neutral rather than advertising a method that may not appear.
+	 *
 	 * @return string
 	 */
 	public function getCheckoutButtonText(): string {
@@ -196,6 +202,10 @@ class YSHelcimPaySettings extends BaseGatewaySettings implements YSHelcimModeApi
 			return $text;
 		}
 
-		return __( 'Pay with credit card (Helcim)', 'ys-helcim-via-fluentcart' );
+		if ( 'on' === $this->getGooglePayMode() ) {
+			return __( 'Pay by card or Google Pay', 'ys-helcim-via-fluentcart' );
+		}
+
+		return __( 'Continue to secure payment', 'ys-helcim-via-fluentcart' );
 	}
 }

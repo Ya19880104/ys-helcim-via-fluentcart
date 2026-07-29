@@ -104,9 +104,13 @@ class YSHelcimPayProcessor {
 		);
 		$this->confirmation = new YSHelcimPayConfirmationService( $operations, $runtime );
 		$this->operations   = $operations;
+		$this->runtime      = $runtime;
 	}
 
 	private YSHelcimOperationRepository $operations;
+
+	/** Shared purchase runtime, reused to build the scope-release verifier on demand. */
+	private YSHelcimJsPurchaseRuntime $runtime;
 
 	/**
 	 * Create and persist a provider checkout session for one exact FC transaction.
@@ -138,6 +142,26 @@ class YSHelcimPayProcessor {
 		$this->legacy_payment_instance = $payment_instance;
 		try {
 			$session = $this->initialization->begin( $identity );
+
+			// The scope is still held by a previous attempt (closed browser, crashed tab,
+			// pre-fix leftover). Ask Helcim whether that attempt actually charged; when it
+			// provably did not, release it and retry once so the shopper is never stranded.
+			if ( is_wp_error( $session ) && 'ys_helcim_scope_busy' === $session->get_error_code() ) {
+				$outcome = $this->releaseAbandonedScopeBlocker( $identity );
+				if ( 'released' === $outcome ) {
+					$session = $this->initialization->begin( $identity );
+				} elseif ( 'found' === $outcome ) {
+					$session = self::error(
+						'ys_helcim_previous_attempt_needs_review',
+						'A previous payment attempt on this order needs review. Please contact the store before paying again.'
+					);
+				} else {
+					$session = self::error(
+						'ys_helcim_previous_attempt_unresolved',
+						'Your previous payment attempt is still being verified. Please wait a moment and try again.'
+					);
+				}
+			}
 		} finally {
 			$this->legacy_payment_instance = $previous_payment_instance;
 		}
@@ -247,6 +271,102 @@ class YSHelcimPayProcessor {
 			'ys_helcim_confirm_attention_required',
 			'The payment result needs reconciliation. Do not submit another payment.'
 		);
+	}
+
+	/**
+	 * Verify-and-release the abandoned operation that is blocking this transaction's scope.
+	 *
+	 * Runs the same two-read Helcim verification as the modal-close release: only a
+	 * provider-proven uncharged attempt is released. A found transaction, credential
+	 * problem, lookup failure, or ineligible blocker leaves everything locked.
+	 *
+	 * @param array<string, int|string> $identity Server-loaded transaction identity.
+	 * @return string 'released' when the scope is free again, 'found' when a provider
+	 *                transaction exists, 'unavailable' for every other outcome.
+	 */
+	private function releaseAbandonedScopeBlocker( array $identity ): string {
+		try {
+			$operation = YSHelcimPurchaseOperation::fromTransaction( $identity );
+			if ( is_wp_error( $operation ) ) {
+				return 'unavailable';
+			}
+
+			$blocker = $this->operations->findActiveByScope( $operation->scopeKey() );
+			if ( ! is_array( $blocker ) ) {
+				// The conflicting attempt resolved concurrently; the retry will settle it.
+				return 'released';
+			}
+
+			$remote = (string) ( $blocker['remote_status'] ?? '' );
+			if (
+				self::GATEWAY_SLUG !== (string) ( $blocker['gateway'] ?? '' )
+				|| 'purchase' !== (string) ( $blocker['operation_type'] ?? '' )
+				|| YSHelcimOperationState::LOCAL_PENDING !== (string) ( $blocker['local_status'] ?? '' )
+				|| ! in_array(
+					$remote,
+					array( YSHelcimOperationState::REMOTE_PROCESSING, YSHelcimOperationState::REMOTE_INDETERMINATE ),
+					true
+				)
+			) {
+				return 'unavailable';
+			}
+
+			$service = new YSHelcimPayRecoveryService(
+				operations: $this->operations,
+				runtime: $this->runtime,
+				transaction_loader: $this->transaction_loader,
+				credential_resolver: function ( string $mode ) {
+					$token = in_array( $mode, array( 'test', 'live' ), true )
+						? trim( $this->settings->getApiTokenForMode( $mode ) )
+						: '';
+
+					return '' !== $token
+						? $token
+						: new \WP_Error(
+							'ys_helcim_hosted_cancel_credentials',
+							__( 'The credential for the blocked payment mode is unavailable.', 'ys-helcim-via-fluentcart' )
+						);
+				},
+				provider_lookup: fn ( string $invoice_number, string $api_token ) => ( $this->api_request )(
+					'card-transactions',
+					array(
+						'invoiceNumber' => $invoice_number,
+						'limit'         => 1000,
+						'page'          => 1,
+					),
+					$api_token,
+					null,
+					'GET'
+				)
+			);
+
+			$blocker_uuid = (string) ( $blocker['operation_uuid'] ?? '' );
+			$result       = $service->releaseClosedCheckout( $blocker_uuid );
+			if ( is_wp_error( $result ) ) {
+				YSHelcimLogger::info(
+					'Blocked hosted scope could not be released',
+					array(
+						'operation_uuid' => $blocker_uuid,
+						'error_code'     => $result->get_error_code(),
+					)
+				);
+				return 'unavailable';
+			}
+
+			$status = (string) ( $result['status'] ?? '' );
+			if ( 'canceled' === $status ) {
+				YSHelcimLogger::info(
+					'Released an abandoned hosted attempt so checkout can continue',
+					array( 'operation_uuid' => $blocker_uuid )
+				);
+				return 'released';
+			}
+
+			return 'found' === $status ? 'found' : 'unavailable';
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return 'unavailable';
+		}
 	}
 
 	/**

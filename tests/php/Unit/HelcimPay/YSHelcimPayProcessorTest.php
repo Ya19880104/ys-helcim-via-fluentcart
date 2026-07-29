@@ -364,6 +364,116 @@ final class YSHelcimPayProcessorTest extends TestCase
         ];
     }
 
+    private const SECOND_OPERATION_UUID = '00000000-0000-4000-8000-000000000742';
+    private const SECOND_CONFIRM_TOKEN = 'hosted-confirm-token-with-thirty-two-chars-742';
+
+    /**
+     * A shopper abandons the modal without any browser event (crash, killed tab, pre-fix
+     * leftover), then presses pay again: the blocked initialize must verify the abandoned
+     * attempt with Helcim, release it, and open a fresh session in the same request.
+     */
+    public function testInitializeReleasesAProvenUnchargedBlockerAndRetriesOnce(): void
+    {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+
+        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID);
+        $result = $second->initialize($this->paymentInstance());
+
+        self::assertIsArray($result, 'the retry after releasing the blocker must succeed');
+        self::assertSame(self::SECOND_OPERATION_UUID, $result['payment_data']['operation_uuid']);
+
+        $blocker = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('failed', $blocker['remote_status']);
+        self::assertNull($blocker['active_scope_key']);
+        self::assertSame('ys_helcim_customer_closed_checkout', $blocker['remote_error_code']);
+
+        $lookups = array_values(array_filter(
+            $this->apiCalls,
+            static fn (array $call): bool => 'card-transactions' === $call['endpoint']
+        ));
+        self::assertCount(2, $lookups, 'release requires two consecutive authenticated empty reads');
+        self::assertSame(self::OPERATION_UUID, $lookups[0]['payload']['invoiceNumber']);
+        self::assertSame(self::OPERATION_UUID, $lookups[1]['payload']['invoiceNumber']);
+
+        $fresh = $this->repository->findByUuid(self::SECOND_OPERATION_UUID);
+        self::assertSame('processing', $fresh['remote_status']);
+        self::assertNotNull($fresh['active_scope_key']);
+    }
+
+    /** A blocker with any provider transaction must stay locked and open no new session. */
+    public function testInitializeRefusesWhenTheBlockerHasAProviderTransaction(): void
+    {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+
+        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID, [['transactionId' => 51900001]]);
+        $result = $second->initialize($this->paymentInstance());
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_previous_attempt_needs_review', $result->get_error_code());
+
+        $blocker = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('processing', $blocker['remote_status']);
+        self::assertNotNull($blocker['active_scope_key'], 'a possibly-charged attempt must stay locked');
+
+        $sessions = array_filter(
+            $this->apiCalls,
+            static fn (array $call): bool => 'helcim-pay/initialize' === $call['endpoint']
+        );
+        self::assertCount(1, $sessions, 'no second checkout session may be created');
+    }
+
+    /** Bounded recovery marks stale leftovers indeterminate; those must release the same way. */
+    public function testInitializeReleasesAnIndeterminateLeftoverBlocker(): void
+    {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+        self::assertTrue(
+            $this->repository->transitionRemote(self::OPERATION_UUID, 'processing', 'indeterminate')
+        );
+
+        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID);
+        $result = $second->initialize($this->paymentInstance());
+
+        self::assertIsArray($result);
+        self::assertSame(self::SECOND_OPERATION_UUID, $result['payment_data']['operation_uuid']);
+
+        $blocker = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('failed', $blocker['remote_status']);
+        self::assertNull($blocker['active_scope_key']);
+    }
+
+    /**
+     * Processor whose provider double distinguishes the release lookup from the session
+     * initialize, so the blocked-scope path can be exercised end to end.
+     *
+     * @param array<int,array<string,mixed>> $lookupResponse Provider list returned for card-transactions.
+     */
+    private function scopeAwareProcessor(string $operationUuid, array $lookupResponse = []): YSHelcimPayProcessor
+    {
+        return new YSHelcimPayProcessor(
+            new YSHelcimPaySettings(),
+            operations: $this->repository,
+            api_request: function (
+                string $endpoint,
+                array $payload,
+                string $apiToken,
+                ?string $idempotencyKey = null,
+                string $method = 'POST'
+            ) use ($lookupResponse) {
+                $this->apiCalls[] = compact('endpoint', 'payload', 'apiToken', 'idempotencyKey', 'method');
+                if ('card-transactions' === $endpoint) {
+                    return $lookupResponse;
+                }
+                return [
+                    'checkoutToken' => 'hosted-checkout-token-742',
+                    'secretToken' => self::SECRET_TOKEN,
+                ];
+            },
+            uuid_factory: static fn (): string => $operationUuid,
+            confirm_token_factory: static fn (): string => self::SECOND_CONFIRM_TOKEN,
+            initialization_clock: static fn (): int => strtotime('2026-07-22 00:05:00 UTC')
+        );
+    }
+
     /** Rebuild the processor so it picks up settings changed inside a test. */
     private function processorWithCurrentSettings(): YSHelcimPayProcessor
     {

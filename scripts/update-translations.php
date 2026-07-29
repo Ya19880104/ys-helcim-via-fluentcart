@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 const YS_HELCIM_I18N_DOMAIN = 'ys-helcim-via-fluentcart';
-const YS_HELCIM_I18N_VERSION = '1.1.0-rc.12';
+const YS_HELCIM_I18N_VERSION = '1.1.0-rc.13';
 
 /**
  * Rebuild or verify the plugin POT, zh_TW PO, and compiled MO catalogs.

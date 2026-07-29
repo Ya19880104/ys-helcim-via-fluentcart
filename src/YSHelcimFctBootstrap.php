@@ -15,6 +15,7 @@ use FluentCart\App\Models\OrderTransaction;
 use YangSheep\Helcim\FluentCart\Admin\YSHelcimRefundAdminPage;
 use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimInlineCheckoutCartLock;
 use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimJsPurchaseRuntime;
+use YangSheep\Helcim\FluentCart\HelcimPay\YSHelcimPayProcessor;
 use YangSheep\Helcim\FluentCart\HelcimPay\YSHelcimPaySettings;
 use YangSheep\Helcim\FluentCart\HelcimPay\YSHelcimPayRecoveryService;
 use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimJsSettings;
@@ -254,6 +255,10 @@ final class YSHelcimFctBootstrap {
 		}
 		add_action( 'admin_notices', array( $this, 'renderHostedPurchaseAttentionNotice' ) );
 		add_action( 'admin_post_ys_helcim_retry_hosted_recovery', array( $this, 'handleHostedPurchaseManualRetry' ) );
+		// Shopper closed the hosted payment window: verify with Helcim and release the
+		// checkout when no charge exists, instead of stranding the order until recovery.
+		add_action( 'wp_ajax_ys_helcim_fct_cancel_pay', array( $this, 'handleHostedCheckoutClosed' ) );
+		add_action( 'wp_ajax_nopriv_ys_helcim_fct_cancel_pay', array( $this, 'handleHostedCheckoutClosed' ) );
 		add_action( self::OUTBOX_CRON_HOOK, array( $this, 'processRefundOutbox' ), 10, 1 );
 		add_filter( 'cron_schedules', array( $this, 'registerCronIntervals' ) );
 		add_action( self::OUTBOX_SWEEP_HOOK, array( $this, 'sweepRefundOutbox' ) );
@@ -1202,6 +1207,65 @@ final class YSHelcimFctBootstrap {
 	}
 
 	/** @return array<string,object>|\WP_Error */
+	/**
+	 * Shopper closed the hosted payment window before a result arrived.
+	 *
+	 * Asks Helcim whether the exact operation produced a transaction. When it provably
+	 * did not, the checkout is released so the shopper can pay again immediately rather
+	 * than waiting on bounded recovery. Every other outcome stays locked, so this can
+	 * never turn an unknown result into a second charge.
+	 */
+	public function handleHostedCheckoutClosed(): void {
+		$posted = static function ( string $key ): string {
+			// phpcs:ignore WordPress.Security.NonceVerification.Missing -- the nonce itself is read here and verified below.
+			return isset( $_POST[ $key ] ) ? sanitize_text_field( wp_unslash( $_POST[ $key ] ) ) : '';
+		};
+
+		$reject = static function ( int $code, string $reason ): void {
+			wp_send_json( array( 'status' => 'locked', 'reason' => $reason ), $code );
+		};
+
+		if ( ! wp_verify_nonce( $posted( 'nonce' ), YSHelcimPayProcessor::NONCE_ACTION ) ) {
+			$reject( 403, 'nonce_invalid' );
+		}
+
+		$operation_uuid = $posted( 'operation_uuid' );
+		$confirm_token  = $posted( 'confirm_token' );
+		if ( '' === $operation_uuid || '' === $confirm_token ) {
+			$reject( 400, 'missing_credentials' );
+		}
+
+		$runtime = $this->purchaseRecoveryRuntime( 'ys_helcim' );
+		if ( is_wp_error( $runtime ) || ! is_array( $runtime ) ) {
+			$reject( 503, 'runtime_unavailable' );
+		}
+
+		// One-time token: only the browser that opened this exact modal may release it.
+		$consumed = $runtime['operations']->consumeConfirmToken( $operation_uuid, $confirm_token );
+		if ( true !== $consumed ) {
+			$reject( 403, 'token_invalid' );
+		}
+
+		$result = $runtime['service']->releaseClosedCheckout( $operation_uuid );
+		if ( is_wp_error( $result ) ) {
+			YSHelcimLogger::info(
+				'Hosted checkout close could not be released; leaving it locked',
+				array( 'operation_uuid' => $operation_uuid, 'error_code' => $result->get_error_code() )
+			);
+			$reject( 409, 'not_released' );
+		}
+
+		if ( 'canceled' !== ( $result['status'] ?? '' ) ) {
+			$reject( 409, (string) ( $result['status'] ?? 'not_released' ) );
+		}
+
+		YSHelcimLogger::info(
+			'Hosted checkout released after the shopper closed the payment window',
+			array( 'operation_uuid' => $operation_uuid )
+		);
+		wp_send_json( array( 'status' => 'canceled' ), 200 );
+	}
+
 	private function purchaseRecoveryRuntime( string $gateway ) {
 		return match ( $gateway ) {
 			'ys_helcim'    => $this->hostedPurchaseRecoveryRuntime(),

@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0-rc.13] - 2026-07-28
+
+### Fixed
+
+- Closing the hosted payment window no longer strands the checkout. The browser now asks the server to verify the closed attempt with Helcim; only after two consecutive authenticated reads prove no transaction exists is the attempt released, so the shopper can pay again immediately. Any found transaction, ambiguous response, or lookup failure keeps the original fail-closed lock.
+- A checkout blocked by an abandoned earlier attempt (crashed browser, killed tab, or a leftover from before this release, including attempts that bounded recovery already marked indeterminate) now runs the same verify-then-release during payment initialization and retries once, instead of failing with "Another payment operation is already being reconciled." A blocker with any provider transaction stays locked and the shopper is told to contact the store.
+
+### Changed
+
+- The hosted checkout button no longer promises "credit card" only: it defaults to "Pay by card or Google Pay" when Google Pay is forced on, and "Continue to secure payment" otherwise, since the button opens Helcim's secure payment window.
+
 ## [1.1.0-rc.12] - 2026-07-26
 
 ### Fixed

@@ -229,6 +229,134 @@ final class YSHelcimPayRecoveryService {
 		}
 	}
 
+	/**
+	 * Release a hosted checkout the shopper closed, once the provider proves no charge exists.
+	 *
+	 * Closing the payment window is the single most common way a checkout ends without a
+	 * result. Treating every close as indeterminate strands the order forever, so this
+	 * asks Helcim directly for the exact operation instead of waiting for the bounded
+	 * recovery worker.
+	 *
+	 * Safety: the caller must already have consumed the operation's one-time confirm
+	 * token, so only the browser that opened this modal can reach here. The scope is
+	 * released only after two consecutive authenticated empty reads (guarding against
+	 * provider indexing lag). Any found transaction, ambiguous payload, credential
+	 * problem, or journal error leaves the operation locked exactly as before.
+	 *
+	 * @param string $operation_uuid Exact operation to release.
+	 * @param int    $settle_seconds Gap between the two confirmation reads.
+	 * @return array<string,mixed>|\WP_Error 'canceled' when released; 'found' when the caller must reconcile instead.
+	 */
+	public function releaseClosedCheckout( string $operation_uuid, int $settle_seconds = 2 ) {
+		$operation_uuid = strtolower( trim( $operation_uuid ) );
+		if ( ! self::isUuid( $operation_uuid ) ) {
+			return self::error( 'ys_helcim_hosted_cancel_invalid', 'The hosted payment operation identifier is invalid.' );
+		}
+		if ( self::POLICY_HOSTED_CHECKOUT !== $this->policy ) {
+			return self::error( 'ys_helcim_hosted_cancel_unsupported', 'This gateway does not support hosted checkout cancellation.' );
+		}
+
+		try {
+			$row = $this->operations->findByUuidStrict( $operation_uuid );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return self::journalUnavailable();
+		}
+		if ( is_wp_error( $row ) ) {
+			return $row;
+		}
+		if ( ! is_array( $row ) ) {
+			return self::error( 'ys_helcim_hosted_cancel_missing', 'The hosted payment operation could not be found.' );
+		}
+
+		// Only an unresolved attempt that still owns its scope may be released this way.
+		// processing = the modal was opened and nothing came back; indeterminate = bounded
+		// recovery already observed the checkout material expire (the Helcim session is
+		// dead, so a late charge on it is no longer possible). Both are safe to verify.
+		$remote_status = (string) ( $row['remote_status'] ?? '' );
+		$local_status  = (string) ( $row['local_status'] ?? '' );
+		$active_scope  = (string) ( $row['active_scope_key'] ?? '' );
+		$releasable    = array(
+			YSHelcimOperationState::REMOTE_PROCESSING,
+			YSHelcimOperationState::REMOTE_INDETERMINATE,
+		);
+		if (
+			! in_array( $remote_status, $releasable, true )
+			|| YSHelcimOperationState::LOCAL_PENDING !== $local_status
+			|| '' === $active_scope
+		) {
+			return self::error( 'ys_helcim_hosted_cancel_conflict', 'The hosted payment operation is not safely cancellable.' );
+		}
+
+		$loaded = $this->loadExactTransaction( $row );
+		if ( is_wp_error( $loaded ) ) {
+			return $loaded;
+		}
+		$identity = $loaded['purchase']->identity();
+
+		try {
+			$api_token = ( $this->credential_resolver )( (string) $identity['payment_mode'] );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return self::credentialsUnavailable();
+		}
+		if ( is_wp_error( $api_token ) ) {
+			return $api_token;
+		}
+		if ( ! is_string( $api_token ) || '' === trim( $api_token ) ) {
+			return self::credentialsUnavailable();
+		}
+
+		try {
+			for ( $attempt = 0; $attempt < 2; $attempt++ ) {
+				if ( $attempt > 0 && $settle_seconds > 0 ) {
+					sleep( min( $settle_seconds, 5 ) );
+				}
+
+				try {
+					$response = ( $this->provider_lookup )( $operation_uuid, $api_token );
+				} catch ( \Throwable $exception ) {
+					unset( $exception );
+					return self::error( 'ys_helcim_hosted_cancel_lookup_failed', 'The hosted payment provider lookup failed.' );
+				}
+				if ( is_wp_error( $response ) ) {
+					return $response;
+				}
+
+				$transactions = self::transactionCollection( $response );
+				if ( null === $transactions ) {
+					return self::ambiguous();
+				}
+				if ( array() !== $transactions ) {
+					// A charge may exist: hand back to the normal reconciliation path.
+					return self::result( $operation_uuid, 'found', 'provider_transaction_present' );
+				}
+			}
+		} finally {
+			$api_token = '';
+		}
+
+		// Optimistic transition from the status read above: if recovery or a webhook moved
+		// the row meanwhile, this fails and the operation stays locked exactly as before.
+		$released = $this->operations->transitionRemote(
+			$operation_uuid,
+			$remote_status,
+			YSHelcimOperationState::REMOTE_FAILED,
+			array(
+				'error_code'    => 'ys_helcim_customer_closed_checkout',
+				'error_message' => 'The shopper closed the payment window and Helcim confirmed no transaction exists.',
+			)
+		);
+		if ( is_wp_error( $released ) ) {
+			return $released;
+		}
+		if ( true !== $released ) {
+			return self::journalUnavailable();
+		}
+
+		return self::result( $operation_uuid, 'canceled', 'provider_confirmed_no_charge' );
+	}
+
 	/** @return array{transaction:OrderTransaction,purchase:YSHelcimPurchaseOperation}|\WP_Error */
 	private function loadExactTransaction( array $row ) {
 		try {

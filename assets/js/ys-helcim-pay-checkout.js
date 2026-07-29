@@ -59,7 +59,9 @@
             network_error: 'The payment result could not be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.',
             uncertain: 'The payment window closed before its result could be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.',
             declined_verifying: 'The payment was declined. Its final result is being verified. Do not retry this payment yet.',
-            incomplete_data: 'The payment data was incomplete. Please try again.'
+            incomplete_data: 'The payment data was incomplete. Please try again.',
+            verifying_close: 'Checking whether your payment went through…',
+            closed_no_charge: 'You closed the payment window and no payment was taken. You can try again.'
         };
         var translations = (cfg && cfg.translations) || {};
         return translations[key] || defaults[key] || key;
@@ -280,6 +282,62 @@
      * @param {Object} txData      Helcim transaction data object
      * @param {string} hash        Verification hash returned by Helcim
      */
+    /**
+     * The shopper closed the payment window. Ask the server to verify with Helcim and,
+     * only if it proves no charge exists, reopen checkout so they can pay again.
+     * Any other answer keeps the fail-closed lock that is already on screen.
+     *
+     * @param {Object} detail      e.detail from the load_payments event
+     * @param {Object} paymentData payment_data from the order-creation response
+     */
+    function releaseClosedCheckout(detail, paymentData) {
+        if (!cfg.cancel_action || !paymentData || !paymentData.operation_uuid) {
+            return;
+        }
+
+        var body = new URLSearchParams();
+        body.append('action', cfg.cancel_action);
+        body.append('operation_uuid', paymentData.operation_uuid || '');
+        body.append('confirm_token', paymentData.confirm_token || '');
+        body.append('nonce', paymentData.confirm_nonce || '');
+
+        fetch(cfg.ajax_url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            credentials: 'include',
+            body: body.toString()
+        }).then(function (response) {
+            return response.json().catch(function () {
+                return null;
+            });
+        }).then(function (resp) {
+            if (!resp || resp.status !== 'canceled') {
+                // Still unresolved: leave the existing lock and message in place.
+                showInlineError(t('uncertain'));
+                return;
+            }
+
+            // Proven uncharged: this attempt is over, so allow a fresh one.
+            state.reloadRequired = false;
+            state.processing = false;
+            state.finished = false;
+            setButtonBusy(false);
+            var button = document.querySelector(CONTAINER_SELECTOR + ' .ys-helcim-pay-button');
+            if (button) {
+                button.disabled = false;
+            }
+            if (detail && detail.paymentLoader) {
+                detail.paymentLoader.hideLoader();
+                if (typeof detail.paymentLoader.enableCheckoutButton === 'function') {
+                    detail.paymentLoader.enableCheckoutButton();
+                }
+            }
+            showInlineError(t('closed_no_charge'));
+        }).catch(function () {
+            showInlineError(t('uncertain'));
+        });
+    }
+
     function confirmPayment(detail, paymentData, txData, hash) {
         var body = new URLSearchParams();
         body.append('action', cfg.confirm_action);
@@ -380,13 +438,18 @@
                 return;
             }
 
-            // HIDE does not prove whether the provider created a charge.
+            // HIDE alone does not prove whether the provider created a charge, so ask the
+            // server to verify with Helcim. Only a proven "no transaction" reopens checkout;
+            // anything else keeps the original fail-closed lock.
             if (event.data.eventStatus === 'HIDE') {
                 if (state.finished) {
                     return;
                 }
+                state.finished = true;
+                detachMessageListener();
                 safeRemoveIframe();
-                lockUi(detail, t('uncertain'));
+                lockUi(detail, t('verifying_close'));
+                releaseClosedCheckout(detail, paymentData);
             }
         };
     }

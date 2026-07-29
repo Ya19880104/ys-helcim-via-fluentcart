@@ -333,6 +333,7 @@ class YSHelcimPayGateway extends AbstractPaymentGateway {
 			'ys_helcim_fct_data' => array(
 				'ajax_url'       => admin_url( 'admin-ajax.php' ),
 				'confirm_action' => 'ys_helcim_fct_confirm_pay',
+				'cancel_action'  => 'ys_helcim_fct_cancel_pay',
 				'translations'   => array(
 					'button_text'    => $this->settings->getCheckoutButtonText(),
 					'loading'        => __( 'Loading payment module…', 'ys-helcim-via-fluentcart' ),
@@ -344,6 +345,8 @@ class YSHelcimPayGateway extends AbstractPaymentGateway {
 					'order_failed'   => __( 'The order could not be created. Please check your checkout details and try again.', 'ys-helcim-via-fluentcart' ),
 					'sdk_missing'    => __( 'The payment component has not loaded. Please refresh the page and try again.', 'ys-helcim-via-fluentcart' ),
 					'uncertain'      => __( 'The payment window closed before its result could be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.', 'ys-helcim-via-fluentcart' ),
+					'verifying_close'  => __( 'Checking whether your payment went through…', 'ys-helcim-via-fluentcart' ),
+					'closed_no_charge' => __( 'You closed the payment window and no payment was taken. You can try again.', 'ys-helcim-via-fluentcart' ),
 					'declined_verifying' => __( 'The payment was declined. Its final result is being verified. Do not retry this payment yet.', 'ys-helcim-via-fluentcart' ),
 				),
 			),
@@ -497,7 +500,7 @@ class YSHelcimPayGateway extends AbstractPaymentGateway {
 				'value'       => '',
 				'label'       => __( 'Checkout button text', 'ys-helcim-via-fluentcart' ),
 				'type'        => 'text',
-				'placeholder' => __( 'Pay with credit card (Helcim)', 'ys-helcim-via-fluentcart' ),
+				'placeholder' => __( 'Continue to secure payment', 'ys-helcim-via-fluentcart' ),
 			),
 			'google_pay'             => array(
 				'value'   => 'account',
