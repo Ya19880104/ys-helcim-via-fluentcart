@@ -12,6 +12,7 @@ use FluentCart\App\Models\OrderTransaction;
 use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimJsPurchaseResponseAdapter;
 use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimJsPurchaseRuntime;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationRepository;
+use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationScope;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationState;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimPurchaseOperation;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimLogger;
@@ -207,8 +208,8 @@ final class YSHelcimPayRecoveryService {
 			return is_wp_error( $outcome ) ? $outcome : self::ambiguous();
 		}
 		if ( 'declined' === $outcome['outcome'] ) {
-			// A released checkout already reflects "no charge"; a late DECLINE changes
-			// nothing and must not push a terminal row through another transition.
+			// A quarantined checkout remains reserved for exact late proof. A late
+			// DECLINE is acknowledged without reopening a successor session.
 			if ( YSHelcimOperationState::REMOTE_CANCELED === (string) ( $row['remote_status'] ?? '' ) ) {
 				return self::result( $operation_uuid, 'canceled', 'late_decline_changes_nothing' );
 			}
@@ -236,11 +237,11 @@ final class YSHelcimPayRecoveryService {
 	}
 
 	/**
-	 * Release a hosted checkout whose Helcim session has provably expired unclaimed.
+	 * Quarantine a hosted checkout whose Helcim session expired with no indexed charge.
 	 *
-	 * A live session is never released here: Helcim offers no way to cancel a
+	 * A live session is never unlocked here: Helcim offers no way to cancel a
 	 * checkoutToken, so a session younger than the provider's own validity window
-	 * could still charge in another tab. Release requires ALL of:
+	 * could still charge in another tab. Quarantine requires ALL of:
 	 *   1. the operation is an in-flight hosted purchase that still owns its scope,
 	 *   2. its stored identity matches the current transaction exactly (anti-drift),
 	 *   3. the session is past the checkout-material expiry boundary — dead by
@@ -248,15 +249,16 @@ final class YSHelcimPayRecoveryService {
 	 *   4. two consecutive authenticated reads find no transaction (charge detection
 	 *      for anything created before expiry, not "proof of absence").
 	 *
-	 * The release target is REMOTE_CANCELED, which keeps accepting exact late
-	 * approval proof: if a pre-expiry charge surfaces afterwards via webhook or
-	 * recovery, it still binds and completes locally instead of becoming an orphan.
+	 * The target is REMOTE_CANCELED, which keeps both the purchase scope and exact
+	 * late-approval handling. If a pre-expiry charge surfaces afterwards via webhook
+	 * or recovery, it still binds and completes locally instead of becoming an
+	 * orphan; no successor provider session can exist in the meantime.
 	 *
-	 * @param string $operation_uuid Exact operation to release.
+	 * @param string $operation_uuid Exact operation to quarantine.
 	 * @param int    $settle_seconds Gap between the two charge-detection reads.
-	 * @return array<string,mixed>|\WP_Error 'canceled' when released; 'found' when a
+	 * @return array<string,mixed>|\WP_Error 'canceled' when quarantined; 'found' when a
 	 *                        provider transaction exists; 'live' when the session has
-	 *                        not expired yet and nothing may be released.
+	 *                        not expired yet and nothing may be unlocked.
 	 */
 	public function releaseExpiredCheckout( string $operation_uuid, int $settle_seconds = 2 ) {
 		$operation_uuid = strtolower( trim( $operation_uuid ) );
@@ -362,16 +364,17 @@ final class YSHelcimPayRecoveryService {
 			$api_token = '';
 		}
 
-		// Optimistic transition from the status read above: if recovery or a webhook moved
-		// the row meanwhile, this fails and the operation stays locked exactly as before.
-		// CANCELED (not FAILED) so exact late approval proof can still bind and complete.
+		// Optimistic transition from the status read above: if recovery or a webhook
+		// moved the row meanwhile, this fails and the operation stays locked exactly
+		// as before. CANCELED (not FAILED) keeps the active purchase scope as a durable
+		// no-successor quarantine while exact late approval may still bind.
 		$released = $this->operations->transitionRemote(
 			$operation_uuid,
 			$remote_status,
 			YSHelcimOperationState::REMOTE_CANCELED,
 			array(
 				'error_code'    => 'ys_helcim_session_expired_released',
-				'error_message' => 'The Helcim checkout session expired unclaimed and no transaction was found; the payment scope was released.',
+				'error_message' => 'The Helcim checkout session expired and no transaction was found; the purchase remains quarantined until exact reconciliation.',
 			)
 		);
 		if ( is_wp_error( $released ) ) {
@@ -383,8 +386,8 @@ final class YSHelcimPayRecoveryService {
 
 		// One automatic late-proof follow-up: an approval indexed only after both reads
 		// above still gets picked up without waiting for a webhook or an administrator.
-		// A scheduling failure never blocks the release (webhook and the manual check
-		// remain available), but it is always logged, never swallowed.
+		// A scheduling failure never opens a successor because canceled keeps its
+		// scope; webhook and manual checks remain available, and the failure is logged.
 		$scheduled = false;
 		try {
 			$now = ( $this->clock )();
@@ -401,7 +404,7 @@ final class YSHelcimPayRecoveryService {
 		if ( true !== $scheduled ) {
 			YSHelcimLogger::log(
 				'ERROR',
-				'Released checkout could not schedule its automatic late-proof follow-up; webhook and manual check remain the only channels',
+				'Quarantined checkout could not schedule its automatic late-proof follow-up; webhook and manual check remain the only channels',
 				array( 'operation_uuid' => $operation_uuid )
 			);
 		}
@@ -474,16 +477,21 @@ final class YSHelcimPayRecoveryService {
 						YSHelcimOperationState::LOCAL_APPLIED,
 					),
 					true
-				)
-				&& ( YSHelcimOperationState::LOCAL_APPLIED === $local_status || '' !== $active_scope );
+				);
 		}
 
-		// A released expired checkout keeps accepting exact late approval proof.
-		// Its scope is already free, so recovery may look it up but must never
-		// re-lock, re-schedule, or transition it on anything short of that proof.
+		// A quarantined expired checkout keeps accepting exact late approval proof.
+		// New rows retain the exact purchase scope; legacy rows may already be scope
+		// free, so recovery accepts either shape after strict identity validation.
 		if ( YSHelcimOperationState::REMOTE_CANCELED === $remote_status ) {
+			try {
+				$expected_scope = YSHelcimOperationScope::fromBusinessKey( $purchase->scopeKey() );
+			} catch ( \InvalidArgumentException $exception ) {
+				unset( $exception );
+				return false;
+			}
 			return YSHelcimOperationState::LOCAL_PENDING === $local_status
-				&& '' === $active_scope;
+				&& ( '' === $active_scope || hash_equals( $expected_scope, $active_scope ) );
 		}
 
 		return YSHelcimOperationState::REMOTE_DECLINED === $remote_status
@@ -493,8 +501,8 @@ final class YSHelcimPayRecoveryService {
 
 	/** @return array<string,mixed>|\WP_Error */
 	private function handleEmptyLookup( array $row, OrderTransaction $transaction, string $operation_uuid ) {
-		// A released checkout stays exactly as it is on an empty read: it is already
-		// terminal-released and only exact approval proof may ever move it.
+		// A quarantined checkout stays exactly as it is on an empty read: absence is
+		// not proof, so only exact approval proof may ever move it.
 		if ( YSHelcimOperationState::REMOTE_CANCELED === (string) ( $row['remote_status'] ?? '' ) ) {
 			return self::result( $operation_uuid, 'canceled', 'no_late_proof_found' );
 		}

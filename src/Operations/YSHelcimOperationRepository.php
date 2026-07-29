@@ -151,6 +151,67 @@ final class YSHelcimOperationRepository {
 			return self::invalidOperation();
 		}
 
+		// Only a definitive no-charge terminal state may gain a provider successor.
+		// The history decision happens before INSERT, so an in-flight predecessor can
+		// never complete and release its scope between this read and a second session
+		// being created. Canceled is a quarantine, not no-charge proof; succeeded may
+		// still be between remote proof and local apply. The active-scope UNIQUE
+		// constraint remains the concurrent-first-attempt fallback, while this durable
+		// history guard also protects legacy rows whose older code released the scope.
+		if ( 'purchase' === $operation_type ) {
+			$prior_attempts = $this->findPurchasesByIdentity( (int) $operation['transaction_id'] );
+			if ( is_wp_error( $prior_attempts ) ) {
+				return $prior_attempts;
+			}
+			foreach ( $prior_attempts as $prior_attempt ) {
+				if ( ! is_array( $prior_attempt ) ) {
+					return self::invalidOperation();
+				}
+
+				$prior_status = (string) ( $prior_attempt['remote_status'] ?? '' );
+				if (
+					in_array(
+						$prior_status,
+						array(
+							YSHelcimOperationState::REMOTE_CREATED,
+							YSHelcimOperationState::REMOTE_PROCESSING,
+							YSHelcimOperationState::REMOTE_INDETERMINATE,
+						),
+						true
+					)
+				) {
+					return self::purchaseScopeBusy();
+				}
+
+				if (
+					in_array(
+						$prior_status,
+						array(
+							YSHelcimOperationState::REMOTE_CANCELED,
+							YSHelcimOperationState::REMOTE_SUCCEEDED,
+						),
+						true
+					)
+				) {
+					return self::purchaseSuccessorBlocked();
+				}
+
+				if (
+					! in_array(
+						$prior_status,
+						array(
+							YSHelcimOperationState::REMOTE_DECLINED,
+							YSHelcimOperationState::REMOTE_FAILED,
+							YSHelcimOperationState::REMOTE_EXPIRED,
+						),
+						true
+					)
+				) {
+					return self::invalidOperation();
+				}
+			}
+		}
+
 		$provider_correlation = self::nullableString( $operation['provider_correlation_id'] ?? null );
 		if ( null !== $provider_correlation && 1 !== preg_match( '/\A[A-Za-z0-9._:-]{1,64}\z/', $provider_correlation ) ) {
 			return self::invalidOperation();
@@ -840,19 +901,27 @@ final class YSHelcimOperationRepository {
 					)
 				)
 				OR (
-					-- Released expired checkouts: the scope is free by design, but the
-					-- administrator must still be able to run a manual late-proof check.
+					-- Quarantined expired checkouts retain their scope in current
+					-- versions; legacy rows may be scope free. Both require review.
 					remote_status = 'canceled'
 					AND local_status = 'pending'
+				)
+				OR (
+					-- A provider charge is proven but local application is incomplete.
+					-- A legacy scope may already be free when a quarantined checkout
+					-- receives late proof, or after a crash between proof and local bind.
+					-- Every non-applied local state must remain administrator-visible.
+					remote_status = 'succeeded'
+					AND local_status IN ('pending', 'failed', 'applying')
 					AND active_scope_key IS NULL
 				)
 				OR (
-					-- A provider charge proven but locally unbindable (for example a
-					-- late approval colliding with another bound charge): remote money
-					-- moved, local records did not, so an administrator must see it.
+					-- An already-applied operation received exact proof for a second
+					-- provider transaction. Preserve the applied state, but surface the
+					-- durable anomaly for manual financial review.
 					remote_status = 'succeeded'
-					AND local_status = 'failed'
-					AND active_scope_key IS NULL
+					AND local_status = 'applied'
+					AND local_error_code = 'provider_id_mismatch'
 				)
 			)
 			ORDER BY updated_at ASC, id ASC
@@ -1114,7 +1183,13 @@ final class YSHelcimOperationRepository {
 			$data['next_recovery_at']    = null;
 		}
 
-		if ( YSHelcimOperationState::shouldReleaseScope( $next, (string) $current['local_status'] ) ) {
+		if (
+			YSHelcimOperationState::shouldReleaseScope(
+				$next,
+				(string) $current['local_status'],
+				(string) $current['operation_type']
+			)
+		) {
 			$data['active_scope_key'] = null;
 			$data['resolved_at']      = ( $this->clock )();
 		}
@@ -1200,6 +1275,64 @@ final class YSHelcimOperationRepository {
 		);
 	}
 
+	/**
+	 * Persist a second-provider-ID anomaly without downgrading an already applied
+	 * local payment.
+	 *
+	 * @return bool|\WP_Error
+	 */
+	public function recordAppliedProviderMismatch( string $operation_uuid, string $expected_provider_id, string $error_message ) {
+		$operation_uuid      = strtolower( trim( $operation_uuid ) );
+		$expected_provider_id = YSHelcimTransactionId::normalize( $expected_provider_id );
+		if (
+			1 !== preg_match( '/\A[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/', $operation_uuid ) ||
+			null === $expected_provider_id ||
+			'' === trim( $error_message )
+		) {
+			return self::invalidOperation();
+		}
+
+		$current = $this->findByUuidStrict( $operation_uuid );
+		if ( is_wp_error( $current ) ) {
+			return $current;
+		}
+		if (
+			! is_array( $current ) ||
+			YSHelcimOperationState::REMOTE_SUCCEEDED !== (string) ( $current['remote_status'] ?? '' ) ||
+			YSHelcimOperationState::LOCAL_APPLIED !== (string) ( $current['local_status'] ?? '' ) ||
+			$expected_provider_id !== YSHelcimTransactionId::normalize( $current['vendor_transaction_id'] ?? null )
+		) {
+			return false;
+		}
+
+		try {
+			$updated = $this->database->update(
+				$this->table,
+				array(
+					'local_error_code'    => 'provider_id_mismatch',
+					'local_error_message' => YSHelcimSanitizer::errorText( $error_message ),
+					'updated_at'          => ( $this->clock )(),
+				),
+				array(
+					'operation_uuid'         => $operation_uuid,
+					'remote_status'          => YSHelcimOperationState::REMOTE_SUCCEEDED,
+					'local_status'           => YSHelcimOperationState::LOCAL_APPLIED,
+					'vendor_transaction_id' => $current['vendor_transaction_id'],
+				)
+			);
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return self::journalUnavailable();
+		}
+		if ( false === $updated ) {
+			return self::journalUnavailable();
+		}
+
+		$stored = $this->findByUuidStrict( $operation_uuid );
+		return is_array( $stored )
+			&& 'provider_id_mismatch' === (string) ( $stored['local_error_code'] ?? '' );
+	}
+
 	/** Compare-and-set local application status after provider success. */
 	public function transitionLocal( string $operation_uuid, string $expected, string $next, array $changes = array() ) {
 		if ( ! YSHelcimOperationState::canTransitionLocal( $expected, $next ) ) {
@@ -1259,9 +1392,16 @@ final class YSHelcimOperationRepository {
 			$data['local_applied_at']    = ( $this->clock )();
 			$data['recovery_attempt_count'] = 0;
 			$data['next_recovery_at']       = null;
+			$data['resolved_at']             = ( $this->clock )();
 		}
 
-		if ( YSHelcimOperationState::shouldReleaseScope( (string) $current['remote_status'], $next ) ) {
+		if (
+			YSHelcimOperationState::shouldReleaseScope(
+				(string) $current['remote_status'],
+				$next,
+				(string) $current['operation_type']
+			)
+		) {
 			$data['active_scope_key'] = null;
 			$data['resolved_at']      = ( $this->clock )();
 		}
@@ -1299,7 +1439,7 @@ final class YSHelcimOperationRepository {
 	 *                        in-flight processing attempt; WP_Error on storage loss.
 	 */
 	/**
-	 * Schedule the single automatic late-proof check for a released checkout.
+	 * Schedule the single automatic late-proof check for a quarantined checkout.
 	 *
 	 * @return bool|\WP_Error
 	 */
@@ -1325,7 +1465,7 @@ final class YSHelcimOperationRepository {
 	}
 
 	/**
-	 * Atomically consume a released checkout's one-shot late-proof schedule.
+	 * Atomically consume a quarantined checkout's one-shot late-proof schedule.
 	 *
 	 * The compare-and-swap includes the due time the caller observed, so when two
 	 * workers race, exactly one consumes the schedule and runs the check; the
@@ -1363,7 +1503,7 @@ final class YSHelcimOperationRepository {
 	}
 
 	/**
-	 * Released checkouts whose one-shot late-proof check is due.
+	 * Quarantined checkouts whose one-shot late-proof check is due.
 	 *
 	 * @return array<int,array<string,mixed>>|\WP_Error
 	 */
@@ -1384,7 +1524,6 @@ final class YSHelcimOperationRepository {
 			AND gateway = %s
 			AND remote_status = 'canceled'
 			AND local_status = 'pending'
-			AND active_scope_key IS NULL
 			AND next_recovery_at IS NOT NULL
 			AND next_recovery_at <= %s
 			ORDER BY next_recovery_at ASC, id ASC
@@ -1768,6 +1907,20 @@ final class YSHelcimOperationRepository {
 		return new \WP_Error(
 			'ys_helcim_journal_unavailable',
 			__( 'The payment safety journal is unavailable. No provider request was sent.', 'ys-helcim-via-fluentcart' )
+		);
+	}
+
+	private static function purchaseSuccessorBlocked(): \WP_Error {
+		return new \WP_Error(
+			'ys_helcim_purchase_successor_blocked',
+			__( 'A previous payment attempt for this transaction still requires exact reconciliation. No new payment session was opened; please contact the store.', 'ys-helcim-via-fluentcart' )
+		);
+	}
+
+	private static function purchaseScopeBusy(): \WP_Error {
+		return new \WP_Error(
+			'ys_helcim_scope_busy',
+			__( 'Another payment operation is already being reconciled.', 'ys-helcim-via-fluentcart' )
 		);
 	}
 

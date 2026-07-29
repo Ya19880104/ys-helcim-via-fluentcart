@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0-rc.17] - 2026-07-29
+
+### Fixed
+
+- A concurrent webhook/recovery completion can no longer resurrect hosted checkout tokens and encrypted confirmation material on an already succeeded FluentCart transaction. Browser-session metadata is written and verified only while the exact transaction remains pending and unbound; terminal winners purge any stale material without disturbing a concurrent resume winner.
+- An expired checkout with two empty provider reads is now quarantined as `canceled` while retaining its transaction scope; empty reads never authorize a successor. A durable purchase-family guard blocks Hosted or Inline successors for `created`, `processing`, `indeterminate`, `canceled`, and `succeeded` predecessors—including legacy scope-free rows—before any journal INSERT or second provider session. A successfully applied purchase also keeps its family reservation, so even a stale empty history snapshot still loses to the database UNIQUE constraint. Only definitive `declined`, never-sent `failed`, or pre-provider `expired` attempts may be followed by a new attempt.
+- Exact late decline proof for a quarantined (`canceled`) checkout is now an acknowledged idempotent no-op through the purchase coordinator and webhook reconciler, preventing unnecessary provider retries while the transaction remains reserved for exact reconciliation.
+- Every remotely succeeded purchase whose local state is still `pending`, `applying`, or `failed` remains visible in the administrator attention scan, including legacy rows whose active scope was already released. The succeeded fast-path also persists provider-ID mismatch evidence before returning.
+- A scope-free remotely succeeded purchase can now resume the exact local binding directly, without another provider call. An already applied purchase that receives exact proof for a second provider transaction persists both IDs as an administrator-visible anomaly without downgrading the original local payment; a journal write failure returns retryable HTTP 503 so webhook redelivery can heal it.
+- Canceled-checkout webhook acknowledgement now requires an exact declined outcome. Exact approved proof can no longer be suppressed by a canceled-shaped runtime result.
+- Manual recovery of a quarantined checkout now verifies the exact purchase operation UUID and gateway before using that gateway's credentials.
+- Provider-ID conflicts now show their persisted review detail in the administrator notice, use accurate scope-free/manual-review wording, and never offer a misleading automatic recovery action.
+- README release-candidate metadata now follows the plugin header and is enforced by the release-package test.
+
+### Added
+
+- A host-agnostic deployment mtime gate plus integration coverage. Manual deployments must touch files after extraction; every deployed PHP file must meet the caller-provided epoch, and any file or directory symlink fails closed before runtime parity or browser evidence is accepted.
+- Reproducible ZIP entries now use a source-commit-derived timestamp instead of the globally reused 1980 value. The manifest binds that timestamp to the source commit, preventing normal WordPress/Hub updates from repeatedly presenting OPcache with an unchanged archive mtime.
+
 ## [1.1.0-rc.16] - 2026-07-29
 
 ### Fixed
@@ -17,7 +36,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Tests: resume restore-failure keeps the session locked; malformed (non-string) envelope refused; stale-snapshot rotation loses the CAS; attention scan surfaces released and mismatch-failed operations; released-checkout manual check goes straight to recover; deploy gate aborts unless every PHP mtime was refreshed (OPcache staleness guard).
+- Tests: resume restore-failure keeps the session locked; malformed (non-string) envelope refused; stale-snapshot rotation loses the CAS; attention scan surfaces released and mismatch-failed operations; released-checkout manual check goes straight to recover.
 
 ## [1.1.0-rc.15] - 2026-07-29
 

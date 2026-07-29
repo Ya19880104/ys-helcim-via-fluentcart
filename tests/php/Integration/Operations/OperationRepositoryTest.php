@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace YangSheep\Helcim\FluentCart\Tests\Integration\Operations;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimIdempotency;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationRepository;
@@ -36,6 +37,134 @@ final class OperationRepositoryTest extends TestCase
         self::assertSame('ys_helcim_scope_busy', $second->get_error_code());
         self::assertCount(1, $this->database->allRows());
     }
+
+	#[DataProvider('nonDefinitivePurchaseStatuses')]
+	public function testPurchaseHistoryGuardRejectsScopeFreeNonDefinitiveAttemptBeforeInsert(string $remoteStatus): void
+	{
+		$first = $this->operation(201, 'purchase:scope-free-non-definitive');
+		self::assertIsArray($this->repository->create($first));
+
+		if ('created' !== $remoteStatus) {
+			self::assertTrue($this->repository->claimRemoteProcessing($first['operation_uuid']));
+		}
+		if ('indeterminate' === $remoteStatus) {
+			self::assertTrue($this->repository->transitionRemote(
+				$first['operation_uuid'],
+				'processing',
+				'indeterminate'
+			));
+		}
+
+		// Simulate a legacy row or the critical interleaving where the active scope
+		// disappears after the family read. The history guard must still stop B
+		// before attempting an INSERT.
+		$this->database->update(
+			'wp_ys_helcim_operations',
+			['active_scope_key' => null],
+			['operation_uuid' => $first['operation_uuid']]
+		);
+		$this->database->failNextInsert = true;
+
+		$second = $this->repository->create($this->operation(202, 'purchase:scope-free-non-definitive'));
+
+		self::assertInstanceOf(\WP_Error::class, $second);
+		self::assertSame('ys_helcim_scope_busy', $second->get_error_code());
+		self::assertCount(1, $this->database->allRows());
+
+		$unrelated = $this->operation(203, 'purchase:different-family');
+		$unrelated['transaction_id'] = 203;
+		$unrelated['transaction_uuid'] = 'fc-transaction-203';
+		$unrelated['idempotency_key'] = YSHelcimIdempotency::generate(
+			'purchase',
+			$unrelated['transaction_uuid'],
+			$unrelated['amount'],
+			$unrelated['payment_mode'],
+			$unrelated['operation_uuid']
+		);
+		$insertFailure = $this->repository->create($unrelated);
+		self::assertInstanceOf(\WP_Error::class, $insertFailure);
+		self::assertSame(
+			'ys_helcim_journal_unavailable',
+			$insertFailure->get_error_code(),
+			'The injected INSERT failure must remain unused when the family guard returns before INSERT.'
+		);
+	}
+
+	/** @return array<string, array{string}> */
+	public static function nonDefinitivePurchaseStatuses(): array
+	{
+		return [
+			'created' => ['created'],
+			'processing' => ['processing'],
+			'indeterminate' => ['indeterminate'],
+		];
+	}
+
+	public function testStaleEmptyFamilyReadCannotInsertAfterConcurrentPurchaseCompletes(): void
+	{
+		$winner = $this->operation(204, 'purchase:stale-empty-family');
+		$loser = $this->operation(205, 'purchase:stale-empty-family');
+		$this->database->afterPurchaseHistoryRead = function (int $transactionId, array $snapshot) use ($winner): void {
+			self::assertSame(20, $transactionId);
+			self::assertSame([], $snapshot, 'B must have read the empty family before A is inserted.');
+			self::assertIsArray($this->repository->create($winner));
+			self::assertTrue($this->repository->claimRemoteProcessing($winner['operation_uuid']));
+			self::assertTrue($this->repository->transitionRemote(
+				$winner['operation_uuid'],
+				'processing',
+				'succeeded',
+				['vendor_transaction_id' => '51178204']
+			));
+			self::assertTrue($this->repository->claimLocalApplying($winner['operation_uuid'], 'pending'));
+			self::assertTrue($this->repository->transitionLocal($winner['operation_uuid'], 'applying', 'applied'));
+		};
+
+		$result = $this->repository->create($loser);
+
+		self::assertInstanceOf(\WP_Error::class, $result);
+		self::assertSame('ys_helcim_scope_busy', $result->get_error_code());
+		self::assertCount(1, $this->database->allRows());
+		self::assertNotNull(
+			$this->repository->findByUuid($winner['operation_uuid'])['active_scope_key'],
+			'A completed purchase must retain the durable family reservation.'
+		);
+		self::assertNotNull(
+			$this->repository->findByUuid($winner['operation_uuid'])['resolved_at'],
+			'Completion time remains durable even though the anti-successor reservation stays active.'
+		);
+	}
+
+	public function testUnknownPurchaseHistoryStateFailsClosedBeforeInsert(): void
+	{
+		$first = $this->operation(206, 'purchase:unknown-history-state');
+		self::assertIsArray($this->repository->create($first));
+		$this->database->update(
+			'wp_ys_helcim_operations',
+			['remote_status' => 'corrupt', 'active_scope_key' => null],
+			['operation_uuid' => $first['operation_uuid']]
+		);
+		$this->database->failNextInsert = true;
+
+		$blocked = $this->repository->create($this->operation(207, 'purchase:unknown-history-state'));
+
+		self::assertInstanceOf(\WP_Error::class, $blocked);
+		self::assertSame('ys_helcim_invalid_operation', $blocked->get_error_code());
+		self::assertTrue($this->database->failNextInsert, 'Unknown history must return before INSERT.');
+		self::assertCount(1, $this->database->allRows());
+	}
+
+	public function testPurchaseHistoryReadFailureFailsClosedBeforeInsert(): void
+	{
+		$this->database->failNextResults = true;
+		$this->database->failNextInsert = true;
+
+		$blocked = $this->repository->create($this->operation(208, 'purchase:history-read-failure'));
+
+		self::assertInstanceOf(\WP_Error::class, $blocked);
+		self::assertSame('ys_helcim_journal_unavailable', $blocked->get_error_code());
+		self::assertTrue($this->database->failNextInsert, 'A failed family read must return before INSERT.');
+		self::assertCount(0, $this->database->allRows());
+	}
 
     public function testCreatedOperationCanBeClaimedExactlyOnce(): void
     {
@@ -100,14 +229,55 @@ final class OperationRepositoryTest extends TestCase
 
         self::assertTrue($this->repository->claimLocalApplying($operation['operation_uuid'], 'failed'));
         self::assertTrue($this->repository->transitionLocal($operation['operation_uuid'], 'applying', 'applied'));
-        self::assertNull($this->repository->findByUuid($operation['operation_uuid'])['active_scope_key']);
-        self::assertIsArray($this->repository->create($this->operation(2, 'purchase:fc-123')));
+        self::assertNotNull(
+            $this->repository->findByUuid($operation['operation_uuid'])['active_scope_key'],
+            'A paid purchase permanently reserves its transaction family.'
+        );
+        $successor = $this->repository->create($this->operation(2, 'purchase:fc-123'));
+        self::assertInstanceOf(\WP_Error::class, $successor);
+        self::assertSame('ys_helcim_purchase_successor_blocked', $successor->get_error_code());
+    }
+
+    public function testCanceledPurchaseQuarantinesItsScopeAndBlocksACrossGatewaySuccessor(): void
+    {
+        $first = $this->operation(3, 'purchase:quarantined-transaction');
+        self::assertIsArray($this->repository->create($first));
+        self::assertTrue($this->repository->claimRemoteProcessing($first['operation_uuid']));
+        self::assertTrue($this->repository->transitionRemote(
+            $first['operation_uuid'],
+            'processing',
+            'canceled',
+            ['error_code' => 'ys_helcim_session_expired_released']
+        ));
+        self::assertNotNull(
+            $this->repository->findByUuid($first['operation_uuid'])['active_scope_key'],
+            'A canceled empty lookup must remain a durable no-successor quarantine.'
+        );
+
+        $second = $this->operation(4, 'purchase:quarantined-transaction');
+        $second['gateway'] = 'ys_helcim_js';
+        $blocked = $this->repository->create($second);
+
+        self::assertInstanceOf(\WP_Error::class, $blocked);
+        self::assertSame('ys_helcim_purchase_successor_blocked', $blocked->get_error_code());
+        self::assertCount(1, $this->database->allRows());
+
+        $this->database->update(
+            'wp_ys_helcim_operations',
+            ['active_scope_key' => null],
+            ['operation_uuid' => $first['operation_uuid']]
+        );
+        $legacyBlocked = $this->repository->create($second);
+
+        self::assertInstanceOf(\WP_Error::class, $legacyBlocked);
+        self::assertSame('ys_helcim_purchase_successor_blocked', $legacyBlocked->get_error_code());
+        self::assertCount(1, $this->database->allRows(), 'Legacy scope-free quarantine must also block a cross-gateway successor.');
     }
 
     public function testProviderReceiptIsReservedSiteWideByTheDatabaseUniqueConstraint(): void
     {
         $first = $this->operation(91, 'purchase:first');
-        $second = $this->operation(92, 'purchase:second');
+        $second = $this->withTransactionIdentity($this->operation(92, 'purchase:second'), 92);
         $second['payment_mode'] = 'live';
         $second['idempotency_key'] = YSHelcimIdempotency::generate(
             'purchase',
@@ -335,7 +505,7 @@ final class OperationRepositoryTest extends TestCase
     {
         $first = $this->operation(1, 'purchase:first');
         $first['provider_correlation_id'] = '';
-        $second = $this->operation(2, 'purchase:second');
+        $second = $this->withTransactionIdentity($this->operation(2, 'purchase:second'), 22);
         $second['provider_correlation_id'] = '';
 
         $createdFirst = $this->repository->create($first);
@@ -375,7 +545,7 @@ final class OperationRepositoryTest extends TestCase
         $expired = $this->operation(1, 'purchase:first');
         $expired['encrypted_material'] = YSHelcimSensitiveEnvelope::encrypt('expired-token');
         $expired['material_expires_at'] = '2026-07-21 00:05:00';
-        $fresh = $this->operation(2, 'purchase:second');
+        $fresh = $this->withTransactionIdentity($this->operation(2, 'purchase:second'), 22);
         $fresh['encrypted_material'] = YSHelcimSensitiveEnvelope::encrypt('fresh-token');
         $fresh['material_expires_at'] = '2026-07-21 00:20:00';
         $repository->create($expired);
@@ -383,7 +553,9 @@ final class OperationRepositoryTest extends TestCase
         $repository->create($fresh);
         $now = '2026-07-21 00:10:00';
 
-        self::assertIsArray($repository->create($this->operation(3, 'purchase:third')));
+        self::assertIsArray($repository->create(
+            $this->withTransactionIdentity($this->operation(3, 'purchase:third'), 23)
+        ));
         $expiredStored = $repository->findByUuid($expired['operation_uuid']);
         $freshStored = $repository->findByUuid($fresh['operation_uuid']);
         self::assertNull($expiredStored['encrypted_material']);
@@ -723,12 +895,12 @@ final class OperationRepositoryTest extends TestCase
         self::assertTrue($this->repository->claimRemoteProcessing($due['operation_uuid']));
         $this->database->update('wp_ys_helcim_operations', ['created_at' => '2026-07-20 22:00:00'], ['operation_uuid' => $due['operation_uuid']]);
 
-        $recent = $this->operation(82, 'purchase:recent');
+        $recent = $this->withTransactionIdentity($this->operation(82, 'purchase:recent'), 82);
         $recent['provider_correlation_id'] = $recent['operation_uuid'];
         self::assertIsArray($this->repository->create($recent));
         self::assertTrue($this->repository->claimRemoteProcessing($recent['operation_uuid']));
 
-        $inline = $this->operation(83, 'purchase:inline');
+        $inline = $this->withTransactionIdentity($this->operation(83, 'purchase:inline'), 83);
         $inline['gateway'] = 'ys_helcim_js';
         $inline['provider_correlation_id'] = $inline['operation_uuid'];
         self::assertIsArray($this->repository->create($inline));
@@ -771,7 +943,7 @@ final class OperationRepositoryTest extends TestCase
 			['operation_uuid' => $inline['operation_uuid']]
 		);
 
-		$hosted = $this->operation(131, 'purchase:hosted-due');
+		$hosted = $this->withTransactionIdentity($this->operation(131, 'purchase:hosted-due'), 131);
 		$hosted['provider_correlation_id'] = $hosted['operation_uuid'];
 		self::assertIsArray($this->repository->create($hosted));
 		self::assertTrue($this->repository->claimRemoteProcessing($hosted['operation_uuid']));
@@ -882,7 +1054,7 @@ final class OperationRepositoryTest extends TestCase
 		self::assertTrue($this->repository->claimRemoteProcessing($indeterminate['operation_uuid']));
 		self::assertTrue($this->repository->transitionRemote($indeterminate['operation_uuid'], 'processing', 'indeterminate'));
 
-		$succeeded = $this->operation(135, 'purchase:inline-attention-local');
+		$succeeded = $this->withTransactionIdentity($this->operation(135, 'purchase:inline-attention-local'), 135);
 		$succeeded['gateway'] = 'ys_helcim_js';
 		$succeeded['provider_correlation_id'] = $succeeded['operation_uuid'];
 		self::assertIsArray($this->repository->create($succeeded));
@@ -1042,7 +1214,10 @@ final class OperationRepositoryTest extends TestCase
 	{
 		$uuids = [];
 		for ($sequence = 100; $sequence < 125; ++$sequence) {
-			$operation = $this->operation($sequence, 'purchase:hosted-' . $sequence);
+			$operation = $this->withTransactionIdentity(
+				$this->operation($sequence, 'purchase:hosted-' . $sequence),
+				$sequence
+			);
 			$operation['provider_correlation_id'] = $operation['operation_uuid'];
 			self::assertIsArray($this->repository->create($operation));
 			self::assertTrue($this->repository->claimRemoteProcessing($operation['operation_uuid']));
@@ -1105,7 +1280,7 @@ final class OperationRepositoryTest extends TestCase
 		self::assertTrue($this->repository->claimRemoteProcessing($indeterminate['operation_uuid']));
 		self::assertTrue($this->repository->transitionRemote($indeterminate['operation_uuid'], 'processing', 'indeterminate'));
 
-		$succeeded = $this->operation(127, 'purchase:attention-local');
+		$succeeded = $this->withTransactionIdentity($this->operation(127, 'purchase:attention-local'), 127);
 		$succeeded['provider_correlation_id'] = $succeeded['operation_uuid'];
 		self::assertIsArray($this->repository->create($succeeded));
 		self::assertTrue($this->repository->claimRemoteProcessing($succeeded['operation_uuid']));
@@ -1122,6 +1297,63 @@ final class OperationRepositoryTest extends TestCase
 			[$indeterminate['operation_uuid'], $succeeded['operation_uuid']],
 			array_column($rows, 'operation_uuid')
 		);
+	}
+
+	public function testAttentionQueryIncludesEveryScopeFreeRemoteSuccessThatIsNotApplied(): void
+	{
+		$expected = [];
+		foreach (['pending', 'applying', 'failed'] as $offset => $localStatus) {
+			$operation = $this->operation(150 + $offset, 'purchase:scope-free-success-' . $localStatus);
+			$operation['transaction_id'] = 150 + $offset;
+			$operation['transaction_uuid'] = 'fc-scope-free-' . $localStatus;
+			$operation['idempotency_key'] = YSHelcimIdempotency::generate(
+				'purchase',
+				$operation['transaction_uuid'],
+				$operation['amount'],
+				$operation['payment_mode'],
+				$operation['operation_uuid']
+			);
+			$operation['provider_correlation_id'] = $operation['operation_uuid'];
+			self::assertIsArray($this->repository->create($operation));
+			self::assertTrue($this->repository->claimRemoteProcessing($operation['operation_uuid']));
+			self::assertTrue($this->repository->transitionRemote(
+				$operation['operation_uuid'],
+				'processing',
+				'canceled',
+				['error_code' => 'ys_helcim_session_expired_released']
+			));
+			self::assertTrue($this->repository->transitionRemote(
+				$operation['operation_uuid'],
+				'canceled',
+				'succeeded',
+				['vendor_transaction_id' => (string) (51178150 + $offset)]
+			));
+			$this->database->update(
+				'wp_ys_helcim_operations',
+				['active_scope_key' => null],
+				['operation_uuid' => $operation['operation_uuid']]
+			);
+			if ('applying' === $localStatus) {
+				self::assertTrue($this->repository->claimLocalApplying($operation['operation_uuid'], 'pending'));
+			} elseif ('failed' === $localStatus) {
+				self::assertTrue($this->repository->recordLocalFailure(
+					$operation['operation_uuid'],
+					'simulated_local_failure',
+					'Local binding could not be completed.'
+				));
+			}
+			$expected[] = $operation['operation_uuid'];
+		}
+
+		$rows = $this->repository->findHostedPurchasesNeedingAttention(10, 7);
+
+		self::assertIsArray($rows);
+		self::assertSame($expected, array_column($rows, 'operation_uuid'));
+		foreach ($rows as $row) {
+			self::assertSame('succeeded', $row['remote_status']);
+			self::assertNotSame('applied', $row['local_status']);
+			self::assertNull($row['active_scope_key']);
+		}
 	}
 
 	public function testPausedHostedRecoveryCanBeClaimedForOneManualAttemptAtATime(): void
@@ -1337,6 +1569,24 @@ final class OperationRepositoryTest extends TestCase
             $operation['local_payload_hash'] = YSHelcimRefundPayload::hash($payload);
             $operation['source_vendor_transaction_id'] = '51177061';
         }
+
+        return $operation;
+    }
+
+    /** @param array<string,mixed> $operation
+     *  @return array<string,mixed>
+     */
+    private function withTransactionIdentity(array $operation, int $transactionId): array
+    {
+        $operation['transaction_id'] = $transactionId;
+        $operation['transaction_uuid'] = 'fc-transaction-' . $transactionId;
+        $operation['idempotency_key'] = YSHelcimIdempotency::generate(
+            (string) $operation['operation_type'],
+            $operation['transaction_uuid'],
+            (int) $operation['amount'],
+            (string) $operation['payment_mode'],
+            (string) $operation['operation_uuid']
+        );
 
         return $operation;
     }

@@ -189,13 +189,15 @@ final class YSHelcimPurchaseCoordinator {
 				if ( YSHelcimOperationState::REMOTE_SUCCEEDED === $remote_status ) {
 					return self::result( $attempt, self::ATTENTION_REQUIRED, 'transaction_already_paid', true );
 				}
+				if ( YSHelcimOperationState::REMOTE_CANCELED === $remote_status ) {
+					return self::purchaseSuccessorBlocked();
+				}
 				if (
 					! in_array(
 						$remote_status,
 						array(
 							YSHelcimOperationState::REMOTE_DECLINED,
 							YSHelcimOperationState::REMOTE_FAILED,
-							YSHelcimOperationState::REMOTE_CANCELED,
 							YSHelcimOperationState::REMOTE_EXPIRED,
 						),
 						true
@@ -430,6 +432,10 @@ final class YSHelcimPurchaseCoordinator {
 
 			if ( YSHelcimOperationState::REMOTE_SUCCEEDED === $remote_status ) {
 				if ( $provider_id !== YSHelcimTransactionId::normalize( $row['vendor_transaction_id'] ?? null ) ) {
+					if ( ! $this->persistBindingMismatch( $row, 'A different provider transaction is already bound.', $provider_id ) ) {
+						$current = $this->operations->findByUuid( $operation_uuid );
+						return self::result( $current ?? $row, self::ATTENTION_REQUIRED, 'journal_outcome_unpersisted', true );
+					}
 					return self::result( $row, self::ATTENTION_REQUIRED, 'provider_id_mismatch', true );
 				}
 
@@ -468,6 +474,11 @@ final class YSHelcimPurchaseCoordinator {
 
 		if ( YSHelcimOperationState::REMOTE_DECLINED === $remote_status ) {
 			return self::result( $row, self::DECLINED, 'provider_declined', true );
+		}
+		if ( YSHelcimOperationState::REMOTE_CANCELED === $remote_status ) {
+			// The quarantined checkout may still receive exact late proof. A repeated
+			// exact decline is acknowledged without opening a successor session.
+			return self::result( $row, YSHelcimOperationState::REMOTE_CANCELED, 'late_decline_changes_nothing', true );
 		}
 		if ( ! in_array( $remote_status, array( YSHelcimOperationState::REMOTE_PROCESSING, YSHelcimOperationState::REMOTE_INDETERMINATE ), true ) ) {
 			return self::result( $row, self::ATTENTION_REQUIRED, 'attempt_status_conflict', true );
@@ -525,23 +536,48 @@ final class YSHelcimPurchaseCoordinator {
 	 * Persist a binding mismatch so it survives the request and reaches an
 	 * administrator: provider money moved but the local records point elsewhere.
 	 *
-	 * Only a pending local status is downgraded (the CAS inside recordLocalFailure
-	 * refuses everything else), so an already-applied binding is never touched. The
-	 * durable local_failed + error row is what the attention scan surfaces.
+	 * A pending local status becomes failed. An already-applied binding keeps its
+	 * payment state and provider ID while receiving durable anomaly fields. The
+	 * caller must treat false as an unpersisted financial outcome so webhook retry
+	 * remains active.
 	 */
-	private function persistBindingMismatch( array $row, string $message ): void {
-		if ( YSHelcimOperationState::LOCAL_PENDING !== (string) ( $row['local_status'] ?? '' ) ) {
-			return;
+	private function persistBindingMismatch( array $row, string $message, ?string $observed_provider_id = null ): bool {
+		$observed_provider_id = YSHelcimTransactionId::normalize( $observed_provider_id );
+		if ( null !== $observed_provider_id ) {
+			$message .= ' Observed provider transaction ID: ' . $observed_provider_id . '.';
+		}
+		$local_status = (string) ( $row['local_status'] ?? '' );
+		if ( YSHelcimOperationState::LOCAL_APPLIED === $local_status ) {
+			$provider_id = YSHelcimTransactionId::normalize( $row['vendor_transaction_id'] ?? null );
+			if ( null === $provider_id ) {
+				return false;
+			}
+			try {
+				$persisted = $this->operations->recordAppliedProviderMismatch(
+					strtolower( (string) ( $row['operation_uuid'] ?? '' ) ),
+					$provider_id,
+					$message
+				);
+			} catch ( \Throwable $exception ) {
+				unset( $exception );
+				return false;
+			}
+			return true === $persisted;
+		}
+		if ( YSHelcimOperationState::LOCAL_PENDING !== $local_status ) {
+			return false;
 		}
 		try {
-			$this->operations->recordLocalFailure(
+			$persisted = $this->operations->recordLocalFailure(
 				strtolower( (string) ( $row['operation_uuid'] ?? '' ) ),
 				'provider_id_mismatch',
 				$message
 			);
 		} catch ( \Throwable $exception ) {
 			unset( $exception );
+			return false;
 		}
+		return true === $persisted;
 	}
 
 	/** @return array<string, mixed> */
@@ -557,14 +593,26 @@ final class YSHelcimPurchaseCoordinator {
 		}
 
 		if ( null !== $incoming_id && ! hash_equals( $provider_id, $incoming_id ) ) {
-			$this->persistBindingMismatch( $row, 'A different provider transaction is already bound.' );
+			if ( ! $this->persistBindingMismatch( $row, 'A different provider transaction is already bound.', $incoming_id ) ) {
+				$current = $this->operations->findByUuid( (string) $row['operation_uuid'] );
+				return self::result( $current ?? $row, self::ATTENTION_REQUIRED, 'journal_outcome_unpersisted', $replayed );
+			}
 			return self::result( $row, self::ATTENTION_REQUIRED, 'provider_id_mismatch', $replayed );
 		}
 
 		$local_status = (string) ( $row['local_status'] ?? '' );
 		$inspection = $this->inspectLocalBinding( $operation, $row, $provider_id );
 		if ( 'mismatch' === $inspection['status'] ) {
-			$this->persistBindingMismatch( $row, 'A different provider transaction is already present locally.' );
+			if (
+				! $this->persistBindingMismatch(
+					$row,
+					'A different provider transaction is already present locally.',
+					YSHelcimTransactionId::normalize( $inspection['provider_transaction_id'] ?? null )
+				)
+			) {
+				$current = $this->operations->findByUuid( (string) $row['operation_uuid'] );
+				return self::result( $current ?? $row, self::ATTENTION_REQUIRED, 'journal_outcome_unpersisted', $replayed );
+			}
 			return self::result( $row, self::ATTENTION_REQUIRED, 'provider_id_mismatch', $replayed );
 		}
 		if ( 'unknown' === $inspection['status'] ) {
@@ -885,6 +933,13 @@ final class YSHelcimPurchaseCoordinator {
 		return new \WP_Error(
 			'ys_helcim_operation_conflict',
 			__( 'The purchase operation changed while it was being claimed.', 'ys-helcim-via-fluentcart' )
+		);
+	}
+
+	private static function purchaseSuccessorBlocked(): \WP_Error {
+		return new \WP_Error(
+			'ys_helcim_purchase_successor_blocked',
+			__( 'A previous payment attempt for this transaction still requires exact reconciliation. No new payment session was opened; please contact the store.', 'ys-helcim-via-fluentcart' )
 		);
 	}
 }

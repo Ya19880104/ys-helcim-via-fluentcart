@@ -982,6 +982,55 @@ final class BootstrapSchemaGateTest extends TestCase
 		self::assertStringNotContainsString('secret', strtolower($html));
 	}
 
+	public function testAppliedProviderMismatchAttentionDoesNotOfferAMisleadingRecoveryButton(): void
+	{
+		$operationUuid = '00000000-0000-4000-8000-000000000920';
+		$operations = new class($operationUuid) {
+			public function __construct(private string $uuid) {}
+			public function findPurchasesNeedingAttention(string $gateway, int $limit, int $maxAttempts): array
+			{
+				if ('ys_helcim' !== $gateway) {
+					return [];
+				}
+				return [[
+					'operation_uuid' => $this->uuid,
+					'gateway' => $gateway,
+					'order_id' => 120,
+					'transaction_id' => 220,
+					'remote_status' => 'succeeded',
+					'local_status' => 'applied',
+					'local_error_code' => 'provider_id_mismatch',
+					'local_error_message' => 'A different provider transaction is already bound. Observed provider transaction ID: 51177998.',
+					'recovery_attempt_count' => 0,
+					'next_recovery_at' => null,
+					'updated_at' => '2026-07-21 00:00:00',
+				]];
+			}
+		};
+		$bootstrap = YSHelcimFctBootstrap::init();
+		(new \ReflectionProperty($bootstrap, 'hosted_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => new \stdClass()]
+		);
+		(new \ReflectionProperty($bootstrap, 'inline_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => new \stdClass()]
+		);
+
+		ob_start();
+		$bootstrap->renderHostedPurchaseAttentionNotice();
+		$html = (string) ob_get_clean();
+
+		self::assertStringContainsString($operationUuid, $html);
+		self::assertStringContainsString('succeeded:applied', $html);
+		self::assertStringContainsString('provider_id_mismatch', $html);
+		self::assertStringContainsString('51177998', $html);
+		self::assertStringNotContainsString('These payments remain locked', $html);
+		self::assertStringContainsString('Manual financial review is required', $html);
+		self::assertStringNotContainsString('Check Helcim once', $html);
+		self::assertStringNotContainsString('ys_helcim_retry_hosted_recovery', $html);
+	}
+
 	public function testUnscheduledAttentionNoticeOffersManualCheckBeforeCronRuns(): void
 	{
 		$operationUuid = '00000000-0000-4000-8000-000000000914';
@@ -1087,6 +1136,8 @@ final class BootstrapSchemaGateTest extends TestCase
 			{
 				return [
 					'operation_uuid' => $this->uuid,
+					'operation_type' => 'purchase',
+					'gateway' => 'ys_helcim',
 					'remote_status' => 'canceled',
 					'local_status' => 'pending',
 					'active_scope_key' => null,
@@ -1122,6 +1173,102 @@ final class BootstrapSchemaGateTest extends TestCase
 		self::assertSame('no_late_proof_found', $result['reason']);
 		// A released checkout owns no scope and no lease budget: the check must
 		// bypass the lease machinery entirely, never report "not paused".
+		self::assertSame([['recover', $operationUuid]], $events);
+	}
+
+	public function testManualCanceledRecoveryRejectsARowOwnedByAnotherGateway(): void
+	{
+		$events = [];
+		$operationUuid = '00000000-0000-4000-8000-000000000918';
+		$operations = new class {
+			public function findByUuid(string $uuid): array
+			{
+				return [
+					'operation_uuid' => $uuid,
+					'operation_type' => 'purchase',
+					'gateway' => 'ys_helcim_js',
+					'remote_status' => 'canceled',
+					'local_status' => 'pending',
+					'active_scope_key' => null,
+				];
+			}
+			public function claimAttentionPurchaseRecovery(): bool
+			{
+				return false;
+			}
+			public function claimPausedHostedRecovery(): bool
+			{
+				return false;
+			}
+		};
+		$service = new class($events) {
+			public function __construct(private array &$events) {}
+			public function recover(string $uuid): array
+			{
+				$this->events[] = ['recover', $uuid];
+				return ['status' => 'canceled'];
+			}
+		};
+		$bootstrap = YSHelcimFctBootstrap::init();
+		(new \ReflectionProperty($bootstrap, 'hosted_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => $service]
+		);
+
+		$result = $bootstrap->retryHostedPurchaseManually($operationUuid);
+
+		self::assertInstanceOf(\WP_Error::class, $result);
+		self::assertSame('ys_helcim_hosted_recovery_not_paused', $result->get_error_code());
+		self::assertSame([], $events, 'the wrong gateway runtime must never query Helcim');
+	}
+
+	public function testManualScopeFreePersistedSuccessGoesStraightToLocalRecovery(): void
+	{
+		$events = [];
+		$operationUuid = '00000000-0000-4000-8000-000000000919';
+		$operations = new class($events) {
+			public function __construct(private array &$events) {}
+			public function findByUuid(string $uuid): array
+			{
+				return [
+					'operation_uuid' => $uuid,
+					'operation_type' => 'purchase',
+					'gateway' => 'ys_helcim',
+					'remote_status' => 'succeeded',
+					'local_status' => 'pending',
+					'vendor_transaction_id' => '51178919',
+					'active_scope_key' => null,
+				];
+			}
+			public function claimAttentionPurchaseRecovery(): bool
+			{
+				$this->events[] = ['claim-attention'];
+				return false;
+			}
+			public function claimPausedHostedRecovery(): bool
+			{
+				$this->events[] = ['claim-paused'];
+				return false;
+			}
+		};
+		$service = new class($events) {
+			public function __construct(private array &$events) {}
+			public function recover(string $uuid): array
+			{
+				$this->events[] = ['recover', $uuid];
+				return ['status' => 'succeeded', 'remote_status' => 'succeeded', 'local_status' => 'applied'];
+			}
+		};
+		$bootstrap = YSHelcimFctBootstrap::init();
+		(new \ReflectionProperty($bootstrap, 'hosted_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => $service]
+		);
+
+		$result = $bootstrap->retryHostedPurchaseManually($operationUuid);
+
+		self::assertIsArray($result);
+		self::assertSame('succeeded', $result['status']);
 		self::assertSame([['recover', $operationUuid]], $events);
 	}
 

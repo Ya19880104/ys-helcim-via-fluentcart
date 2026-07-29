@@ -174,6 +174,76 @@ final class WebhookPurchaseReconcilerTest extends TestCase
         self::assertSame([self::OPERATION_UUID, 'succeeded'], $calls[0]);
     }
 
+    public function testExactLateDeclineProofAcknowledgesAReleasedCanceledHostedCheckout(): void
+    {
+        $row = $this->operation('ys_helcim');
+        $row['remote_status'] = 'canceled';
+        $row['active_scope_key'] = null;
+        $calls = [];
+        $runtime = new class($calls) {
+            public function __construct(private array &$calls) {}
+            public function reconcileProviderProof(object $transaction, string $uuid, array $proof): array
+            {
+                $this->calls[] = [$uuid, $proof['outcome'] ?? null];
+                return [
+                    'status' => 'canceled',
+                    'remote_status' => 'canceled',
+                    'local_status' => 'pending',
+                    'error_code' => 'late_decline_changes_nothing',
+                ];
+            }
+        };
+        $reconciler = new YSHelcimWebhookPurchaseReconciler(
+            static fn (): array => $row,
+            static fn (): object => (object) ['id' => 20],
+            static fn (): object => $runtime
+        );
+        $proof = $this->proof();
+        $proof['status'] = 'DECLINED';
+
+        $result = $reconciler->reconcile(
+            $proof,
+            '51177123',
+            [['gateway' => 'ys_helcim', 'mode' => 'test']]
+        );
+
+        self::assertSame(['code' => 200, 'message' => 'payment reconciled'], $result);
+        self::assertSame([[self::OPERATION_UUID, 'declined']], $calls);
+    }
+
+    public function testApprovedProofCannotBeAcknowledgedAsACanceledLateDecline(): void
+    {
+        $row = $this->operation('ys_helcim');
+        $row['remote_status'] = 'canceled';
+        $row['active_scope_key'] = null;
+        $runtime = new class {
+            public function reconcileProviderProof(): array
+            {
+                return [
+                    'status' => 'canceled',
+                    'remote_status' => 'canceled',
+                    'local_status' => 'pending',
+                    'error_code' => 'late_decline_changes_nothing',
+                ];
+            }
+        };
+        $reconciler = new YSHelcimWebhookPurchaseReconciler(
+            static fn (): array => $row,
+            static fn (): object => (object) ['id' => 20],
+            static fn (): object => $runtime
+        );
+        $proof = $this->proof();
+
+        self::assertSame(
+            ['code' => 409, 'message' => 'payment outcome requires review'],
+            $reconciler->reconcile(
+                $proof,
+                '51177123',
+                [['gateway' => 'ys_helcim', 'mode' => 'test']]
+            )
+        );
+    }
+
     public function testUnknownInvoiceCorrelationNeverSelectsByAmountOrRecency(): void
     {
         $operationReads = 0;
@@ -287,6 +357,27 @@ final class WebhookPurchaseReconcilerTest extends TestCase
                 [['gateway' => 'ys_helcim_js', 'mode' => 'test']]
             )
         );
+
+        $appliedMismatchJournalFailure = new class {
+            public function reconcileProviderProof(): array
+            {
+                return [
+                    'status' => 'attention_required',
+                    'remote_status' => 'succeeded',
+                    'local_status' => 'applied',
+                    'error_code' => 'journal_outcome_unpersisted',
+                ];
+            }
+        };
+        self::assertSame(
+            ['code' => 503, 'message' => 'payment reconciliation incomplete'],
+            $this->reconciler($appliedMismatchJournalFailure)->reconcile(
+                $this->proof(),
+                '51177123',
+                [['gateway' => 'ys_helcim_js', 'mode' => 'test']]
+            ),
+            'A failed anomaly write must remain retryable even though the original charge is locally applied.'
+        );
     }
 
     private function reconciler(object $runtime, ?object $transaction = null): YSHelcimWebhookPurchaseReconciler
@@ -300,10 +391,10 @@ final class WebhookPurchaseReconcilerTest extends TestCase
     }
 
     /** @return array<string,mixed> */
-    private function operation(): array
+    private function operation(string $gateway = 'ys_helcim_js'): array
     {
         $purchase = YSHelcimPurchaseOperation::fromTransaction([
-            'gateway' => 'ys_helcim_js',
+            'gateway' => $gateway,
             'order_id' => 10,
             'transaction_id' => 20,
             'transaction_uuid' => 'fc-transaction-123',

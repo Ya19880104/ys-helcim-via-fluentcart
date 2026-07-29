@@ -44,8 +44,9 @@ final class YSHelcimOperationState {
 			self::REMOTE_DECLINED,
 			self::REMOTE_FAILED,
 			self::REMOTE_INDETERMINATE,
-			// A checkout whose Helcim session provably expired unclaimed may be
-			// released; canceled keeps the door open for exact late approval proof.
+			// A checkout whose Helcim session expired with no indexed transaction may
+			// be quarantined; canceled keeps the door open for exact late approval
+			// proof, but it deliberately keeps the purchase scope.
 			self::REMOTE_CANCELED,
 		),
 		self::REMOTE_INDETERMINATE => array(
@@ -58,7 +59,7 @@ final class YSHelcimOperationState {
 		self::REMOTE_DECLINED      => array(),
 		self::REMOTE_FAILED        => array(),
 		// Exact late approval proof (webhook or recovery lookup) may still complete a
-		// released checkout, so a real charge can never become an unrecordable orphan.
+		// quarantined checkout, so a real charge can never become an unrecordable orphan.
 		self::REMOTE_CANCELED      => array( self::REMOTE_SUCCEEDED ),
 		self::REMOTE_EXPIRED       => array(),
 	);
@@ -86,11 +87,14 @@ final class YSHelcimOperationState {
 	}
 
 	/**
-	 * A scope is reusable only after definite no-charge proof or full local apply.
+	 * A scope is reusable only after definite no-charge proof, or after a non-purchase
+	 * operation is fully applied. Successful purchases retain their family reservation
+	 * permanently so a stale empty history read cannot insert a second provider session.
 	 */
-	public static function shouldReleaseScope( string $remote_status, string $local_status ): bool {
+	public static function shouldReleaseScope( string $remote_status, string $local_status, string $operation_type ): bool {
 		if ( self::REMOTE_SUCCEEDED === $remote_status ) {
-			return self::LOCAL_APPLIED === $local_status;
+			return self::LOCAL_APPLIED === $local_status
+				&& in_array( $operation_type, array( 'refund', 'reverse' ), true );
 		}
 
 		return in_array(
@@ -98,7 +102,6 @@ final class YSHelcimOperationState {
 			array(
 				self::REMOTE_DECLINED,
 				self::REMOTE_FAILED,
-				self::REMOTE_CANCELED,
 				self::REMOTE_EXPIRED,
 			),
 			true

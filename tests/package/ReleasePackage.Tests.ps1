@@ -68,6 +68,12 @@ try {
     & $verifier -ZipPath $first.ZipPath -ManifestPath $first.ManifestPath -SourceRoot $repoRoot
 
     $manifest = Get-Content -Raw -LiteralPath $first.ManifestPath | ConvertFrom-Json
+    $expectedEntryTimestamp = [System.DateTimeOffset]::ParseExact(
+        [string] $manifest.entry_timestamp_utc,
+        'yyyy-MM-ddTHH:mm:ssZ',
+        [System.Globalization.CultureInfo]::InvariantCulture,
+        [System.Globalization.DateTimeStyles]::AssumeUniversal
+    )
     # Read the expected version from the plugin header rather than pinning a literal,
     # so a routine version bump cannot leave this assertion behind and fail the build.
     $pluginHeader = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'ys-helcim-via-fluentcart.php')
@@ -75,7 +81,24 @@ try {
         throw 'Could not read the plugin version from the plugin header.'
     }
     $expectedVersion = $Matches[1]
+    $readmeText = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'README.md')
+    $readmeVersions = @(
+        [regex]::Matches($readmeText, '\b\d+\.\d+\.\d+-rc\.\d+\b') |
+            ForEach-Object { $_.Value } |
+            Sort-Object -Unique
+    )
+    $expectedReadmeVersions = if ($expectedVersion -match '-rc\.\d+$') {
+        @($expectedVersion)
+    } else {
+        @()
+    }
+    Assert-Equal `
+        -Expected ($expectedReadmeVersions -join "`n") `
+        -Actual ($readmeVersions -join "`n") `
+        -Message 'README release-candidate metadata does not exactly match the plugin header.'
     Assert-Equal -Expected $expectedVersion -Actual $manifest.version -Message 'The manifest version does not match the plugin header.'
+    Assert-Equal -Expected 2 -Actual $manifest.schema_version -Message 'The manifest schema does not carry the commit-derived timestamp contract.'
+    Assert-Equal -Expected $false -Actual ($expectedEntryTimestamp.Year -eq 1980) -Message 'The release reused the OPcache-unsafe 1980 timestamp.'
     Assert-Equal -Expected $first.FileCount -Actual $manifest.file_count -Message 'The manifest file count is incorrect.'
     Assert-Equal -Expected $first.Sha256 -Actual $manifest.archive_sha256 -Message 'The manifest archive digest is incorrect.'
 
@@ -181,7 +204,7 @@ try {
     $archive = [System.IO.Compression.ZipFile]::Open($badZip, [System.IO.Compression.ZipArchiveMode]::Update)
     try {
         $entry = $archive.CreateEntry('ys-helcim-via-fluentcart/tests/manual/leak.txt')
-        $entry.LastWriteTime = [System.DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [System.TimeSpan]::Zero)
+        $entry.LastWriteTime = $expectedEntryTimestamp
         $writer = [System.IO.StreamWriter]::new($entry.Open())
         try {
             $writer.Write('must not ship')
@@ -209,7 +232,7 @@ try {
     $archive = [System.IO.Compression.ZipFile]::Open($unexpectedExtensionZip, [System.IO.Compression.ZipArchiveMode]::Update)
     try {
         $entry = $archive.CreateEntry('ys-helcim-via-fluentcart/assets/debug-copy.bak')
-        $entry.LastWriteTime = [System.DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [System.TimeSpan]::Zero)
+        $entry.LastWriteTime = $expectedEntryTimestamp
         $writer = [System.IO.StreamWriter]::new($entry.Open())
         try {
             $writer.Write('runtime backup files must not ship')
@@ -236,7 +259,7 @@ try {
     $archive = [System.IO.Compression.ZipFile]::Open($secretZip, [System.IO.Compression.ZipArchiveMode]::Update)
     try {
         $entry = $archive.CreateEntry('ys-helcim-via-fluentcart/languages/leaked-secret.mo')
-        $entry.LastWriteTime = [System.DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [System.TimeSpan]::Zero)
+        $entry.LastWriteTime = $expectedEntryTimestamp
         $writer = [System.IO.StreamWriter]::new($entry.Open())
         try {
             $writer.Write('binary-prefix' + [char]0 + 'github_pat_' + ('A' * 40))
@@ -264,7 +287,7 @@ try {
     $archive = [System.IO.Compression.ZipFile]::Open($internalNameZip, [System.IO.Compression.ZipArchiveMode]::Update)
     try {
         $entry = $archive.CreateEntry('ys-helcim-via-fluentcart/assets/internal-environment.js')
-        $entry.LastWriteTime = [System.DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [System.TimeSpan]::Zero)
+        $entry.LastWriteTime = $expectedEntryTimestamp
         $writer = [System.IO.StreamWriter]::new($entry.Open())
         try {
             $writer.Write('const environmentName = "dev-client";')
@@ -317,7 +340,7 @@ try {
     $archive = [System.IO.Compression.ZipFile]::Open($ambiguousPathZip, [System.IO.Compression.ZipArchiveMode]::Update)
     try {
         $entry = $archive.CreateEntry('ys-helcim-via-fluentcart/src/./shadow.php')
-        $entry.LastWriteTime = [System.DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [System.TimeSpan]::Zero)
+        $entry.LastWriteTime = $expectedEntryTimestamp
         $writer = [System.IO.StreamWriter]::new($entry.Open())
         try {
             $writer.Write('<?php // ambiguous extraction path')

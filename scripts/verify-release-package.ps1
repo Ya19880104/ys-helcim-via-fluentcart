@@ -32,7 +32,6 @@ $allowedExtensionsByTopDirectory = [ordered]@{
 $deniedFileNames = @('.env', '.env.local', '.gitignore', '.gitattributes')
 $deniedExtensions = @('.crt', '.env', '.key', '.log', '.p12', '.pem', '.pfx', '.sql', '.sqlite', '.zip')
 $textExtensions = @('.css', '.html', '.js', '.json', '.md', '.php', '.po', '.pot', '.svg', '.txt', '.xml')
-$fixedTimestamp = [System.DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [System.TimeSpan]::Zero)
 $secretMarkers = [ordered]@{
     private_key = '-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----'
     github_token = '\b(?:gh[opsu]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})\b'
@@ -44,6 +43,17 @@ $secretMarkers = [ordered]@{
     development_host = '(?i)(?:(?:https?://)?(?:dev|staging)-[a-z0-9-]+(?:\.[a-z0-9-]+)+|\.wppro\.cloud|\.trycloudflare\.com)'
     development_path = '(?i)(?:/var/www/|[A-Z]:\\(?:dev|Users)\\)'
     official_test_card = '\b(?:4124939999999990|5413330089099130|374245001751006)\b'
+}
+
+function Get-DeterministicEntryTimestamp {
+    param([Parameter(Mandatory)][string] $Commit)
+
+    if ($Commit -notmatch '^[0-9a-f]{40}(?:[0-9a-f]{24})?$') {
+        throw 'A valid source commit is required for the archive timestamp.'
+    }
+
+    $slot = [Convert]::ToUInt32($Commit.Substring(0, 7), 16)
+    return [System.DateTimeOffset]::new(2000, 1, 1, 0, 0, 0, [System.TimeSpan]::Zero).AddSeconds([double] $slot * 2)
 }
 
 function Get-BytesSha256 {
@@ -206,6 +216,8 @@ $archivePathsIgnoreCase = [System.Collections.Generic.HashSet[string]]::new([Sys
 $rootEntryFound = $false
 $totalUncompressedBytes = [int64] 0
 $archiveVersion = ''
+$archiveReadmeVersions = @()
+$archiveEntryTimestamp = $null
 
 try {
     foreach ($entry in $archive.Entries) {
@@ -222,9 +234,16 @@ try {
         if (-not $archivePaths.Add($entryName) -or -not $archivePathsIgnoreCase.Add($entryName)) {
             throw "Release archive contains a duplicate path: $entryName"
         }
-        # ZIP stores a DOS wall-clock value without a timezone. .NET attaches
-        # the local offset when reading it, so compare DateTime rather than UTC.
-        if ($entry.LastWriteTime.DateTime -ne $fixedTimestamp.DateTime) {
+        # ZIP stores a DOS wall-clock value without a timezone. All entries must
+        # carry the same commit-derived wall clock, and the legacy 1980 timestamp
+        # is rejected because it can keep OPcache from noticing an update.
+        $entryWallClock = $entry.LastWriteTime.DateTime
+        if ($entryWallClock.Year -lt 2000 -or $entryWallClock.Year -gt 2017) {
+            throw "Release archive contains an unsafe or non-deterministic timestamp: $entryName"
+        }
+        if ($null -eq $archiveEntryTimestamp) {
+            $archiveEntryTimestamp = $entryWallClock
+        } elseif ($entryWallClock -ne $archiveEntryTimestamp) {
             throw "Release archive contains a non-deterministic timestamp: $entryName"
         }
         if ($entryName -eq "$slug/") {
@@ -288,6 +307,14 @@ try {
         }
 
         Assert-NoSecretMarkers -RelativePath $relative -Bytes $bytes
+        if ($relative -eq 'README.md') {
+            $readmeText = [System.Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+            $archiveReadmeVersions = @(
+                [regex]::Matches($readmeText, '\b\d+\.\d+\.\d+-rc\.\d+\b') |
+                    ForEach-Object { $_.Value } |
+                    Sort-Object -Unique
+            )
+        }
         if ($relative -eq 'ys-helcim-via-fluentcart.php') {
             $pluginText = [System.Text.UTF8Encoding]::new($false, $true).GetString($bytes)
             $headerMatch = [regex]::Match($pluginText, '(?m)^\s*\*\s*Version:\s*([^\s]+)\s*$')
@@ -317,6 +344,14 @@ if (-not $rootEntryFound) {
 if ([string]::IsNullOrWhiteSpace($archiveVersion)) {
     throw 'Release archive does not expose a valid plugin version.'
 }
+$expectedReadmeVersions = if ($archiveVersion -match '-rc\.\d+$') {
+    @($archiveVersion)
+} else {
+    @()
+}
+if (($expectedReadmeVersions -join "`n") -ne ($archiveReadmeVersions -join "`n")) {
+    throw 'Release archive README candidate version does not match the packaged plugin.'
+}
 
 foreach ($required in $requiredRootFiles) {
     if (-not $archivePaths.Contains("$slug/$required")) {
@@ -336,7 +371,7 @@ if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
     $resolvedManifest = (Resolve-Path -LiteralPath $ManifestPath).Path
     $manifest = Get-Content -Raw -LiteralPath $resolvedManifest | ConvertFrom-Json
 
-    if ($manifest.schema_version -ne 1 -or $manifest.slug -ne $slug) {
+    if ($manifest.schema_version -ne 2 -or $manifest.slug -ne $slug) {
         throw 'Release manifest schema or slug is invalid.'
     }
     if ($manifest.archive_file -ne "$slug.zip" -or
@@ -346,6 +381,23 @@ if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
     if ([string] $manifest.source_commit -notmatch '^[0-9a-f]{40}(?:[0-9a-f]{24})?$' -or
         $manifest.source_dirty -isnot [bool]) {
         throw 'Release manifest source provenance is invalid.'
+    }
+    try {
+        $manifestEntryTimestamp = [System.DateTimeOffset]::ParseExact(
+            [string] $manifest.entry_timestamp_utc,
+            'yyyy-MM-ddTHH:mm:ssZ',
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal
+        )
+    } catch {
+        throw 'Release manifest entry timestamp is invalid.'
+    }
+    $expectedEntryTimestamp = Get-DeterministicEntryTimestamp -Commit ([string] $manifest.source_commit)
+    if (
+        $manifestEntryTimestamp.DateTime -ne $archiveEntryTimestamp -or
+        $manifestEntryTimestamp.DateTime -ne $expectedEntryTimestamp.DateTime
+    ) {
+        throw 'Release manifest entry timestamp does not match the source commit or ZIP.'
     }
     if ($manifest.version -ne $archiveVersion) {
         throw 'Release manifest version does not match the packaged plugin.'

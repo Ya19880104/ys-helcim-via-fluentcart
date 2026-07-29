@@ -413,7 +413,7 @@ final class YSHelcimPayProcessorTest extends TestCase
      * the release target is canceled (not failed) so exact late proof can still bind.
      * Indeterminate = bounded recovery already observed the expiry.
      */
-    public function testInitializeReleasesAnExpiredIndeterminateBlockerToCanceledAndRetries(): void
+    public function testInitializeQuarantinesAnExpiredIndeterminateBlockerWithoutOpeningASuccessor(): void
     {
         self::assertIsArray($this->processor->initialize($this->paymentInstance()));
         self::assertTrue(
@@ -423,25 +423,28 @@ final class YSHelcimPayProcessorTest extends TestCase
         $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID, [], self::clockAtAge(4200));
         $result = $second->initialize($this->paymentInstance());
 
-        self::assertIsArray($result);
-        self::assertSame(self::SECOND_OPERATION_UUID, $result['payment_data']['operation_uuid']);
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_purchase_successor_blocked', $result->get_error_code());
 
         $blocker = $this->repository->findByUuid(self::OPERATION_UUID);
-        self::assertSame('canceled', $blocker['remote_status'], 'released checkouts stay reachable for late proof');
-        self::assertNull($blocker['active_scope_key']);
+        self::assertSame('canceled', $blocker['remote_status'], 'quarantined checkouts stay reachable for late proof');
+        self::assertNotNull($blocker['active_scope_key'], 'no successor may exist until exact proof resolves the canceled attempt');
         self::assertSame('ys_helcim_session_expired_released', $blocker['remote_error_code']);
-        self::assertNotNull($blocker['next_recovery_at'], 'a released checkout schedules exactly one late-proof follow-up');
+        self::assertNotNull($blocker['next_recovery_at'], 'a quarantined checkout schedules exactly one late-proof follow-up');
 
         $lookups = array_values(array_filter(
             $this->apiCalls,
             static fn (array $call): bool => 'card-transactions' === $call['endpoint']
         ));
-        self::assertCount(2, $lookups, 'release requires two consecutive charge-detection reads');
+        self::assertCount(2, $lookups, 'quarantine requires two consecutive charge-detection reads');
         self::assertSame(self::OPERATION_UUID, $lookups[0]['payload']['invoiceNumber']);
 
-        $fresh = $this->repository->findByUuid(self::SECOND_OPERATION_UUID);
-        self::assertSame('processing', $fresh['remote_status']);
-        self::assertNotNull($fresh['active_scope_key']);
+        self::assertNull($this->repository->findByUuid(self::SECOND_OPERATION_UUID));
+        $sessions = array_values(array_filter(
+            $this->apiCalls,
+            static fn (array $call): bool => 'helcim-pay/initialize' === $call['endpoint']
+        ));
+        self::assertCount(1, $sessions, 'only the expired A session may ever have been issued');
     }
 
     /** An expired blocker with any provider transaction must stay locked and open no new session. */
@@ -613,6 +616,75 @@ final class YSHelcimPayProcessorTest extends TestCase
         );
     }
 
+    /**
+     * A webhook may complete the transaction after resume's outer precheck but
+     * before writeBrowserSession reloads it. Terminal transactions must never
+     * regain browser confirmation material in that interleaving.
+     */
+    public function testResumeCannotResurrectBrowserMetaAfterConcurrentTerminalCompletion(): void
+    {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+
+        $loads = 0;
+        $loader = function (int $transactionId) use (&$loads): ?OrderTransaction {
+            ++$loads;
+            $loaded = OrderTransaction::query()->where('id', $transactionId)->first();
+            self::assertInstanceOf(OrderTransaction::class, $loaded);
+
+            if (3 === $loads) {
+                self::assertTrue($this->repository->transitionRemote(
+                    self::OPERATION_UUID,
+                    'processing',
+                    'succeeded',
+                    ['vendor_transaction_id' => '51177991']
+                ));
+                self::assertTrue($this->repository->claimLocalApplying(self::OPERATION_UUID, 'pending'));
+                self::assertTrue($this->repository->transitionLocal(
+                    self::OPERATION_UUID,
+                    'applying',
+                    'applied',
+                    ['local_transaction_id' => 20]
+                ));
+                $loaded->fill([
+                    'status' => Status::TRANSACTION_SUCCEEDED,
+                    'vendor_charge_id' => '51177991',
+                    'meta' => [],
+                ]);
+                self::assertTrue($loaded->save());
+            }
+
+            return $loaded;
+        };
+
+        $second = $this->scopeAwareProcessor(
+            self::SECOND_OPERATION_UUID,
+            [],
+            null,
+            $loader
+        );
+        $result = $second->initialize($this->paymentInstance());
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_previous_attempt_unresolved', $result->get_error_code());
+
+        $operation = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('succeeded', $operation['remote_status']);
+        self::assertSame('applied', $operation['local_status']);
+        self::assertNotNull($operation['active_scope_key']);
+
+        $transaction = OrderTransaction::allRecords()[20];
+        self::assertSame(Status::TRANSACTION_SUCCEEDED, $transaction['status']);
+        self::assertSame('51177991', $transaction['vendor_charge_id']);
+        foreach ([
+            'ys_helcim_checkout_token',
+            'ys_helcim_secret_token_enc',
+            'ys_helcim_operation_uuid',
+            'ys_helcim_initialized_at',
+        ] as $key) {
+            self::assertArrayNotHasKey($key, $transaction['meta'], $key . ' must not survive terminal completion');
+        }
+    }
+
     /** A malformed envelope (arrays where strings belong) is refused, never coerced. */
     public function testResumeRefusesAMalformedEnvelopeWithNonStringFields(): void
     {
@@ -730,9 +802,11 @@ final class YSHelcimPayProcessorTest extends TestCase
             return;
         }
 
-        self::assertIsArray($result, 'at the expiry boundary the blocker releases and a fresh session opens');
-        self::assertSame(self::SECOND_OPERATION_UUID, $result['payment_data']['operation_uuid']);
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_purchase_successor_blocked', $result->get_error_code());
         self::assertSame('canceled', $this->repository->findByUuid(self::OPERATION_UUID)['remote_status']);
+        self::assertNotNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
+        self::assertNull($this->repository->findByUuid(self::SECOND_OPERATION_UUID));
     }
 
     /** @return array<string, array{0:int,1:string}> */
@@ -742,14 +816,15 @@ final class YSHelcimPayProcessorTest extends TestCase
             'one second inside the resume window (54:59)' => [3299, 'resume'],
             'exactly at the resume boundary (55:00)' => [3300, 'cooling'],
             'one second before expiry (69:59)' => [4199, 'cooling'],
-            'exactly at the expiry boundary (70:00)' => [4200, 'released'],
+            'exactly at the expiry boundary (70:00)' => [4200, 'quarantined'],
         ];
     }
 
     private function scopeAwareProcessor(
         string $operationUuid,
         array $lookupResponse = [],
-        ?int $nowEpoch = null
+        ?int $nowEpoch = null,
+        ?callable $transactionLoader = null
     ): YSHelcimPayProcessor {
         $now = $nowEpoch ?? strtotime('2026-07-22 00:05:00 UTC');
 
@@ -772,6 +847,7 @@ final class YSHelcimPayProcessorTest extends TestCase
                     'secretToken' => self::SECRET_TOKEN,
                 ];
             },
+            transaction_loader: $transactionLoader,
             uuid_factory: static fn (): string => $operationUuid,
             confirm_token_factory: static fn (): string => self::SECOND_CONFIRM_TOKEN,
             initialization_clock: static fn (): int => $now

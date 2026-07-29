@@ -289,8 +289,9 @@ class YSHelcimPayProcessor {
 	 *    (Helcim allows at most one successful charge per token, so a second tab can
 	 *    never double-charge) after rotating the one-time confirm token so only the
 	 *    newest browser can confirm.
-	 * 2. RELEASE — a session past Helcim's own validity window is verified and moved
-	 *    to canceled by the recovery service, then initialization retries once.
+	 * 2. QUARANTINE — a session past Helcim's own validity window is verified and
+	 *    moved to canceled while retaining the same transaction scope. No successor
+	 *    provider session is opened because empty lookups are not no-charge proof.
 	 * 3. Anything else (identity drift, provider transaction found, gray zone between
 	 *    resume window and expiry, lookup failure) keeps the scope locked with an
 	 *    honest shopper-facing message.
@@ -359,9 +360,12 @@ class YSHelcimPayProcessor {
 				return $cooling();
 			}
 
-			$outcome = $this->releaseExpiredBlocker( $blocker_uuid );
+			$outcome = $this->quarantineExpiredBlocker( $blocker_uuid );
 			if ( 'canceled' === $outcome ) {
-				return $this->initialization->begin( $identity );
+				return self::error(
+					'ys_helcim_purchase_successor_blocked',
+					'A previous payment attempt for this transaction still requires exact reconciliation. No new payment session was opened; please contact the store.'
+				);
 			}
 			if ( 'live' === $outcome ) {
 				return $cooling();
@@ -539,6 +543,11 @@ class YSHelcimPayProcessor {
 			$snapshot_hash
 		);
 		if ( true !== $rotated ) {
+			// A webhook/recovery worker may have completed the transaction after
+			// writeBrowserSession() verified it but before this CAS. Preserve the
+			// metadata for a concurrent resume winner while the transaction remains
+			// pending; remove it only when the local transaction is already terminal.
+			$this->purgeBrowserSessionMetaIfTerminal( (int) $transaction->id );
 			return null;
 		}
 
@@ -572,11 +581,11 @@ class YSHelcimPayProcessor {
 	}
 
 	/**
-	 * Ask the recovery service to verify and release one expired blocking operation.
+	 * Ask the recovery service to verify and quarantine one expired blocker.
 	 *
 	 * @return string 'canceled' | 'found' | 'unavailable'
 	 */
-	private function releaseExpiredBlocker( string $blocker_uuid ): string {
+	private function quarantineExpiredBlocker( string $blocker_uuid ): string {
 		try {
 
 			$service = new YSHelcimPayRecoveryService(
@@ -612,7 +621,7 @@ class YSHelcimPayProcessor {
 			$result = $service->releaseExpiredCheckout( $blocker_uuid );
 			if ( is_wp_error( $result ) ) {
 				YSHelcimLogger::info(
-					'Blocked hosted scope could not be released',
+					'Blocked hosted scope could not be quarantined',
 					array(
 						'operation_uuid' => $blocker_uuid,
 						'error_code'     => $result->get_error_code(),
@@ -624,7 +633,7 @@ class YSHelcimPayProcessor {
 			$status = (string) ( $result['status'] ?? '' );
 			if ( 'canceled' === $status ) {
 				YSHelcimLogger::info(
-					'Released an expired hosted attempt so checkout can continue',
+					'Quarantined an expired hosted attempt; no successor session was opened',
 					array( 'operation_uuid' => $blocker_uuid )
 				);
 			}
@@ -763,6 +772,13 @@ class YSHelcimPayProcessor {
 		if ( is_wp_error( $fresh ) || (string) $fresh->uuid !== (string) $transaction->uuid ) {
 			return false;
 		}
+		if (
+			Status::TRANSACTION_PENDING !== (string) $fresh->status ||
+			! self::isEmptyProviderId( $fresh->vendor_charge_id ?? null )
+		) {
+			$this->purgeBrowserSessionMetaIfTerminal( (int) $transaction->id );
+			return false;
+		}
 		$meta = is_array( $fresh->meta ?? null ) ? $fresh->meta : array();
 		unset( $meta['ys_helcim_card_token'] );
 		$meta[ self::META_CHECKOUT_TOKEN ] = (string) $session['checkout_token'];
@@ -784,14 +800,37 @@ class YSHelcimPayProcessor {
 		if (
 			true !== $saved ||
 			! $verified instanceof OrderTransaction ||
+			(string) $verified->uuid !== (string) $transaction->uuid ||
+			Status::TRANSACTION_PENDING !== (string) $verified->status ||
+			! self::isEmptyProviderId( $verified->vendor_charge_id ?? null ) ||
 			! hash_equals( (string) $session['checkout_token'], (string) ( $verified_meta[ self::META_CHECKOUT_TOKEN ] ?? '' ) ) ||
 			! hash_equals( $secret_ciphertext, (string) ( $verified_meta[ self::META_SECRET_TOKEN ] ?? '' ) ) ||
 			! hash_equals( (string) $session['operation_uuid'], (string) ( $verified_meta[ self::META_OPERATION_UUID ] ?? '' ) )
 		) {
+			$this->purgeBrowserSessionMetaIfTerminal( (int) $transaction->id );
 			return false;
 		}
 
 		return true;
+	}
+
+	/**
+	 * Remove browser confirmation material only after the exact local transaction
+	 * is provably no longer an unbound pending charge.
+	 */
+	private function purgeBrowserSessionMetaIfTerminal( int $transaction_id ): void {
+		$fresh = $this->loadExactTransaction( $transaction_id );
+		if (
+			is_wp_error( $fresh ) ||
+			(
+				Status::TRANSACTION_PENDING === (string) $fresh->status &&
+				self::isEmptyProviderId( $fresh->vendor_charge_id ?? null )
+			)
+		) {
+			return;
+		}
+
+		$this->purgeUnexposedSessionMeta( $transaction_id );
 	}
 
 	/** @return \WP_Error */

@@ -754,6 +754,181 @@ final class PurchaseCoordinatorTest extends TestCase
         self::assertSame(0, $binderCalls);
     }
 
+    public function testWebhookStrictDeclineOnReleasedCheckoutIsAnAcknowledgedNoOp(): void
+    {
+        $providerCalls = 0;
+        $binderCalls = 0;
+        $coordinator = $this->coordinator(
+            static function () use (&$providerCalls): never {
+                ++$providerCalls;
+                throw new \RuntimeException('timeout');
+            },
+            static function () use (&$binderCalls): array {
+                ++$binderCalls;
+                return ['bound' => true, 'provider_transaction_id' => '51177123'];
+            }
+        );
+        $coordinator->execute($this->transaction(), 'card-token-secret');
+        self::assertTrue($this->repository->transitionRemote(
+            self::OPERATION_UUID,
+            'indeterminate',
+            'canceled',
+            ['error_code' => 'ys_helcim_session_expired_released']
+        ));
+
+        $reconciled = $coordinator->reconcileProviderProof(
+            $this->transaction(),
+            self::OPERATION_UUID,
+            self::correlatedProof(self::declinedResponse(), self::OPERATION_UUID)
+        );
+
+        self::assertSame('canceled', $reconciled['status']);
+        self::assertSame('canceled', $reconciled['remote_status']);
+        self::assertSame('pending', $reconciled['local_status']);
+        self::assertSame('late_decline_changes_nothing', $reconciled['error_code']);
+        self::assertSame(1, $providerCalls);
+        self::assertSame(0, $binderCalls);
+    }
+
+    public function testCanceledAttemptCannotOpenASecondProviderMutationForTheSameTransaction(): void
+    {
+        $providerCalls = 0;
+        $coordinator = $this->coordinator(
+            static function () use (&$providerCalls): \WP_Error|array {
+                ++$providerCalls;
+                return 1 === $providerCalls
+                    ? new \WP_Error('timeout', 'Unknown provider response')
+                    : self::approvedResponse('51177998');
+            },
+            static fn (array $identity, string $providerId): array => [
+                'bound' => true,
+                'provider_transaction_id' => $providerId,
+            ]
+        );
+        $first = $coordinator->execute($this->transaction(), 'first-card-token');
+        self::assertSame('indeterminate', $first['status']);
+        self::assertTrue($this->repository->transitionRemote(
+            self::OPERATION_UUID,
+            'indeterminate',
+            'canceled',
+            ['error_code' => 'ys_helcim_session_expired_released']
+        ));
+
+        $successor = $coordinator->execute($this->transaction(), 'second-card-token');
+
+        self::assertInstanceOf(\WP_Error::class, $successor);
+        self::assertSame('ys_helcim_purchase_successor_blocked', $successor->get_error_code());
+        self::assertSame(1, $providerCalls, 'No B provider call may exist while A can still receive late approval proof.');
+        self::assertCount(1, $this->database->allRows());
+        self::assertSame('canceled', $this->repository->findByUuid(self::OPERATION_UUID)['remote_status']);
+        self::assertNotNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
+    }
+
+    public function testLateApprovalProviderMismatchIsPersistedFromTheSucceededFastPath(): void
+    {
+        $coordinator = $this->coordinator(
+            static fn (): \WP_Error => new \WP_Error('timeout', 'Unknown provider response'),
+            static fn (): array => ['bound' => true, 'provider_transaction_id' => '51177123']
+        );
+        $coordinator->execute($this->transaction(), 'card-token-secret');
+        self::assertTrue($this->repository->transitionRemote(
+            self::OPERATION_UUID,
+            'indeterminate',
+            'canceled',
+            ['error_code' => 'ys_helcim_session_expired_released']
+        ));
+        self::assertTrue($this->repository->transitionRemote(
+            self::OPERATION_UUID,
+            'canceled',
+            'succeeded',
+            ['vendor_transaction_id' => '51177123']
+        ));
+
+        $result = $coordinator->reconcileProviderProof(
+            $this->transaction(),
+            self::OPERATION_UUID,
+            self::correlatedProof(self::approvedResponse('51177999'), self::OPERATION_UUID)
+        );
+
+        self::assertSame('attention_required', $result['status']);
+        self::assertSame('provider_id_mismatch', $result['error_code']);
+        $row = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('succeeded', $row['remote_status']);
+        self::assertSame('failed', $row['local_status']);
+        self::assertSame('provider_id_mismatch', $row['local_error_code']);
+        self::assertNotNull($row['active_scope_key'], 'A proven but locally mismatched charge must keep the purchase quarantined.');
+    }
+
+    public function testAppliedPurchasePersistsASecondProviderIdAsAnAttentionAnomaly(): void
+    {
+        $coordinator = $this->coordinator(
+            static fn (): array => self::approvedResponse('51177123'),
+            static fn (array $identity, string $providerId): array => [
+                'bound' => true,
+                'provider_transaction_id' => $providerId,
+            ]
+        );
+        $first = $coordinator->execute($this->transaction(), 'card-token-secret');
+        self::assertSame('succeeded', $first['status']);
+
+        $mismatch = $coordinator->reconcileProviderProof(
+            $this->transaction(),
+            self::OPERATION_UUID,
+            self::correlatedProof(self::approvedResponse('51177998'), self::OPERATION_UUID)
+        );
+
+        self::assertSame('attention_required', $mismatch['status']);
+        self::assertSame('provider_id_mismatch', $mismatch['error_code']);
+        $row = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('succeeded', $row['remote_status']);
+        self::assertSame('applied', $row['local_status'], 'the already applied charge must never be downgraded');
+        self::assertSame('51177123', $row['vendor_transaction_id']);
+        self::assertSame('provider_id_mismatch', $row['local_error_code']);
+        self::assertStringContainsString('51177998', $row['local_error_message']);
+        self::assertNotNull($row['active_scope_key'], 'An applied purchase keeps its durable family reservation.');
+
+        $attention = $this->repository->findPurchasesNeedingAttention('ys_helcim_js', 10, 7);
+        self::assertIsArray($attention);
+        self::assertContains(self::OPERATION_UUID, array_column($attention, 'operation_uuid'));
+    }
+
+    public function testAppliedSecondProviderIdReportsUnpersistedJournalAndWebhookRetryHealsIt(): void
+    {
+        $coordinator = $this->coordinator(
+            static fn (): array => self::approvedResponse('51177123'),
+            static fn (array $identity, string $providerId): array => [
+                'bound' => true,
+                'provider_transaction_id' => $providerId,
+            ]
+        );
+        self::assertSame('succeeded', $coordinator->execute($this->transaction(), 'card-token-secret')['status']);
+
+        $proof = self::correlatedProof(self::approvedResponse('51177998'), self::OPERATION_UUID);
+        $this->database->failNextUpdate = true;
+        $unpersisted = $coordinator->reconcileProviderProof(
+            $this->transaction(),
+            self::OPERATION_UUID,
+            $proof
+        );
+
+        self::assertSame('attention_required', $unpersisted['status']);
+        self::assertSame('journal_outcome_unpersisted', $unpersisted['error_code']);
+        $stale = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('applied', $stale['local_status']);
+        self::assertNull($stale['local_error_code']);
+
+        $healed = $coordinator->reconcileProviderProof(
+            $this->transaction(),
+            self::OPERATION_UUID,
+            $proof
+        );
+        self::assertSame('attention_required', $healed['status']);
+        self::assertSame('provider_id_mismatch', $healed['error_code']);
+        $stored = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('provider_id_mismatch', $stored['local_error_code']);
+        self::assertStringContainsString('51177998', $stored['local_error_message']);
+    }
+
     public function testWebhookProofCannotBeAppliedToWrongAttemptOrDriftedIdentity(): void
     {
         $providerCalls = 0;

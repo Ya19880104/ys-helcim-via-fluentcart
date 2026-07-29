@@ -24,6 +24,7 @@ use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationState;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOutboxRepository;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOutboxWorker;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimStoragePreflight;
+use YangSheep\Helcim\FluentCart\Support\YSHelcimTransactionId;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimLocalRefundRecorder;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimNativeRefundVeto;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundContextLoader;
@@ -555,10 +556,10 @@ final class YSHelcimFctBootstrap {
 	}
 
 	/**
-	 * One-shot automatic late-proof check for released (canceled) hosted checkouts.
+	 * One-shot automatic late-proof check for quarantined hosted checkouts.
 	 *
-	 * Each released checkout is scheduled exactly one follow-up lookup at release
-	 * time; an approval indexed after the release reads still completes locally,
+	 * Each quarantine is scheduled exactly one follow-up lookup when established;
+	 * an approval indexed after the charge-detection reads still completes locally,
 	 * while any other outcome simply consumes the schedule. Webhooks and the manual
 	 * administrator check remain available afterwards.
 	 */
@@ -594,7 +595,7 @@ final class YSHelcimFctBootstrap {
 			if ( is_wp_error( $consumed ) ) {
 				YSHelcimLogger::log(
 					'ERROR',
-					'Released-checkout follow-up schedule could not be consumed',
+					'Quarantined-checkout follow-up schedule could not be consumed',
 					array( 'operation_uuid' => $operation_uuid, 'error_code' => $consumed->get_error_code() )
 				);
 				continue;
@@ -605,7 +606,7 @@ final class YSHelcimFctBootstrap {
 			$result = $runtime['service']->recover( $operation_uuid );
 			if ( is_wp_error( $result ) ) {
 				YSHelcimLogger::info(
-					'Released-checkout late-proof check did not resolve',
+					'Quarantined-checkout late-proof check did not resolve',
 					array( 'operation_uuid' => $operation_uuid, 'error_code' => $result->get_error_code() )
 				);
 			}
@@ -652,19 +653,35 @@ final class YSHelcimFctBootstrap {
 			return $runtime;
 		}
 
-		// A released expired checkout owns no scope and no lease budget, so the
-		// lease-based claim below can never accept it. Its manual late-proof check
-		// goes straight to recover(): the canceled semantics there are read-only
-		// unless exact approval proof appears, and the optimistic state transition
-		// makes concurrent invocations safe.
-		$released = method_exists( $runtime['operations'], 'findByUuid' )
-			? $runtime['operations']->findByUuid( $operation_uuid )
-			: null;
+		// A quarantined expired checkout is outside the ordinary recovery lease
+		// states. Current rows retain their purchase scope to prohibit a successor;
+		// legacy rows may already be scope free. Its manual late-proof check goes
+		// straight to recover(): canceled semantics are read-only unless exact
+		// approval proof appears, and the optimistic transition is concurrency safe.
+		$released = method_exists( $runtime['operations'], 'findByUuidStrict' )
+			? $runtime['operations']->findByUuidStrict( $operation_uuid )
+			: ( method_exists( $runtime['operations'], 'findByUuid' )
+				? $runtime['operations']->findByUuid( $operation_uuid )
+				: null );
+		$direct_recoverable = is_array( $released )
+			&& (
+				(
+					'canceled' === (string) ( $released['remote_status'] ?? '' ) &&
+					'pending' === (string) ( $released['local_status'] ?? '' )
+				) ||
+				(
+					null === ( $released['active_scope_key'] ?? null ) &&
+					'succeeded' === (string) ( $released['remote_status'] ?? '' ) &&
+					in_array( (string) ( $released['local_status'] ?? '' ), array( 'pending', 'failed', 'applying' ), true ) &&
+					null !== YSHelcimTransactionId::normalize( $released['vendor_transaction_id'] ?? null )
+				)
+			);
 		if (
 			is_array( $released )
-			&& 'canceled' === (string) ( $released['remote_status'] ?? '' )
-			&& 'pending' === (string) ( $released['local_status'] ?? '' )
-			&& null === ( $released['active_scope_key'] ?? null )
+			&& hash_equals( $operation_uuid, strtolower( (string) ( $released['operation_uuid'] ?? '' ) ) )
+			&& 'purchase' === (string) ( $released['operation_type'] ?? '' )
+			&& $gateway === (string) ( $released['gateway'] ?? '' )
+			&& $direct_recoverable
 		) {
 			return $runtime['service']->recover( $operation_uuid );
 		}
@@ -840,7 +857,7 @@ final class YSHelcimFctBootstrap {
 		echo '<div class="notice notice-warning"><p><strong>'
 			. esc_html__( 'YS Helcim: payments need review', 'ys-helcim-via-fluentcart' )
 			. '</strong></p><p>'
-			. esc_html__( 'These payments remain locked because exact Helcim proof or local completion is still missing. Check Helcim using the operation ID before taking any payment action.', 'ys-helcim-via-fluentcart' )
+			. esc_html__( 'These payments need review because exact Helcim proof, local completion, or a provider transaction match requires attention. Review the operation details before taking any payment action.', 'ys-helcim-via-fluentcart' )
 			. '</p><ul>';
 		foreach ( $rows as $row ) {
 			if ( ! is_array( $row ) ) {
@@ -872,11 +889,33 @@ final class YSHelcimFctBootstrap {
 				(string) ( $row['local_status'] ?? '' ),
 				(string) ( $row['updated_at'] ?? '' )
 			);
+			$attention_code = sanitize_key(
+				(string) ( $row['local_error_code'] ?? $row['remote_error_code'] ?? '' )
+			);
+			if ( '' !== $attention_code ) {
+				$details .= ' / ' . sprintf(
+					/* translators: %s: durable payment attention code. */
+					__( 'Attention code: %s', 'ys-helcim-via-fluentcart' ),
+					$attention_code
+				);
+			}
 			$attempt_count = max( 0, (int) ( $row['recovery_attempt_count'] ?? 0 ) );
 			$is_paused     = $attempt_count >= YSHelcimPayRecoveryService::MAX_AUTOMATIC_RECOVERY_ATTEMPTS;
 			$next_recovery = (string) ( $row['next_recovery_at'] ?? '' );
-			$manual_check_available = '' === $next_recovery || $next_recovery <= gmdate( 'Y-m-d H:i:s' );
-			if ( $is_paused ) {
+			$is_applied_anomaly = 'applied' === (string) ( $row['local_status'] ?? '' )
+				&& '' !== $attention_code;
+			if ( $is_applied_anomaly && '' !== trim( (string) ( $row['local_error_message'] ?? '' ) ) ) {
+				$details .= ' / ' . sprintf(
+					/* translators: %s: persisted provider mismatch detail. */
+					__( 'Review detail: %s', 'ys-helcim-via-fluentcart' ),
+					(string) $row['local_error_message']
+				);
+			}
+			$manual_check_available = 'applied' !== (string) ( $row['local_status'] ?? '' )
+				&& ( '' === $next_recovery || $next_recovery <= gmdate( 'Y-m-d H:i:s' ) );
+			if ( $is_applied_anomaly ) {
+				$recovery_status = __( 'Manual financial review is required; automatic recovery is not applicable.', 'ys-helcim-via-fluentcart' );
+			} elseif ( $is_paused ) {
 				$recovery_status = sprintf(
 					/* translators: 1: completed recovery attempts, 2: maximum automatic recovery attempts. */
 					__( 'Automatic checks paused; attempt %1$d of %2$d.', 'ys-helcim-via-fluentcart' ),

@@ -89,7 +89,10 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
                 ['error_code' => 'ys_helcim_session_expired_released']
             )
         );
-        self::assertNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
+        self::assertNotNull(
+            $this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key'],
+            'Canceled empty lookups stay quarantined until exact provider proof arrives.'
+        );
     }
 
     /** Late approval proof must bind a released checkout end to end: canceled -> succeeded -> local applied. */
@@ -151,7 +154,7 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
         self::assertSame('51178841', OrderTransaction::allRecords()[20]['vendor_charge_id']);
         self::assertSame('paid', Order::allRecords()[10]['payment_status']);
         self::assertSame('succeeded', $this->repository->findByUuid(self::OPERATION_UUID)['remote_status']);
-        self::assertNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
+        self::assertNotNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
         $this->assertTerminalMetaPurged();
     }
 
@@ -329,7 +332,44 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
 		self::assertSame(0, $this->lookupCalls);
 		self::assertSame('51178849', OrderTransaction::allRecords()[20]['vendor_charge_id']);
 		self::assertSame('paid', Order::allRecords()[10]['payment_status']);
-		self::assertNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
+		self::assertNotNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
+	}
+
+	public function testScopeFreePersistedSuccessResumesLocalBindingWithoutProviderLookup(): void
+	{
+		self::assertTrue($this->repository->transitionRemote(
+			self::OPERATION_UUID,
+			'processing',
+			'canceled',
+			['error_code' => 'ys_helcim_session_expired_released']
+		));
+		self::assertTrue($this->repository->transitionRemote(
+			self::OPERATION_UUID,
+			'canceled',
+			'succeeded',
+			['vendor_transaction_id' => '51178853']
+		));
+		$this->database->update(
+			'wp_ys_helcim_operations',
+			['active_scope_key' => null],
+			['operation_uuid' => self::OPERATION_UUID]
+		);
+		self::assertNull(
+			$this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key'],
+			'the legacy crash shape has already released its purchase scope'
+		);
+
+		$result = $this->service->recover(self::OPERATION_UUID);
+
+		self::assertIsArray($result);
+		self::assertSame('succeeded', $result['status']);
+		self::assertSame(0, $this->lookupCalls, 'durable success never queries or mutates Helcim again');
+		self::assertSame('51178853', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+		self::assertSame('paid', Order::allRecords()[10]['payment_status']);
+		$row = $this->repository->findByUuid(self::OPERATION_UUID);
+		self::assertSame('succeeded', $row['remote_status']);
+		self::assertSame('applied', $row['local_status']);
+		self::assertNull($row['active_scope_key']);
 	}
 
     public function testMalformedOrAmbiguousLookupNeverReleasesTheScope(): void

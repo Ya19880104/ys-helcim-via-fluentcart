@@ -22,6 +22,9 @@ final class FakeWpdb
 
     public bool $failNextUpdate = false;
 
+	/** @var callable|null One-shot hook after a purchase-family snapshot is read. */
+	public $afterPurchaseHistoryRead = null;
+
 	/** @var array<string,mixed> */
 	public array $lastUpdateWhere = [];
 
@@ -476,16 +479,21 @@ final class FakeWpdb
 								)
 							) ||
 							(
-								// Released expired checkouts (scope free, manual late-proof check).
+								// Quarantined expired checkouts (current scope-held or legacy scope-free).
 								($row['remote_status'] ?? null) === 'canceled' &&
-								($row['local_status'] ?? null) === 'pending' &&
+								($row['local_status'] ?? null) === 'pending'
+							) ||
+							(
+								// Remote charge proven but local application is incomplete.
+								($row['remote_status'] ?? null) === 'succeeded' &&
+								in_array(($row['local_status'] ?? null), ['pending', 'failed', 'applying'], true) &&
 								empty($row['active_scope_key'])
 							) ||
 							(
-								// Remote charge proven but locally unbindable.
+								// Applied charge received exact proof for a second provider ID.
 								($row['remote_status'] ?? null) === 'succeeded' &&
-								($row['local_status'] ?? null) === 'failed' &&
-								empty($row['active_scope_key'])
+								($row['local_status'] ?? null) === 'applied' &&
+								($row['local_error_code'] ?? null) === 'provider_id_mismatch'
 							)
 						)
 				));
@@ -506,6 +514,11 @@ final class FakeWpdb
 						(int) ($row['transaction_id'] ?? 0) === (int) $transactionId
 				));
 				usort($rows, static fn (array $left, array $right): int => (int) $left['id'] <=> (int) $right['id']);
+				$afterRead = $this->afterPurchaseHistoryRead;
+				$this->afterPurchaseHistoryRead = null;
+				if ('purchase' === $operationType && is_callable($afterRead)) {
+					$afterRead((int) $transactionId, $rows);
+				}
 				return $rows;
 			}
 

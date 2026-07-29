@@ -60,21 +60,30 @@ final class OperationStateTest extends TestCase
         self::assertFalse(YSHelcimOperationState::canTransitionLocal('pending', 'applied'));
         self::assertFalse(YSHelcimOperationState::canTransitionLocal('failed', 'applied'));
         self::assertFalse(YSHelcimOperationState::canTransitionLocal('applied', 'pending'));
-        self::assertFalse(YSHelcimOperationState::shouldReleaseScope('succeeded', 'recorded'));
+        self::assertFalse(YSHelcimOperationState::shouldReleaseScope('succeeded', 'recorded', 'purchase'));
     }
 
     public function testScopeReleaseRequiresDefiniteNoChargeOrFullyAppliedSuccess(): void
     {
         foreach (['created', 'processing', 'indeterminate'] as $remoteState) {
-            self::assertFalse(YSHelcimOperationState::shouldReleaseScope($remoteState, 'pending'));
+            self::assertFalse(YSHelcimOperationState::shouldReleaseScope($remoteState, 'pending', 'purchase'));
         }
 
-        self::assertFalse(YSHelcimOperationState::shouldReleaseScope('succeeded', 'pending'));
-        self::assertFalse(YSHelcimOperationState::shouldReleaseScope('succeeded', 'failed'));
-        self::assertTrue(YSHelcimOperationState::shouldReleaseScope('succeeded', 'applied'));
+        self::assertFalse(YSHelcimOperationState::shouldReleaseScope('succeeded', 'pending', 'purchase'));
+        self::assertFalse(YSHelcimOperationState::shouldReleaseScope('succeeded', 'failed', 'purchase'));
+        self::assertFalse(
+            YSHelcimOperationState::shouldReleaseScope('succeeded', 'applied', 'purchase'),
+            'A paid purchase permanently reserves its transaction family against a stale-read successor.'
+        );
+        self::assertTrue(YSHelcimOperationState::shouldReleaseScope('succeeded', 'applied', 'refund'));
+        self::assertTrue(YSHelcimOperationState::shouldReleaseScope('succeeded', 'applied', 'reverse'));
 
-        foreach (['declined', 'failed', 'canceled', 'expired'] as $remoteState) {
-            self::assertTrue(YSHelcimOperationState::shouldReleaseScope($remoteState, 'pending'));
+        foreach (['declined', 'failed', 'expired'] as $remoteState) {
+            self::assertTrue(YSHelcimOperationState::shouldReleaseScope($remoteState, 'pending', 'purchase'));
         }
+        self::assertFalse(
+            YSHelcimOperationState::shouldReleaseScope('canceled', 'pending', 'purchase'),
+            'An empty post-expiry lookup is not definite no-charge proof; the transaction stays quarantined.'
+        );
     }
 }

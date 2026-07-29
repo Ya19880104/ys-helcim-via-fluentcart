@@ -35,7 +35,6 @@ $allowedExtensionsByTopDirectory = [ordered]@{
 $deniedFileNames = @('.env', '.env.local', '.gitignore', '.gitattributes')
 $deniedExtensions = @('.crt', '.env', '.key', '.log', '.p12', '.pem', '.pfx', '.sql', '.sqlite', '.zip')
 $textExtensions = @('.css', '.html', '.js', '.json', '.md', '.php', '.po', '.pot', '.svg', '.txt', '.xml')
-$fixedTimestamp = [System.DateTimeOffset]::new(1980, 1, 1, 0, 0, 0, [System.TimeSpan]::Zero)
 $secretMarkers = [ordered]@{
     private_key = '-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----'
     github_token = '\b(?:gh[opsu]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,})\b'
@@ -47,6 +46,20 @@ $secretMarkers = [ordered]@{
     development_host = '(?i)(?:(?:https?://)?(?:dev|staging)-[a-z0-9-]+(?:\.[a-z0-9-]+)+|\.wppro\.cloud|\.trycloudflare\.com)'
     development_path = '(?i)(?:/var/www/|[A-Z]:\\(?:dev|Users)\\)'
     official_test_card = '\b(?:4124939999999990|5413330089099130|374245001751006)\b'
+}
+
+function Get-DeterministicEntryTimestamp {
+    param([Parameter(Mandatory)][string] $Commit)
+
+    if ($Commit -notmatch '^[0-9a-f]{40}(?:[0-9a-f]{24})?$') {
+        throw 'A valid source commit is required for the archive timestamp.'
+    }
+
+    # ZIP timestamps have two-second precision. Map 28 commit-hash bits into a
+    # past 17-year window so identical source commits remain bit-reproducible,
+    # while successive release commits no longer reuse the unsafe 1980 mtime.
+    $slot = [Convert]::ToUInt32($Commit.Substring(0, 7), 16)
+    return [System.DateTimeOffset]::new(2000, 1, 1, 0, 0, 0, [System.TimeSpan]::Zero).AddSeconds([double] $slot * 2)
 }
 
 function Get-FileSha256 {
@@ -268,6 +281,11 @@ if ($gitCommit -notmatch '^[0-9a-f]{40}(?:[0-9a-f]{24})?$' -or $gitDirty -isnot 
 if ($RequireClean -and $gitDirty -ne $false) {
     throw 'A clean Git worktree is required for a final release build.'
 }
+$entryTimestamp = Get-DeterministicEntryTimestamp -Commit $gitCommit
+$entryTimestampText = $entryTimestamp.ToString(
+    'yyyy-MM-ddTHH:mm:ssZ',
+    [System.Globalization.CultureInfo]::InvariantCulture
+)
 
 $runtimeFiles = @(Get-RuntimeFiles -Root $resolvedSource)
 if ($runtimeFiles.Count -eq 0) {
@@ -306,7 +324,7 @@ try {
     try {
         foreach ($directory in @($directories | Sort-Object)) {
             $entry = $archive.CreateEntry($directory + '/')
-            $entry.LastWriteTime = $fixedTimestamp
+            $entry.LastWriteTime = $entryTimestamp
         }
 
         foreach ($file in $runtimeFiles) {
@@ -314,7 +332,7 @@ try {
                 "$slug/$($file.RelativePath)",
                 [System.IO.Compression.CompressionLevel]::Optimal
             )
-            $entry.LastWriteTime = $fixedTimestamp
+            $entry.LastWriteTime = $entryTimestamp
             $entryStream = $entry.Open()
             try {
                 $sourceStream = [System.IO.File]::OpenRead($file.FullName)
@@ -345,7 +363,7 @@ $manifestFiles = @(
     }
 )
 $manifest = [ordered]@{
-    schema_version = 1
+    schema_version = 2
     slug = $slug
     version = $version
     archive_file = [System.IO.Path]::GetFileName($zipPath)
@@ -353,6 +371,7 @@ $manifest = [ordered]@{
     file_count = $runtimeFiles.Count
     source_commit = $gitCommit
     source_dirty = $gitDirty
+    entry_timestamp_utc = $entryTimestampText
     files = $manifestFiles
 }
 $manifestJson = $manifest | ConvertTo-Json -Depth 5
@@ -376,6 +395,7 @@ $result = [pscustomobject]@{
     Sha256 = $archiveDigest
     SourceCommit = $gitCommit
     SourceDirty = $gitDirty
+    EntryTimestampUtc = $entryTimestampText
 }
 
 if ($PassThru) {
@@ -383,5 +403,5 @@ if ($PassThru) {
 } else {
     Write-Output "package=$zipPath"
     Write-Output "manifest=$manifestPath"
-    Write-Output "version=$version files=$($runtimeFiles.Count) sha256=$archiveDigest source_commit=$gitCommit source_dirty=$gitDirty"
+    Write-Output "version=$version files=$($runtimeFiles.Count) sha256=$archiveDigest source_commit=$gitCommit source_dirty=$gitDirty entry_timestamp_utc=$entryTimestampText"
 }

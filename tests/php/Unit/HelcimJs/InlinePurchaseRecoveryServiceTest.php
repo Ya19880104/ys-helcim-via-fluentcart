@@ -96,7 +96,7 @@ final class InlinePurchaseRecoveryServiceTest extends TestCase
 		self::assertSame(Status::TRANSACTION_SUCCEEDED, OrderTransaction::allRecords()[20]['status']);
 		self::assertSame('51178851', OrderTransaction::allRecords()[20]['vendor_charge_id']);
 		self::assertSame('paid', Order::allRecords()[10]['payment_status']);
-		self::assertNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
+		self::assertNotNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
 	}
 
 	public function testExactInlineDeclineReleasesScopeImmediatelyWithoutMarkingPaid(): void

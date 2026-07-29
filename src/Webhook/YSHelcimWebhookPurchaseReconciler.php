@@ -129,7 +129,19 @@ final class YSHelcimWebhookPurchaseReconciler {
 		}
 
 		$status = (string) ( $result['status'] ?? '' );
+		if ( 'journal_outcome_unpersisted' === (string) ( $result['error_code'] ?? '' ) ) {
+			return self::response( 503, 'payment reconciliation incomplete' );
+		}
 		if ( in_array( $status, array( 'succeeded', 'declined' ), true ) ) {
+			return self::response( 200, 'payment reconciled' );
+		}
+		if (
+			'canceled' === $status &&
+			'declined' === (string) ( $provider_outcome['outcome'] ?? '' ) &&
+			YSHelcimOperationState::REMOTE_CANCELED === (string) ( $result['remote_status'] ?? '' ) &&
+			YSHelcimOperationState::LOCAL_PENDING === (string) ( $result['local_status'] ?? '' ) &&
+			'late_decline_changes_nothing' === (string) ( $result['error_code'] ?? '' )
+		) {
 			return self::response( 200, 'payment reconciled' );
 		}
 		if (
