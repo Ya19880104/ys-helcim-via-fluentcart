@@ -167,6 +167,10 @@ class YSHelcimPayProcessor {
 			if ( is_wp_error( $stored ) ) {
 				return $stored;
 			}
+			// FluentCart wipes transaction meta on every checkout retry, so the checkout
+			// token is also stored (encrypted) on the operation row: that copy is what a
+			// later blocked attempt resumes from. Failure only disables resume, never payment.
+			$this->storeResumeMaterial( (string) $session['operation_uuid'], (string) $session['checkout_token'] );
 		}
 
 		YSHelcimLogger::info(
@@ -336,7 +340,7 @@ class YSHelcimPayProcessor {
 				YSHelcimOperationState::REMOTE_PROCESSING === $remote
 				&& $this->blockerAgeSeconds( $blocker ) < self::RESUME_WINDOW_SECONDS
 			) {
-				$resumed = $this->resumeExposedSession( $blocker_uuid, $transaction );
+				$resumed = $this->resumeExposedSession( $blocker_uuid, $blocker );
 				return is_array( $resumed ) ? $resumed : $unresolved();
 			}
 
@@ -352,17 +356,66 @@ class YSHelcimPayProcessor {
 	}
 
 	/**
-	 * Re-expose the stored Helcim session for this transaction with a fresh one-time
-	 * confirm token. Returns null when the stored material does not belong to the
-	 * blocking operation or the token rotation loses its race.
+	 * Encrypt and persist the checkout token on the operation row for later resume.
+	 * Best-effort: a failure is logged and only disables resume for this session.
+	 */
+	private function storeResumeMaterial( string $operation_uuid, string $checkout_token ): void {
+		try {
+			$ciphertext = Helper::encryptKey( $checkout_token );
+			$now        = ( $this->clock )();
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			$ciphertext = false;
+			$now        = 0;
+		}
+		$stored = false;
+		if (
+			is_string( $ciphertext ) && '' !== $ciphertext
+			&& is_callable( array( Helper::class, 'isValueEncrypted' ) ) && Helper::isValueEncrypted( $ciphertext )
+			&& is_int( $now ) && $now > 0
+		) {
+			try {
+				$stored = $this->operations->storeCheckoutMaterial(
+					$operation_uuid,
+					$ciphertext,
+					gmdate( 'Y-m-d H:i:s', $now + YSHelcimPayRecoveryService::EXPIRED_MATERIAL_CLEANUP_SECONDS )
+				);
+			} catch ( \Throwable $exception ) {
+				unset( $exception );
+				$stored = false;
+			}
+		}
+		if ( true !== $stored ) {
+			// Logged via the generic level entry point: in this file the bare name
+			// "error" is reserved by the translation extractor for self::error().
+			YSHelcimLogger::log(
+				'ERROR',
+				'Checkout resume material could not be stored; this session cannot be resumed after a retry',
+				array( 'operation_uuid' => $operation_uuid )
+			);
+		}
+	}
+
+	/**
+	 * Re-expose the stored Helcim session with a fresh one-time confirm token.
+	 * Returns null when no resume material survives or the token rotation loses
+	 * its race — the caller then reports the attempt as unresolved.
 	 *
+	 * @param array<string,mixed> $blocker The blocking operation row.
 	 * @return array<string,mixed>|null
 	 */
-	private function resumeExposedSession( string $blocker_uuid, OrderTransaction $transaction ): ?array {
-		$meta           = is_array( $transaction->meta ?? null ) ? $transaction->meta : array();
-		$checkout_token = (string) ( $meta[ self::META_CHECKOUT_TOKEN ] ?? '' );
-		$meta_operation = strtolower( (string) ( $meta[ self::META_OPERATION_UUID ] ?? '' ) );
-		if ( '' === $checkout_token || $meta_operation !== $blocker_uuid ) {
+	private function resumeExposedSession( string $blocker_uuid, array $blocker ): ?array {
+		$ciphertext = (string) ( $blocker['encrypted_material'] ?? '' );
+		if ( '' === $ciphertext ) {
+			return null;
+		}
+		try {
+			$checkout_token = Helper::decryptKey( $ciphertext );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			$checkout_token = false;
+		}
+		if ( ! is_string( $checkout_token ) || '' === trim( $checkout_token ) ) {
 			return null;
 		}
 

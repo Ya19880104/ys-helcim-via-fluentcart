@@ -1279,6 +1279,61 @@ final class YSHelcimOperationRepository {
 	 * @return bool|\WP_Error True when rotated; false when the operation is not an
 	 *                        in-flight processing attempt; WP_Error on storage loss.
 	 */
+	/**
+	 * Persist the encrypted checkout material on the operation row itself.
+	 *
+	 * FluentCart rewrites the transaction row (including its meta) on every checkout
+	 * retry, so the operation row is the only storage that reliably survives until the
+	 * session can be resumed. The stored ciphertext is purged automatically once the
+	 * material expiry passes.
+	 *
+	 * @param string $operation_uuid Operation the material belongs to.
+	 * @param string $ciphertext     Helper-encrypted checkout token.
+	 * @param string $expires_at     SQL timestamp the material may be purged after.
+	 * @return bool|\WP_Error
+	 */
+	public function storeCheckoutMaterial( string $operation_uuid, string $ciphertext, string $expires_at ) {
+		if (
+			'' === $ciphertext ||
+			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $expires_at )
+		) {
+			return false;
+		}
+
+		$current = $this->findByUuid( $operation_uuid );
+		if (
+			null === $current ||
+			YSHelcimOperationState::REMOTE_PROCESSING !== (string) ( $current['remote_status'] ?? '' ) ||
+			YSHelcimOperationState::LOCAL_PENDING !== (string) ( $current['local_status'] ?? '' ) ||
+			null === ( $current['active_scope_key'] ?? null )
+		) {
+			return false;
+		}
+
+		$updated = $this->database->update(
+			$this->table,
+			array(
+				'encrypted_material'  => $ciphertext,
+				'material_expires_at' => $expires_at,
+				'updated_at'          => ( $this->clock )(),
+			),
+			array(
+				'operation_uuid' => strtolower( $operation_uuid ),
+				'remote_status'  => YSHelcimOperationState::REMOTE_PROCESSING,
+			)
+		);
+		if ( false === $updated ) {
+			return self::journalUnavailable();
+		}
+		if ( 1 !== $updated ) {
+			return false;
+		}
+
+		$stored = $this->findByUuid( $operation_uuid );
+		return is_array( $stored )
+			&& hash_equals( $ciphertext, (string) ( $stored['encrypted_material'] ?? '' ) );
+	}
+
 	public function rotateConfirmToken( string $operation_uuid, string $token_hash, string $expires_at ) {
 		if (
 			1 !== preg_match( '/\A[0-9a-f]{64}\z/', $token_hash ) ||

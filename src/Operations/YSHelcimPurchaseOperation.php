@@ -148,7 +148,11 @@ final class YSHelcimPurchaseOperation {
 			(int) $this->identity['amount'] !== (int) ( $row['amount'] ?? 0 ) ||
 			(string) $this->identity['currency'] !== (string) ( $row['currency'] ?? '' ) ||
 			(string) $this->identity['payment_mode'] !== (string) ( $row['payment_mode'] ?? '' ) ||
-			null !== ( $row['encrypted_material'] ?? null ) ||
+			// Hosted purchases may legally carry encrypted resume material (the checkout
+			// token). Anything present must at least be a non-empty string; the strong
+			// anti-tamper signals remain the idempotency and scope hashes below.
+			( null !== ( $row['encrypted_material'] ?? null )
+				&& ( ! is_string( $row['encrypted_material'] ) || '' === $row['encrypted_material'] ) ) ||
 			null !== ( $row['local_payload'] ?? null ) ||
 			null !== ( $row['source_vendor_transaction_id'] ?? null ) ||
 			1 !== preg_match( '/\A[a-f0-9]{64}\z/', (string) ( $row['request_fingerprint'] ?? '' ) )
