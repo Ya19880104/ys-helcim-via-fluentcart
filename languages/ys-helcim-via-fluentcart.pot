@@ -3,7 +3,7 @@
 #, fuzzy
 msgid ""
 msgstr ""
-"Project-Id-Version: YS Helcim via FluentCart 1.1.0\n"
+"Project-Id-Version: YS Helcim via FluentCart 1.1.1\n"
 "Report-Msgid-Bugs-To: \n"
 "POT-Creation-Date: 2026-07-22 00:00+0000\n"
 "MIME-Version: 1.0\n"
@@ -12,7 +12,7 @@ msgstr ""
 "X-Domain: ys-helcim-via-fluentcart\n"
 
 #. translators: 1: human-readable payment method, 2: exact FluentCart gateway slug.
-#: src/YSHelcimFctBootstrap.php:879
+#: src/YSHelcimFctBootstrap.php:955
 #, php-format
 msgid "%1$s (%2$s)"
 msgstr ""
@@ -41,19 +41,19 @@ msgstr ""
 msgid "A durable hosted payment operation could not be created."
 msgstr ""
 
-#: src/Operations/YSHelcimPurchaseCoordinator.php:928
+#: src/Operations/YSHelcimPurchaseCoordinator.php:997
 msgid "A persistent purchase operation identifier could not be generated."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:365 src/Operations/YSHelcimOperationRepository.php:1916 src/Operations/YSHelcimPurchaseCoordinator.php:942
+#: src/Operations/YSHelcimOperationRepository.php:1936
 msgid "A previous payment attempt for this transaction still requires exact reconciliation. No new payment session was opened; please contact the store."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:303
+#: src/HelcimPay/YSHelcimPayProcessor.php:320
 msgid "A previous payment attempt on this order needs review. Please contact the store before paying again."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:314
+#: src/HelcimPay/YSHelcimPayProcessor.php:331
 msgid "A previous payment window for this order may still be open. Please try again in about 15 minutes, or contact the store."
 msgstr ""
 
@@ -65,23 +65,23 @@ msgstr ""
 msgid "A secure refund-resolution challenge could not be issued."
 msgstr ""
 
-#: src/Operations/YSHelcimPurchaseCoordinator.php:914
+#: src/Operations/YSHelcimPurchaseCoordinator.php:983
 msgid "A valid ephemeral Helcim card token is required for a new purchase."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:402
+#: src/HelcimJs/YSHelcimJsGateway.php:414
 msgid "API token for your developer test account"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:449
+#: src/HelcimJs/YSHelcimJsGateway.php:461
 msgid "API token for your live account"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:109
+#: src/HelcimPay/YSHelcimPayGateway.php:110
 msgid "Accept credit card payments through the secure HelcimPay.js checkout window (USD and CAD only)."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:79
+#: src/HelcimJs/YSHelcimJsGateway.php:80
 msgid "Accept credit cards with the Helcim.js inline form. Card numbers are tokenized directly in the browser, so card data never passes through your server. USD / CAD only."
 msgstr ""
 
@@ -89,20 +89,20 @@ msgstr ""
 msgid "Action"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:517
+#: src/HelcimPay/YSHelcimPayGateway.php:521
 msgid "Always off"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:513
+#: src/HelcimPay/YSHelcimPayGateway.php:517
 msgid "Always on"
 msgstr ""
 
-#: src/Operations/YSHelcimOperationRepository.php:1923 src/Operations/YSHelcimOperationRepository.php:292
+#: src/Operations/YSHelcimOperationRepository.php:1943 src/Operations/YSHelcimOperationRepository.php:284
 msgid "Another payment operation is already being reconciled."
 msgstr ""
 
 #. translators: %s: durable payment attention code.
-#: src/YSHelcimFctBootstrap.php:898
+#: src/YSHelcimFctBootstrap.php:974
 #, php-format
 msgid "Attention code: %s"
 msgstr ""
@@ -112,23 +112,23 @@ msgid "Authentication is required."
 msgstr ""
 
 #. translators: 1: completed recovery attempts, 2: maximum automatic recovery attempts.
-#: src/YSHelcimFctBootstrap.php:921
+#: src/YSHelcimFctBootstrap.php:997
 #, php-format
 msgid "Automatic checks paused; attempt %1$d of %2$d."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:508
+#: src/YSHelcimFctBootstrap.php:511
 msgid "Automatic payment recovery paused without exact proof. Check Helcim using the operation ID; the payment remains locked."
 msgstr ""
 
 #. translators: 1: completed recovery attempts, 2: maximum automatic recovery attempts, 3: next UTC check time.
-#: src/YSHelcimFctBootstrap.php:928
+#: src/YSHelcimFctBootstrap.php:1004
 #, php-format
 msgid "Automatic recovery attempt %1$d of %2$d; next check %3$s UTC."
 msgstr ""
 
 #. translators: 1: completed recovery attempts, 2: maximum automatic recovery attempts.
-#: src/YSHelcimFctBootstrap.php:936
+#: src/YSHelcimFctBootstrap.php:1012
 #, php-format
 msgid "Automatic recovery attempt %1$d of %2$d; next check is pending scheduling."
 msgstr ""
@@ -141,23 +141,23 @@ msgstr ""
 msgid "Candidate Helcim transaction ID"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:346
+#: src/HelcimJs/YSHelcimJsGateway.php:357
 msgid "Card number"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:357
+#: src/HelcimJs/YSHelcimJsGateway.php:368
 msgid "Card verification failed. Please check your card details and try again."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:349
+#: src/HelcimJs/YSHelcimJsGateway.php:360
 msgid "Cardholder name"
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:952
+#: src/YSHelcimFctBootstrap.php:1028
 msgid "Check Helcim once"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:523 src/HelcimPay/YSHelcimPayGateway.php:499
+#: src/HelcimJs/YSHelcimJsGateway.php:535 src/HelcimPay/YSHelcimPayGateway.php:503
 msgid "Checkout button text"
 msgstr ""
 
@@ -173,11 +173,11 @@ msgstr ""
 msgid "Confirmation phrase"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:354 src/HelcimPay/YSHelcimPayGateway.php:339
+#: src/HelcimJs/YSHelcimJsGateway.php:365 src/HelcimPay/YSHelcimPayGateway.php:341
 msgid "Confirming your payment…"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:501 src/HelcimPay/YSHelcimPaySettings.php:209
+#: src/HelcimPay/YSHelcimPayGateway.php:505 src/HelcimPay/YSHelcimPaySettings.php:209
 msgid "Continue to secure payment"
 msgstr ""
 
@@ -185,31 +185,31 @@ msgstr ""
 msgid "Could not reach Helcim. Please try again shortly."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:74
+#: src/HelcimJs/YSHelcimJsGateway.php:75
 msgid "Credit card (Helcim inline form)"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:104
+#: src/HelcimPay/YSHelcimPayGateway.php:105
 msgid "Credit card (Helcim)"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:410
+#: src/HelcimPay/YSHelcimPayGateway.php:414
 msgid "Currency restriction: Helcim supports only USD and CAD. When the store currency does not match, this payment method is hidden at checkout."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:524
+#: src/HelcimPay/YSHelcimPayGateway.php:528
 msgid "Debug logging"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:525
+#: src/HelcimJs/YSHelcimJsGateway.php:537
 msgid "Default: Pay with credit card"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:528
+#: src/HelcimPay/YSHelcimPayGateway.php:532
 msgid "Disabled"
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:980
+#: src/YSHelcimFctBootstrap.php:1056
 msgid "Durable refund recovery is unavailable. No provider request was sent."
 msgstr ""
 
@@ -221,11 +221,11 @@ msgstr ""
 msgid "Effective operation"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:529
+#: src/HelcimJs/YSHelcimJsGateway.php:541
 msgid "Enable debug logging (secret values are masked automatically)"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:532
+#: src/HelcimPay/YSHelcimPayGateway.php:536
 msgid "Enabled"
 msgstr ""
 
@@ -241,7 +241,7 @@ msgstr ""
 msgid "Error code"
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:340
+#: src/YSHelcimFctBootstrap.php:343
 msgid "Every minute (YS Helcim refund recovery)"
 msgstr ""
 
@@ -249,23 +249,23 @@ msgstr ""
 msgid "Evidence"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:347
+#: src/HelcimJs/YSHelcimJsGateway.php:358
 msgid "Expiry (MM/YY)"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:384
+#: src/HelcimJs/YSHelcimJsGateway.php:396
 msgid "For a Developer Test Account, add this checkout site's exact HTTPS origin under Website URLs. Legacy Helcim.js Test Mode must stay off, and the checkout form must not send test=1."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:505
+#: src/HelcimPay/YSHelcimPayGateway.php:509
 msgid "Google Pay"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:470
+#: src/HelcimPay/YSHelcimPayGateway.php:474
 msgid "Helcim API token for your developer test account"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:441
+#: src/HelcimPay/YSHelcimPayGateway.php:445
 msgid "Helcim API token for your live account"
 msgstr ""
 
@@ -277,35 +277,39 @@ msgstr ""
 msgid "Helcim did not return exact proof of the payment outcome."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:668
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:683
 msgid "Helcim did not return one exact hosted purchase result."
 msgstr ""
 
 #. translators: %s: currency code
-#: src/HelcimJs/YSHelcimJsGateway.php:166
+#: src/HelcimJs/YSHelcimJsGateway.php:167
 #, php-format
 msgid "Helcim does not support the %s currency (USD and CAD only)."
 msgstr ""
 
 #. translators: %s: currency code
-#: src/HelcimPay/YSHelcimPayGateway.php:174
+#: src/HelcimPay/YSHelcimPayGateway.php:175
 #, php-format
 msgid "Helcim does not support the %s currency. Please use a different payment method."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:250
+#: src/HelcimJs/YSHelcimJsGateway.php:260
 msgid "Helcim does not support the current store currency (USD and CAD only)."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:380
+#: src/HelcimJs/YSHelcimJsGateway.php:392
 msgid "Helcim has no separate sandbox environment: to test, request a \"developer test account\" from Helcim and enter that credential set on the Test tab, using the official test card numbers."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:408
+#: src/HelcimPay/YSHelcimPayGateway.php:412
 msgid "Helcim has no separate sandbox environment: to test, request a \"developer test account\" from Helcim and use that account's API token together with the official test card numbers."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1577
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:393
+msgid "Helcim payment window expired"
+msgstr ""
+
+#: src/YSHelcimFctBootstrap.php:1654
 msgid "Helcim remote-first refund"
 msgstr ""
 
@@ -313,7 +317,7 @@ msgstr ""
 msgid "Helcim reported an unknown error."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:725
+#: src/HelcimPay/YSHelcimPayProcessor.php:752
 msgid "Helcim returned an invalid hosted checkout response."
 msgstr ""
 
@@ -329,15 +333,15 @@ msgstr ""
 msgid "Helcim transaction verification could not be completed."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:607
+#: src/HelcimJs/YSHelcimJsGateway.php:619
 msgid "Helcim.js credential fields are present. Complete a browser payment test to verify the Helcim.js Configuration, Website URLs, and paired Secret Key."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:875
+#: src/YSHelcimFctBootstrap.php:951
 msgid "Hosted modal"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:277
+#: src/HelcimPay/YSHelcimPayGateway.php:278
 msgid "Hosted payment recovery is unavailable. Please contact the site administrator."
 msgstr ""
 
@@ -345,19 +349,19 @@ msgstr ""
 msgid "I attest that the candidate belongs to the source transaction shown above."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:419
+#: src/HelcimPay/YSHelcimPayGateway.php:423
 msgid "In your Helcim dashboard, go to All Tools → Integrations → Webhooks and set the URL above (HTTPS only), then paste that account's Verifier Token into the matching credential tab."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:394
+#: src/HelcimJs/YSHelcimJsGateway.php:406
 msgid "In your Helcim dashboard, go to All Tools → Integrations → Webhooks and set the URL above (must be HTTPS), then paste that account's Verifier Token into the matching credential tab. Webhook reconciliation is not enabled until the Verifier Token is set."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:876
+#: src/YSHelcimFctBootstrap.php:952
 msgid "Inline form"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:739
+#: src/HelcimJs/YSHelcimJsGateway.php:751
 msgid "Inline payment recovery is unavailable. Please contact the site administrator."
 msgstr ""
 
@@ -378,23 +382,23 @@ msgstr ""
 msgid "Invalid refund options."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:447 src/HelcimPay/YSHelcimPayGateway.php:439
+#: src/HelcimJs/YSHelcimJsGateway.php:459 src/HelcimPay/YSHelcimPayGateway.php:443
 msgid "Live API Token"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:469
+#: src/HelcimJs/YSHelcimJsGateway.php:481
 msgid "Live Helcim.js Secret Key"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:458
+#: src/HelcimJs/YSHelcimJsGateway.php:470
 msgid "Live Helcim.js Token"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:480 src/HelcimPay/YSHelcimPayGateway.php:450
+#: src/HelcimJs/YSHelcimJsGateway.php:492 src/HelcimPay/YSHelcimPayGateway.php:454
 msgid "Live Webhook Verifier Token"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:504 src/HelcimPay/YSHelcimPayGateway.php:434
+#: src/HelcimJs/YSHelcimJsGateway.php:516 src/HelcimPay/YSHelcimPayGateway.php:438
 msgid "Live credentials"
 msgstr ""
 
@@ -402,7 +406,7 @@ msgstr ""
 msgid "Load order"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:341 src/HelcimPay/YSHelcimPayGateway.php:338
+#: src/HelcimJs/YSHelcimJsGateway.php:352 src/HelcimPay/YSHelcimPayGateway.php:340
 msgid "Loading payment module…"
 msgstr ""
 
@@ -414,28 +418,32 @@ msgstr ""
 msgid "Local status"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:529
+#: src/HelcimPay/YSHelcimPayGateway.php:533
 msgid "Log errors only (recommended for production)."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:533
+#: src/HelcimPay/YSHelcimPayGateway.php:537
 msgid "Log the full API request and response (sensitive data is masked automatically)."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:816
+#: src/YSHelcimFctBootstrap.php:892
 msgid "Manual Helcim check completed. If the operation remains listed below, exact payment proof is still missing and the payment remains locked."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:820
+#: src/YSHelcimFctBootstrap.php:896
 msgid "Manual Helcim check could not complete. The payment remains locked; review the operation before taking any payment action."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:917
+#: src/YSHelcimFctBootstrap.php:993
 msgid "Manual financial review is required; automatic recovery is not applicable."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:518
+#: src/HelcimPay/YSHelcimPayGateway.php:522
 msgid "Never offer Google Pay, regardless of the account default."
+msgstr ""
+
+#: src/Checkout/YSHelcimPaymentStatusService.php:113
+msgid "No payment was taken. Please check your card details and try again."
 msgstr ""
 
 #: src/Admin/YSHelcimRefundAdminPage.php:263
@@ -446,11 +454,11 @@ msgstr ""
 msgid "Notification"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:514
+#: src/HelcimPay/YSHelcimPayGateway.php:518
 msgid "Offer Google Pay in the checkout window even if the account default is off."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:382
+#: src/HelcimJs/YSHelcimJsGateway.php:394
 msgid "Only USD / CAD are supported. The Helcim.js Configuration must be Active and created as Card Verify with \"Include XML on Response\" enabled (tokenization only; the charge is executed server-side)."
 msgstr ""
 
@@ -473,7 +481,7 @@ msgid "Order #%1$s · %2$s"
 msgstr ""
 
 #. translators: 1: FluentCart order ID, 2: transaction ID, 3: remote state, 4: local state, 5: UTC update time.
-#: src/YSHelcimFctBootstrap.php:885
+#: src/YSHelcimFctBootstrap.php:961
 #, php-format
 msgid "Order %1$d / transaction %2$d / %3$s:%4$s / updated %5$s"
 msgstr ""
@@ -494,19 +502,19 @@ msgstr ""
 msgid "Payment already completed. Redirecting to the receipt page."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:356
+#: src/HelcimJs/YSHelcimJsGateway.php:367
 msgid "Payment failed: "
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:280 src/HelcimPay/YSHelcimPayGateway.php:247
+#: src/HelcimJs/YSHelcimJsGateway.php:290 src/HelcimPay/YSHelcimPayGateway.php:248
 msgid "Payment information retrieved."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:147
+#: src/HelcimJs/YSHelcimJsGateway.php:148
 msgid "Payment initialization failed. Please refresh the page and try again."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:523
+#: src/YSHelcimFctBootstrap.php:526
 msgid "Payment recovery remains unresolved and will be retried with bounded backoff."
 msgstr ""
 
@@ -514,46 +522,46 @@ msgstr ""
 msgid "Payment successful! Redirecting to the receipt page."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:958
+#: src/Checkout/YSHelcimPaymentStatusService.php:163 src/HelcimPay/YSHelcimPayProcessor.php:985
 msgid "Payment successful! Taking you to the order confirmation."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:340
+#: src/HelcimPay/YSHelcimPayGateway.php:342
 msgid "Payment successful! Taking you to the order confirmation…"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:350
+#: src/HelcimJs/YSHelcimJsGateway.php:361
 msgid "Please enter a valid card number."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:351
+#: src/HelcimJs/YSHelcimJsGateway.php:362
 msgid "Please enter a valid expiry date (MM/YY)."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:352
+#: src/HelcimJs/YSHelcimJsGateway.php:363
 msgid "Please enter a valid security code."
 msgstr ""
 
 #. translators: %s: mode name (test/live)
-#: src/HelcimJs/YSHelcimJsGateway.php:577 src/HelcimPay/YSHelcimPayGateway.php:565
+#: src/HelcimJs/YSHelcimJsGateway.php:589 src/HelcimPay/YSHelcimPayGateway.php:569
 #, php-format
 msgid "Please enter the API token for %s mode."
 msgstr ""
 
 #. translators: %s: mode name (test/live)
-#: src/HelcimJs/YSHelcimJsGateway.php:593
+#: src/HelcimJs/YSHelcimJsGateway.php:605
 #, php-format
 msgid "Please enter the Helcim.js Secret Key for %s mode."
 msgstr ""
 
 #. translators: %s: mode name (test/live)
-#: src/HelcimJs/YSHelcimJsGateway.php:585
+#: src/HelcimJs/YSHelcimJsGateway.php:597
 #, php-format
 msgid "Please enter the Helcim.js Token for %s mode."
 msgstr ""
 
 #. translators: %s: mode name (test/live)
-#: src/HelcimJs/YSHelcimJsGateway.php:601 src/HelcimPay/YSHelcimPayGateway.php:572
+#: src/HelcimJs/YSHelcimJsGateway.php:613 src/HelcimPay/YSHelcimPayGateway.php:576
 #, php-format
 msgid "Please enter the Webhook Verifier Token for %s mode."
 msgstr ""
@@ -574,7 +582,7 @@ msgstr ""
 msgid "Positive resolution status is unknown."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:353
+#: src/HelcimJs/YSHelcimJsGateway.php:364
 msgid "Processing your card details…"
 msgstr ""
 
@@ -590,7 +598,7 @@ msgstr ""
 msgid "Reason"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:510
+#: src/HelcimPay/YSHelcimPayGateway.php:514
 msgid "Recommended. Whether Google Pay appears is controlled in your Helcim account."
 msgstr ""
 
@@ -598,7 +606,7 @@ msgstr ""
 msgid "Reconcile operation"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:355
+#: src/HelcimJs/YSHelcimJsGateway.php:366
 msgid "Redirecting to the receipt page…"
 msgstr ""
 
@@ -653,7 +661,7 @@ msgstr ""
 msgid "Refund status is unknown. Do not submit it again."
 msgstr ""
 
-#: src/Operations/YSHelcimStoragePreflight.php:64 src/YSHelcimFctBootstrap.php:973
+#: src/Operations/YSHelcimStoragePreflight.php:64 src/YSHelcimFctBootstrap.php:1049
 msgid "Refund storage is not transaction-safe. No provider request was sent."
 msgstr ""
 
@@ -682,12 +690,12 @@ msgid "Restore managed stock"
 msgstr ""
 
 #. translators: %s: persisted provider mismatch detail.
-#: src/YSHelcimFctBootstrap.php:910
+#: src/YSHelcimFctBootstrap.php:986
 #, php-format
 msgid "Review detail: %s"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:348
+#: src/HelcimJs/YSHelcimJsGateway.php:359
 msgid "Security code"
 msgstr ""
 
@@ -699,7 +707,7 @@ msgstr ""
 msgid "Sensitive payment reconciliation data could not be removed."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:578
+#: src/HelcimPay/YSHelcimPayGateway.php:582
 msgid "Settings saved."
 msgstr ""
 
@@ -707,7 +715,7 @@ msgstr ""
 msgid "Source transaction"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:496 src/HelcimPay/YSHelcimPayGateway.php:426
+#: src/HelcimJs/YSHelcimJsGateway.php:508 src/HelcimPay/YSHelcimPayGateway.php:430
 msgid "Store mode notice"
 msgstr ""
 
@@ -723,23 +731,23 @@ msgstr ""
 msgid "Subscription cancellation is not supported by this refund workflow. Cancel it separately after the refund is reconciled."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:400 src/HelcimPay/YSHelcimPayGateway.php:468
+#: src/HelcimJs/YSHelcimJsGateway.php:412 src/HelcimPay/YSHelcimPayGateway.php:472
 msgid "Test API Token"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:422
+#: src/HelcimJs/YSHelcimJsGateway.php:434
 msgid "Test Helcim.js Secret Key"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:411
+#: src/HelcimJs/YSHelcimJsGateway.php:423
 msgid "Test Helcim.js Token"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:433 src/HelcimPay/YSHelcimPayGateway.php:479
+#: src/HelcimJs/YSHelcimJsGateway.php:445 src/HelcimPay/YSHelcimPayGateway.php:483
 msgid "Test Webhook Verifier Token"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:510 src/HelcimPay/YSHelcimPayGateway.php:463
+#: src/HelcimJs/YSHelcimJsGateway.php:522 src/HelcimPay/YSHelcimPayGateway.php:467
 msgid "Test credentials"
 msgstr ""
 
@@ -775,7 +783,7 @@ msgstr ""
 msgid "The Helcim API credential cannot prove card-transaction read access required for payment recovery."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsPurchaseRuntime.php:637 src/HelcimPay/YSHelcimPayProcessor.php:655
+#: src/HelcimJs/YSHelcimJsPurchaseRuntime.php:637 src/HelcimPay/YSHelcimPayProcessor.php:682
 msgid "The Helcim API credential for this transaction mode is unavailable."
 msgstr ""
 
@@ -783,15 +791,15 @@ msgstr ""
 msgid "The Helcim API token has not been configured. Please enter it in the payment settings first."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:187 src/HelcimPay/YSHelcimPayGateway.php:187
+#: src/HelcimJs/YSHelcimJsGateway.php:188 src/HelcimPay/YSHelcimPayGateway.php:188
 msgid "The Helcim credentials are incomplete. Please contact the site administrator."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:155
+#: src/HelcimJs/YSHelcimJsGateway.php:156
 msgid "The Helcim payment method does not currently support subscription products. Please use a different payment method."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:260 src/HelcimPay/YSHelcimPayGateway.php:218
+#: src/HelcimJs/YSHelcimJsGateway.php:270 src/HelcimPay/YSHelcimPayGateway.php:219
 msgid "The Helcim payment method is not fully configured. Please contact the site administrator."
 msgstr ""
 
@@ -799,7 +807,7 @@ msgstr ""
 msgid "The Helcim purchase contains invalid or client-controlled transaction identity."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1548
+#: src/YSHelcimFctBootstrap.php:1625
 msgid "The Helcim refund administration page is unavailable."
 msgstr ""
 
@@ -811,15 +819,15 @@ msgstr ""
 msgid "The Helcim refund request contains invalid or stale transaction data."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1228
+#: src/YSHelcimFctBootstrap.php:1304
 msgid "The Helcim refund resolution runtime is unavailable."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1180
+#: src/YSHelcimFctBootstrap.php:1256
 msgid "The Helcim refund runtime is unavailable."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1662
+#: src/YSHelcimFctBootstrap.php:1739
 msgid "The Helcim transaction response is unavailable."
 msgstr ""
 
@@ -827,11 +835,11 @@ msgstr ""
 msgid "The Helcim transactions do not provide exact proof for this refund resolution."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:424 src/HelcimJs/YSHelcimJsGateway.php:471
+#: src/HelcimJs/YSHelcimJsGateway.php:436 src/HelcimJs/YSHelcimJsGateway.php:483
 msgid "The Helcim.js Configuration Secret Key"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:413 src/HelcimJs/YSHelcimJsGateway.php:460
+#: src/HelcimJs/YSHelcimJsGateway.php:425 src/HelcimJs/YSHelcimJsGateway.php:472
 msgid "The Helcim.js Configuration Token (Verify type, Include XML enabled)"
 msgstr ""
 
@@ -855,7 +863,11 @@ msgstr ""
 msgid "The card verification response is invalid. Please try again."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:265
+#: src/Checkout/YSHelcimPaymentStatusService.php:121
+msgid "The card was declined and no payment was taken. Please check the details or use a different card."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayProcessor.php:282
 msgid "The card was declined. No payment was recorded; you may check the details and try again."
 msgstr ""
 
@@ -863,23 +875,23 @@ msgstr ""
 msgid "The checkout cart could not be verified safely. Refresh the page before trying again."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:839 src/HelcimPay/YSHelcimPayProcessor.php:857 src/HelcimPay/YSHelcimPayProcessor.php:872
+#: src/HelcimPay/YSHelcimPayProcessor.php:866 src/HelcimPay/YSHelcimPayProcessor.php:884 src/HelcimPay/YSHelcimPayProcessor.php:899
 msgid "The checkout session was withheld, but its safe terminal state could not be recorded."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:604
+#: src/HelcimPay/YSHelcimPayProcessor.php:630
 msgid "The credential for the blocked payment mode is unavailable."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1739
+#: src/YSHelcimFctBootstrap.php:1816
 msgid "The credential for the original Helcim payment mode is unavailable."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:672 src/YSHelcimFctBootstrap.php:1364 src/YSHelcimFctBootstrap.php:1373
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:687 src/YSHelcimFctBootstrap.php:1440 src/YSHelcimFctBootstrap.php:1449
 msgid "The credential for the original hosted payment mode is unavailable."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1430 src/YSHelcimFctBootstrap.php:1439
+#: src/YSHelcimFctBootstrap.php:1507 src/YSHelcimFctBootstrap.php:1516
 msgid "The credential for the original inline payment mode is unavailable."
 msgstr ""
 
@@ -891,7 +903,7 @@ msgstr ""
 msgid "The exact FluentCart order could not be loaded."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsPurchaseRuntime.php:571 src/HelcimJs/YSHelcimJsPurchaseRuntime.php:578 src/HelcimPay/YSHelcimPayConfirmationService.php:149 src/HelcimPay/YSHelcimPayProcessor.php:924
+#: src/HelcimJs/YSHelcimJsPurchaseRuntime.php:571 src/HelcimJs/YSHelcimJsPurchaseRuntime.php:578 src/HelcimPay/YSHelcimPayConfirmationService.php:149 src/HelcimPay/YSHelcimPayProcessor.php:951
 msgid "The exact FluentCart transaction could not be loaded."
 msgstr ""
 
@@ -899,19 +911,19 @@ msgstr ""
 msgid "The exact Helcim transactions could not be read safely."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:604
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:635
 msgid "The expired hosted payment metadata could not be removed safely."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:614 src/HelcimPay/YSHelcimPayRecoveryService.php:619
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:645 src/HelcimPay/YSHelcimPayRecoveryService.php:650
 msgid "The expired hosted payment metadata could not be verified."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:697
+#: src/HelcimPay/YSHelcimPayProcessor.php:724
 msgid "The hosted checkout request could not be prepared."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:701
+#: src/HelcimPay/YSHelcimPayProcessor.php:728
 msgid "The hosted checkout request is invalid."
 msgstr ""
 
@@ -919,39 +931,39 @@ msgstr ""
 msgid "The hosted payment operation changed while it was being claimed."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:130 src/HelcimPay/YSHelcimPayRecoveryService.php:282
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:135 src/HelcimPay/YSHelcimPayRecoveryService.php:287
 msgid "The hosted payment operation could not be found."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:117 src/HelcimPay/YSHelcimPayRecoveryService.php:266
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:122 src/HelcimPay/YSHelcimPayRecoveryService.php:271
 msgid "The hosted payment operation identifier is invalid."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:297 src/HelcimPay/YSHelcimPayRecoveryService.php:311
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:302 src/HelcimPay/YSHelcimPayRecoveryService.php:316
 msgid "The hosted payment operation is not safely cancellable."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:142 src/HelcimPay/YSHelcimPayRecoveryService.php:547
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:147 src/HelcimPay/YSHelcimPayRecoveryService.php:578
 msgid "The hosted payment operation is not safely recoverable."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:235 src/HelcimPay/YSHelcimPayRecoveryService.php:565
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:240 src/HelcimPay/YSHelcimPayRecoveryService.php:596
 msgid "The hosted payment proof could not be applied safely."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:170 src/HelcimPay/YSHelcimPayRecoveryService.php:348
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:175 src/HelcimPay/YSHelcimPayRecoveryService.php:353
 msgid "The hosted payment provider lookup failed."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:576 src/HelcimPay/YSHelcimPayRecoveryService.php:579
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:607 src/HelcimPay/YSHelcimPayRecoveryService.php:610
 msgid "The hosted payment recovery clock is unavailable."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:676
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:691
 msgid "The hosted payment recovery journal is unavailable."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1397
+#: src/YSHelcimFctBootstrap.php:1474
 msgid "The hosted payment recovery runtime is unavailable."
 msgstr ""
 
@@ -963,19 +975,19 @@ msgstr ""
 msgid "The hosted payment session failed before it was exposed, but the safety journal could not record that result."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:421 src/HelcimPay/YSHelcimPayRecoveryService.php:424
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:430 src/HelcimPay/YSHelcimPayRecoveryService.php:433
 msgid "The hosted payment transaction could not be loaded."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:431
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:440
 msgid "The hosted payment transaction identity does not match."
 msgstr ""
 
-#: src/Operations/YSHelcimPurchaseCoordinator.php:921
+#: src/Operations/YSHelcimPurchaseCoordinator.php:990
 msgid "The incoming provider transaction identifier is invalid."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1465
+#: src/YSHelcimFctBootstrap.php:1542
 msgid "The inline payment recovery runtime is unavailable."
 msgstr ""
 
@@ -987,15 +999,15 @@ msgstr ""
 msgid "The local provider binding is incomplete."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:747 src/YSHelcimFctBootstrap.php:755
+#: src/YSHelcimFctBootstrap.php:823 src/YSHelcimFctBootstrap.php:831
 msgid "The manual lookup did not return exact payment proof. The payment remains locked for administrator review."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:386
+#: src/HelcimJs/YSHelcimJsGateway.php:398
 msgid "The matching API Access token must grant Transaction Processing Admin so the server can purchase, refund, and reverse test transactions."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:420
+#: src/HelcimPay/YSHelcimPayGateway.php:424
 msgid "The matching Webhook Verifier Token is required before this payment method can be enabled, because signed webhook recovery resolves lost browser confirmations safely."
 msgstr ""
 
@@ -1019,11 +1031,11 @@ msgstr ""
 msgid "The one-time provider verification material is unavailable."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:344
+#: src/HelcimPay/YSHelcimPayGateway.php:346
 msgid "The order could not be created. Please check your checkout details and try again."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:343
+#: src/HelcimJs/YSHelcimJsGateway.php:354
 msgid "The order could not be created. Please refresh the page and try again."
 msgstr ""
 
@@ -1047,11 +1059,11 @@ msgstr ""
 msgid "The paid order state could not be proven."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsProcessor.php:298 src/HelcimPay/YSHelcimPayProcessor.php:249 src/HelcimPay/YSHelcimPayProcessor.php:952
+#: src/HelcimJs/YSHelcimJsProcessor.php:298 src/HelcimPay/YSHelcimPayProcessor.php:266 src/HelcimPay/YSHelcimPayProcessor.php:979
 msgid "The paid transaction receipt could not be loaded."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:176
+#: src/HelcimJs/YSHelcimJsGateway.php:177
 msgid "The payment amount is invalid."
 msgstr ""
 
@@ -1059,20 +1071,24 @@ msgstr ""
 msgid "The payment attempt does not match the stored checkout session."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:345 src/HelcimPay/YSHelcimPayGateway.php:345
+#: src/HelcimJs/YSHelcimJsGateway.php:356 src/HelcimPay/YSHelcimPayGateway.php:347
 msgid "The payment component has not loaded. Please refresh the page and try again."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimPurchaseConfirmationToken.php:128
+#: src/HelcimJs/YSHelcimPurchaseConfirmationToken.php:131
 msgid "The payment confirmation could not be secured. Please refresh and try again."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:210
+#: src/HelcimPay/YSHelcimPayProcessor.php:227
 msgid "The payment confirmation session is invalid or expired."
 msgstr ""
 
 #: src/HelcimJs/YSHelcimJsProcessor.php:139 src/HelcimJs/YSHelcimJsProcessor.php:145
 msgid "The payment confirmation session is invalid or expired. Please refresh and try again."
+msgstr ""
+
+#: src/Checkout/YSHelcimPaymentStatusService.php:126
+msgid "The payment could not be completed and no payment was taken. Please try again."
 msgstr ""
 
 #: src/HelcimJs/YSHelcimJsProcessor.php:256
@@ -1083,11 +1099,11 @@ msgstr ""
 msgid "The payment could not be started safely. Please contact the store administrator."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:342
+#: src/HelcimJs/YSHelcimJsGateway.php:353
 msgid "The payment module failed to load. Please refresh the page and try again."
 msgstr ""
 
-#: src/Operations/YSHelcimOperationRepository.php:1902
+#: src/Operations/YSHelcimOperationRepository.php:1922
 msgid "The payment operation contains invalid safety data."
 msgstr ""
 
@@ -1095,7 +1111,7 @@ msgstr ""
 msgid "The payment operation correlation could not be verified."
 msgstr ""
 
-#: src/Operations/YSHelcimOperationRepository.php:306
+#: src/Operations/YSHelcimOperationRepository.php:298
 msgid "The payment operation could not be read back safely. No provider request was sent."
 msgstr ""
 
@@ -1103,7 +1119,7 @@ msgstr ""
 msgid "The payment operation could not be started safely. Please try again."
 msgstr ""
 
-#: src/Operations/YSHelcimOperationRepository.php:1732
+#: src/Operations/YSHelcimOperationRepository.php:1752
 msgid "The payment operation expired before any provider request was claimed."
 msgstr ""
 
@@ -1119,31 +1135,31 @@ msgstr ""
 msgid "The payment payload is invalid."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:649
+#: src/YSHelcimFctBootstrap.php:725
 msgid "The payment recovery identity is invalid."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:733 src/YSHelcimFctBootstrap.php:758
+#: src/YSHelcimFctBootstrap.php:809 src/YSHelcimFctBootstrap.php:834
 msgid "The payment recovery journal is unavailable."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:788
+#: src/YSHelcimFctBootstrap.php:864
 msgid "The payment recovery request is not authorized."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1327
+#: src/YSHelcimFctBootstrap.php:1403
 msgid "The payment recovery runtime identity is invalid."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1313
+#: src/YSHelcimFctBootstrap.php:1389
 msgid "The payment recovery webhook runtime is unavailable."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:360 src/HelcimPay/YSHelcimPayGateway.php:343
+#: src/HelcimJs/YSHelcimJsGateway.php:371 src/HelcimPay/YSHelcimPayGateway.php:345
 msgid "The payment result could not be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:272
+#: src/HelcimPay/YSHelcimPayProcessor.php:289
 msgid "The payment result needs reconciliation. Do not submit another payment."
 msgstr ""
 
@@ -1151,15 +1167,15 @@ msgstr ""
 msgid "The payment safety journal is unavailable. No checkout session was created."
 msgstr ""
 
-#: src/Operations/YSHelcimOperationRepository.php:1909 src/Operations/YSHelcimOperationRepository.php:285
+#: src/Operations/YSHelcimOperationRepository.php:1929 src/Operations/YSHelcimOperationRepository.php:277
 msgid "The payment safety journal is unavailable. No provider request was sent."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:344
+#: src/HelcimJs/YSHelcimJsGateway.php:355
 msgid "The payment settings could not be loaded. Please refresh the page and try again."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:358
+#: src/HelcimJs/YSHelcimJsGateway.php:369
 msgid "The payment timed out. To prevent an incorrect charge, refresh the page before trying again."
 msgstr ""
 
@@ -1167,7 +1183,11 @@ msgstr ""
 msgid "The payment verification code is invalid."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:348
+#: src/HelcimPay/YSHelcimPayGateway.php:352
+msgid "The payment was canceled or failed. Please try again."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:350
 msgid "The payment was declined. Its final result is being verified. Do not retry this payment yet."
 msgstr ""
 
@@ -1175,15 +1195,15 @@ msgstr ""
 msgid "The payment was declined. Please use a different card."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:346
+#: src/HelcimPay/YSHelcimPayGateway.php:348
 msgid "The payment window closed before its result could be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:342
+#: src/HelcimPay/YSHelcimPayGateway.php:344
 msgid "The payment window could not load. Please refresh the page and try again."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:347
+#: src/HelcimPay/YSHelcimPayGateway.php:349
 msgid "The payment window was closed before finishing. You can reopen it to continue."
 msgstr ""
 
@@ -1197,6 +1217,10 @@ msgstr ""
 
 #: src/Admin/YSHelcimRefundAdminPage.php:259
 msgid "The positive resolution response is invalid."
+msgstr ""
+
+#: src/Checkout/YSHelcimPaymentStatusService.php:130
+msgid "The previous payment window expired without a payment. Please try again."
 msgstr ""
 
 #: src/Refund/YSHelcimLocalRefundRecorder.php:95
@@ -1219,7 +1243,7 @@ msgstr ""
 msgid "The provider payment proof is incomplete or invalid."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:228
+#: src/HelcimPay/YSHelcimPayProcessor.php:245
 msgid "The provider payment result is missing or malformed."
 msgstr ""
 
@@ -1227,7 +1251,7 @@ msgstr ""
 msgid "The provider refund succeeded, but manual stock or local reconciliation is required. Do not submit another refund."
 msgstr ""
 
-#: src/Operations/YSHelcimOperationRepository.php:1797 src/Operations/YSHelcimOperationRepository.php:1858
+#: src/Operations/YSHelcimOperationRepository.php:1817 src/Operations/YSHelcimOperationRepository.php:1878
 msgid "The provider request outlived its durable claim. Positive reconciliation is required; the request will not be resent."
 msgstr ""
 
@@ -1235,7 +1259,7 @@ msgstr ""
 msgid "The provider transaction ID is invalid."
 msgstr ""
 
-#: src/Operations/YSHelcimPurchaseCoordinator.php:935
+#: src/Operations/YSHelcimPurchaseCoordinator.php:1004
 msgid "The purchase operation changed while it was being claimed."
 msgstr ""
 
@@ -1275,7 +1299,7 @@ msgstr ""
 msgid "The refund is still reconciling. Do not submit it again; reconcile this operation."
 msgstr ""
 
-#: src/Operations/YSHelcimOperationRepository.php:1088 src/Operations/YSHelcimOperationRepository.php:1122
+#: src/Operations/YSHelcimOperationRepository.php:1108 src/Operations/YSHelcimOperationRepository.php:1142
 msgid "The refund operation changed before reversal could be claimed."
 msgstr ""
 
@@ -1307,7 +1331,7 @@ msgstr ""
 msgid "The refund operation was not found."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1145
+#: src/YSHelcimFctBootstrap.php:1221
 msgid "The refund recovery scope is invalid."
 msgstr ""
 
@@ -1403,8 +1427,12 @@ msgstr ""
 msgid "The saved refund operation is not ready to be finalized."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:875
+#: src/HelcimPay/YSHelcimPayProcessor.php:902
 msgid "The secure checkout session could not be saved. No payment window was opened."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:394
+msgid "The shopper did not complete the Helcim payment window before it expired. Helcim has no transaction for this attempt, so no payment was taken. The order stays unpaid and the shopper can pay again."
 msgstr ""
 
 #: src/Refund/YSHelcimRefundResolutionService.php:533
@@ -1415,7 +1443,7 @@ msgstr ""
 msgid "The successful local transaction has no exact provider ID."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:163 src/HelcimPay/YSHelcimPayProcessor.php:127
+#: src/HelcimPay/YSHelcimPayGateway.php:164 src/HelcimPay/YSHelcimPayProcessor.php:138
 msgid "The transaction could not be found. Please refresh the page and try again."
 msgstr ""
 
@@ -1423,7 +1451,7 @@ msgstr ""
 msgid "The transaction identifier is missing."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:142
+#: src/HelcimPay/YSHelcimPayProcessor.php:153
 msgid "The transaction is not in a safe state for a new payment session."
 msgstr ""
 
@@ -1443,7 +1471,7 @@ msgstr ""
 msgid "There is no valid operation to reconcile."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:860
+#: src/YSHelcimFctBootstrap.php:936
 msgid "These payments need review because exact Helcim proof, local completion, or a provider transaction match requires attention. Review the operation details before taking any payment action."
 msgstr ""
 
@@ -1451,7 +1479,7 @@ msgstr ""
 msgid "This Helcim refund is blocked until its accounting state is reconciled."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1578
+#: src/YSHelcimFctBootstrap.php:1655
 msgid "This Helcim refund requires reconciliation before another refund."
 msgstr ""
 
@@ -1471,20 +1499,24 @@ msgstr ""
 msgid "This checkout is already being processed. Please wait, refresh the page, and try again."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayRecoveryService.php:269
+#: src/HelcimPay/YSHelcimPayRecoveryService.php:274
 msgid "This gateway does not support hosted checkout cancellation."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:681 src/HelcimPay/YSHelcimPayGateway.php:386
+#: src/HelcimJs/YSHelcimJsGateway.php:693 src/HelcimPay/YSHelcimPayGateway.php:390
 msgid "This legacy webhook listener is retired. Configure Helcim to use the REST webhook URL."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:725
+#: src/YSHelcimFctBootstrap.php:801
 msgid "This payment is not paused for a manual recovery attempt, or another worker already holds its lease."
 msgstr ""
 
-#: src/Operations/YSHelcimOperationRepository.php:298
+#: src/Operations/YSHelcimOperationRepository.php:290
 msgid "This payment operation already exists."
+msgstr ""
+
+#: src/Checkout/YSHelcimPaymentStatusService.php:202
+msgid "This payment page has expired. Please refresh the page to check your order before paying again."
 msgstr ""
 
 #: src/Refund/YSHelcimRefundRestController.php:813
@@ -1507,7 +1539,7 @@ msgstr ""
 msgid "Type this exact confirmation phrase:"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:509
+#: src/HelcimPay/YSHelcimPayGateway.php:513
 msgid "Use Helcim account setting"
 msgstr ""
 
@@ -1515,15 +1547,15 @@ msgstr ""
 msgid "Use only a verified positive Helcim transaction. This action cannot mark a refund as failed or unlock another submission."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:666 src/HelcimPay/YSHelcimPayGateway.php:369
+#: src/HelcimJs/YSHelcimJsGateway.php:678 src/HelcimPay/YSHelcimPayGateway.php:373
 msgid "Use the Helcim Operations refund panel. FluentCart's native refund flow is disabled because it records a refund before the provider confirms it."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:435 src/HelcimPay/YSHelcimPayGateway.php:481
+#: src/HelcimJs/YSHelcimJsGateway.php:447 src/HelcimPay/YSHelcimPayGateway.php:485
 msgid "Verifier Token for the developer test account webhook"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:482 src/HelcimPay/YSHelcimPayGateway.php:452
+#: src/HelcimJs/YSHelcimJsGateway.php:494 src/HelcimPay/YSHelcimPayGateway.php:456
 msgid "Verifier Token for the live Helcim webhook"
 msgstr ""
 
@@ -1531,19 +1563,23 @@ msgstr ""
 msgid "Warnings"
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:341
+#: src/Checkout/YSHelcimPaymentStatusService.php:176 src/HelcimJs/YSHelcimJsGateway.php:372 src/HelcimPay/YSHelcimPayGateway.php:351
+msgid "We are still confirming your payment. Please do not pay again. You will receive an email receipt once it is confirmed, or you can contact the store."
+msgstr ""
+
+#: src/HelcimPay/YSHelcimPayGateway.php:343
 msgid "We could not confirm your payment. Please contact the site administrator."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:359
+#: src/HelcimJs/YSHelcimJsGateway.php:370
 msgid "We could not confirm your payment. Please contact the store for help."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayGateway.php:494
+#: src/HelcimPay/YSHelcimPayGateway.php:498
 msgid "Webhook URL"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:392 src/HelcimPay/YSHelcimPayGateway.php:417
+#: src/HelcimJs/YSHelcimJsGateway.php:404 src/HelcimPay/YSHelcimPayGateway.php:421
 msgid "Webhook URL:"
 msgstr ""
 
@@ -1551,23 +1587,23 @@ msgstr ""
 msgid "Webhook delivery is not ready: use a clean HTTPS REST URL whose host and path do not contain the provider name."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:518
+#: src/HelcimJs/YSHelcimJsGateway.php:530
 msgid "Webhook settings"
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1765
+#: src/YSHelcimFctBootstrap.php:1842
 msgid "YS Helcim via FluentCart could not initialize its payment safety journal. Payment methods remain disabled until the database issue is resolved."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:1758
+#: src/YSHelcimFctBootstrap.php:1835
 msgid "YS Helcim via FluentCart requires the FluentCart plugin (1.5.2 or later) to be installed and activated."
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:858
+#: src/YSHelcimFctBootstrap.php:934
 msgid "YS Helcim: payments need review"
 msgstr ""
 
-#: src/YSHelcimFctBootstrap.php:643
+#: src/YSHelcimFctBootstrap.php:719
 msgid "You are not allowed to retry payment recovery."
 msgstr ""
 
@@ -1583,11 +1619,11 @@ msgstr ""
 msgid "You do not have permission to resolve this refund."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:192
+#: src/HelcimPay/YSHelcimPayProcessor.php:216
 msgid "Your order has been created. Please complete the credit card payment in the secure payment window."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:223
+#: src/HelcimJs/YSHelcimJsGateway.php:241
 msgid "Your order has been created. Please complete the credit card payment."
 msgstr ""
 
@@ -1599,14 +1635,14 @@ msgstr ""
 msgid "Your payment result is still being verified. Do not submit another payment."
 msgstr ""
 
-#: src/HelcimPay/YSHelcimPayProcessor.php:307
+#: src/HelcimPay/YSHelcimPayProcessor.php:324
 msgid "Your previous payment attempt is still being verified. Please wait a moment and try again."
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:549 src/HelcimPay/YSHelcimPayGateway.php:550
+#: src/HelcimJs/YSHelcimJsGateway.php:561 src/HelcimPay/YSHelcimPayGateway.php:554
 msgid "live"
 msgstr ""
 
-#: src/HelcimJs/YSHelcimJsGateway.php:548 src/HelcimPay/YSHelcimPayGateway.php:549
+#: src/HelcimJs/YSHelcimJsGateway.php:560 src/HelcimPay/YSHelcimPayGateway.php:553
 msgid "test"
 msgstr ""

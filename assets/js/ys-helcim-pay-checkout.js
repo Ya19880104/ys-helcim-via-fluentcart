@@ -24,6 +24,8 @@
 
     var SLUG = 'ys_helcim';
     var CONTAINER_SELECTOR = '.fluent-cart-checkout_embed_payment_container_' + SLUG;
+    // Server status checks after an uncertain result (about 2.5 minutes in total)
+    var STATUS_POLL_DELAYS_MS = [1500, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 10000, 15000, 15000, 20000, 30000, 30000];
 
     /** Server-side localized data (read defensively; abort and log if missing) */
     var cfg = window.ys_helcim_fct_data || null;
@@ -60,7 +62,8 @@
             uncertain: 'The payment window closed before its result could be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.',
             declined_verifying: 'The payment was declined. Its final result is being verified. Do not retry this payment yet.',
             incomplete_data: 'The payment data was incomplete. Please try again.',
-            window_closed_retry: 'The payment window was closed before finishing. You can reopen it to continue.'
+            window_closed_retry: 'The payment window was closed before finishing. You can reopen it to continue.',
+            still_confirming: 'We are still confirming your payment. Please do not pay again. You will receive an email receipt once it is confirmed, or you can contact the store.'
         };
         var translations = (cfg && cfg.translations) || {};
         return translations[key] || defaults[key] || key;
@@ -303,12 +306,7 @@
         }).then(function (resp) {
             var isSuccess = resp && (resp.status === 'success' || resp.success === true);
             if (isSuccess && resp.redirect_url) {
-                if (detail.paymentLoader) {
-                    // Tell FluentCart to run its post-order actions (takes effect when the response includes order.uuid)
-                    detail.paymentLoader.triggerPaymentCompleteEvent(resp);
-                    detail.paymentLoader.changeLoaderStatus(t('redirecting'));
-                }
-                redirectTo(resp.redirect_url);
+                completeRedirect(detail, resp);
                 return;
             }
             var message = (resp && (resp.message || (resp.data && resp.data.message))) || t('confirm_failed');
@@ -316,10 +314,115 @@
                 resetUi(detail, message);
                 return;
             }
-            lockUi(detail, message);
+            pollPaymentStatus(detail, paymentData, message);
         }).catch(function () {
-            lockUi(detail, t('network_error'));
+            pollPaymentStatus(detail, paymentData, t('network_error'));
         });
+    }
+
+    /**
+     * Hand a confirmed payment to FluentCart and move to the receipt page.
+     *
+     * @param {Object} detail e.detail from the load_payments event
+     * @param {Object} resp   Success payload with redirect_url and order.uuid
+     */
+    function completeRedirect(detail, resp) {
+        if (detail.paymentLoader) {
+            // Tell FluentCart to run its post-order actions (takes effect when the response includes order.uuid)
+            detail.paymentLoader.triggerPaymentCompleteEvent(resp);
+            detail.paymentLoader.changeLoaderStatus(t('redirecting'));
+        }
+        redirectTo(resp.redirect_url);
+    }
+
+    /** @returns {number[]} Delays between server status checks */
+    function statusPollDelays() {
+        var configured = cfg && cfg.status_poll_delays_ms;
+        if (Array.isArray(configured) && configured.length > 0) {
+            return configured.map(function (value) {
+                return Math.max(0, Number(value) || 0);
+            });
+        }
+        return STATUS_POLL_DELAYS_MS;
+    }
+
+    /**
+     * Ask the server what actually happened after a result this page could not
+     * trust (a Helcim webhook finishing the same payment first, a dropped
+     * response, a declined card whose proof arrives by webhook). A paid order
+     * redirects, a definite no-charge allows another try, and only a result that
+     * stays unknown keeps the page locked.
+     *
+     * @param {Object} detail          e.detail from the load_payments event
+     * @param {Object} paymentData     payment_data from the order-creation response
+     * @param {string} fallbackMessage Lock message when status checks are unavailable
+     */
+    function pollPaymentStatus(detail, paymentData, fallbackMessage) {
+        if (!cfg.status_action || !paymentData || !paymentData.status_token || !paymentData.transaction_uuid) {
+            lockUi(detail, fallbackMessage);
+            return;
+        }
+
+        detachMessageListener();
+        state.processing = true;
+        state.finished = true;
+        setButtonBusy(true);
+        showInlineError('');
+        if (detail.paymentLoader) {
+            detail.paymentLoader.changeLoaderStatus(t('confirming'));
+        }
+
+        var delays = statusPollDelays();
+        var attempt = 0;
+        var pendingMessage = '';
+
+        function scheduleCheck() {
+            if (attempt >= delays.length) {
+                lockUi(detail, pendingMessage || t('still_confirming'));
+                return;
+            }
+            setTimeout(checkStatus, delays[attempt]);
+            attempt += 1;
+        }
+
+        function checkStatus() {
+            var body = new URLSearchParams();
+            body.append('action', cfg.status_action);
+            body.append('transaction_uuid', paymentData.transaction_uuid);
+            body.append('status_token', paymentData.status_token);
+
+            fetch(cfg.ajax_url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                credentials: 'include',
+                body: body.toString()
+            }).then(function (response) {
+                return response.json().catch(function () {
+                    return null;
+                });
+            }).then(function (resp) {
+                if (resp && resp.status === 'success' && resp.redirect_url) {
+                    completeRedirect(detail, resp);
+                    return;
+                }
+                if (resp && resp.status === 'failed' && resp.retry_allowed === true) {
+                    resetUi(detail, resp.message || t('canceled'));
+                    return;
+                }
+                if (resp && resp.status === 'failed') {
+                    lockUi(detail, resp.message || fallbackMessage);
+                    return;
+                }
+                if (resp && resp.message) {
+                    pendingMessage = resp.message;
+                }
+                scheduleCheck();
+            }).catch(function () {
+                scheduleCheck();
+            });
+        }
+
+        scheduleCheck();
     }
 
     /**
@@ -351,7 +454,7 @@
                 safeRemoveIframe();
 
                 if (!parsed.txData || !parsed.hash) {
-                    lockUi(detail, t('uncertain'));
+                    pollPaymentStatus(detail, paymentData, t('uncertain'));
                     return;
                 }
 
@@ -377,7 +480,7 @@
                     confirmPayment(detail, paymentData, aborted.txData, aborted.hash);
                     return;
                 }
-                lockUi(detail, t('declined_verifying'));
+                pollPaymentStatus(detail, paymentData, t('declined_verifying'));
                 return;
             }
 

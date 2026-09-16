@@ -884,6 +884,71 @@ final class BootstrapSchemaGateTest extends TestCase
 		self::assertSame([], $times);
 	}
 
+	public function testRecoverySweepClosesExpiredHostedWindowsEvenAfterRecoveryPaused(): void
+	{
+		// Production incident: two abandoned payment windows exhausted their seven
+		// recovery attempts and stayed locked behind an administrator alarm.
+		$events = [];
+		$now = 1784678400;
+		$operations = new class($events) {
+			public function __construct(private array &$events) {}
+			public function findPurchasesNeedingRecovery(): array
+			{
+				return [];
+			}
+			public function findHostedCheckoutsAwaitingRelease(string $createdBefore, string $dueBefore, int $limit): array
+			{
+				$this->events[] = ['scan', $createdBefore, $dueBefore, $limit];
+				return [
+					['operation_uuid' => '00000000-0000-4000-8000-000000000971', 'remote_status' => 'indeterminate'],
+					['operation_uuid' => '00000000-0000-4000-8000-000000000972', 'remote_status' => 'canceled'],
+				];
+			}
+			public function releaseCanceledScope(string $uuid): bool
+			{
+				$this->events[] = ['release_scope', $uuid];
+				return true;
+			}
+		};
+		$service = new class($events) {
+			public function __construct(private array &$events) {}
+			public function recover(string $uuid): array
+			{
+				$this->events[] = ['recover', $uuid];
+				return ['status' => 'pending', 'reason' => 'unexpected'];
+			}
+			public function releaseExpiredCheckout(string $uuid, int $settleSeconds): array
+			{
+				$this->events[] = ['close', $uuid, $settleSeconds];
+				return ['operation_uuid' => $uuid, 'status' => 'canceled', 'reason' => 'session_expired_no_charge_found'];
+			}
+		};
+		$bootstrap = YSHelcimFctBootstrap::init();
+		(new \ReflectionProperty($bootstrap, 'hosted_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => $service]
+		);
+		(new \ReflectionProperty($bootstrap, 'inline_recovery_runtime'))->setValue(
+			$bootstrap,
+			['operations' => $operations, 'service' => $service]
+		);
+		(new \ReflectionProperty($bootstrap, 'recovery_clock'))->setValue(
+			$bootstrap,
+			static fn (): int => $now
+		);
+
+		$bootstrap->reconcileHostedPurchases();
+
+		self::assertContains(
+			['scan', gmdate('Y-m-d H:i:s', $now - 4200), gmdate('Y-m-d H:i:s', $now), 2],
+			$events,
+			'Only windows past the 60-minute token life plus indexing grace may be closed.'
+		);
+		self::assertContains(['close', '00000000-0000-4000-8000-000000000971', 0], $events);
+		self::assertContains(['release_scope', '00000000-0000-4000-8000-000000000972'], $events);
+		self::assertSame([], array_values(array_filter($events, static fn (array $event): bool => 'recover' === $event[0])));
+	}
+
 	public function testHostedAttentionNoticeShowsOnlyOperationalIdentifiersAndManualOneShotAction(): void
 	{
 		$operationUuid = '00000000-0000-4000-8000-000000000901';

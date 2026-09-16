@@ -238,9 +238,9 @@ final class OperationRepositoryTest extends TestCase
         self::assertSame('ys_helcim_purchase_successor_blocked', $successor->get_error_code());
     }
 
-    public function testCanceledPurchaseQuarantinesItsScopeAndBlocksACrossGatewaySuccessor(): void
+    public function testExpiredCanceledCheckoutFreesItsScopeAndAllowsTheShopperToPayAgain(): void
     {
-        $first = $this->operation(3, 'purchase:quarantined-transaction');
+        $first = $this->operation(3, 'purchase:expired-transaction');
         self::assertIsArray($this->repository->create($first));
         self::assertTrue($this->repository->claimRemoteProcessing($first['operation_uuid']));
         self::assertTrue($this->repository->transitionRemote(
@@ -249,29 +249,41 @@ final class OperationRepositoryTest extends TestCase
             'canceled',
             ['error_code' => 'ys_helcim_session_expired_released']
         ));
-        self::assertNotNull(
+        self::assertNull(
             $this->repository->findByUuid($first['operation_uuid'])['active_scope_key'],
-            'A canceled empty lookup must remain a durable no-successor quarantine.'
+            'A verified expired checkout must not strand the order forever.'
         );
 
-        $second = $this->operation(4, 'purchase:quarantined-transaction');
+        $second = $this->operation(4, 'purchase:expired-transaction');
         $second['gateway'] = 'ys_helcim_js';
-        $blocked = $this->repository->create($second);
+        $successor = $this->repository->create($second);
 
-        self::assertInstanceOf(\WP_Error::class, $blocked);
-        self::assertSame('ys_helcim_purchase_successor_blocked', $blocked->get_error_code());
-        self::assertCount(1, $this->database->allRows());
+        self::assertIsArray($successor, 'The shopper may pay the same order again, with either Helcim method.');
+        self::assertCount(2, $this->database->allRows());
+    }
 
+    public function testSucceededPurchaseStillBlocksEverySuccessor(): void
+    {
+        $first = $this->operation(5, 'purchase:paid-transaction');
+        self::assertIsArray($this->repository->create($first));
+        self::assertTrue($this->repository->claimRemoteProcessing($first['operation_uuid']));
+        self::assertTrue($this->repository->transitionRemote(
+            $first['operation_uuid'],
+            'processing',
+            'succeeded',
+            ['vendor_transaction_id' => '51170005']
+        ));
         $this->database->update(
             'wp_ys_helcim_operations',
             ['active_scope_key' => null],
             ['operation_uuid' => $first['operation_uuid']]
         );
-        $legacyBlocked = $this->repository->create($second);
 
-        self::assertInstanceOf(\WP_Error::class, $legacyBlocked);
-        self::assertSame('ys_helcim_purchase_successor_blocked', $legacyBlocked->get_error_code());
-        self::assertCount(1, $this->database->allRows(), 'Legacy scope-free quarantine must also block a cross-gateway successor.');
+        $blocked = $this->repository->create($this->operation(6, 'purchase:paid-transaction'));
+
+        self::assertInstanceOf(\WP_Error::class, $blocked);
+        self::assertSame('ys_helcim_purchase_successor_blocked', $blocked->get_error_code());
+        self::assertCount(1, $this->database->allRows(), 'Even a scope-free paid history must block a second charge.');
     }
 
     public function testProviderReceiptIsReservedSiteWideByTheDatabaseUniqueConstraint(): void
@@ -1518,7 +1530,7 @@ final class OperationRepositoryTest extends TestCase
 		);
 	}
 
-	public function testExactPositiveTerminalStateWinsRaceAgainstEmptyObservation(): void
+	public function testExactPositiveTerminalStateCannotBeReleasedAsAnExpiredCheckout(): void
 	{
 		$operation = $this->operation(129, 'purchase:positive-race');
 		$operation['provider_correlation_id'] = $operation['operation_uuid'];
@@ -1531,14 +1543,62 @@ final class OperationRepositoryTest extends TestCase
 			['vendor_transaction_id' => '51178129']
 		));
 
-		self::assertFalse($this->repository->recordHostedEmptyObservation(
-			$operation['operation_uuid'],
-			'processing'
-		));
+		self::assertFalse($this->repository->releaseCanceledScope($operation['operation_uuid']));
+		self::assertFalse(
+			$this->repository->transitionRemote($operation['operation_uuid'], 'processing', 'canceled'),
+			'A release computed from a stale processing read must lose to the persisted approval.'
+		);
 		$row = $this->repository->findByUuid($operation['operation_uuid']);
 		self::assertSame('succeeded', $row['remote_status']);
 		self::assertSame('51178129', $row['vendor_transaction_id']);
-		self::assertNull($row['remote_error_code']);
+		self::assertNotNull($row['active_scope_key']);
+	}
+
+	public function testReleaseScanFindsExpiredAndPausedHostedCheckoutsButNeverLiveOnes(): void
+	{
+		$now = '2026-07-21 00:00:00';
+		$this->repository = new YSHelcimOperationRepository(
+			$this->database,
+			static function () use (&$now): string {
+				return $now;
+			}
+		);
+
+		$expired = $this->withTransactionIdentity($this->operation(131, 'purchase:expired-window'), 131);
+		self::assertIsArray($this->repository->create($expired));
+		self::assertTrue($this->repository->claimRemoteProcessing($expired['operation_uuid']));
+
+		$now = '2026-07-21 01:00:00';
+		$live = $this->withTransactionIdentity($this->operation(132, 'purchase:live-window'), 132);
+		self::assertIsArray($this->repository->create($live));
+		self::assertTrue($this->repository->claimRemoteProcessing($live['operation_uuid']));
+
+		$rows = $this->repository->findHostedCheckoutsAwaitingRelease('2026-07-21 00:10:00', '2026-07-21 01:10:00', 10);
+
+		self::assertIsArray($rows);
+		self::assertSame(
+			[$expired['operation_uuid']],
+			array_map(static fn (array $row): string => (string) $row['operation_uuid'], $rows),
+			'Only a window created before the expiry cutoff may be closed.'
+		);
+	}
+
+	public function testLegacyCanceledCheckoutScopeIsReleasedExactlyOnce(): void
+	{
+		$operation = $this->operation(133, 'purchase:legacy-canceled');
+		self::assertIsArray($this->repository->create($operation));
+		self::assertTrue($this->repository->claimRemoteProcessing($operation['operation_uuid']));
+		self::assertTrue($this->repository->transitionRemote($operation['operation_uuid'], 'processing', 'canceled'));
+		// Rows written by 1.1.0 kept the scope while canceled.
+		$this->database->update(
+			'wp_ys_helcim_operations',
+			['active_scope_key' => 'legacy-held-scope'],
+			['operation_uuid' => $operation['operation_uuid']]
+		);
+
+		self::assertTrue($this->repository->releaseCanceledScope($operation['operation_uuid']));
+		self::assertNull($this->repository->findByUuid($operation['operation_uuid'])['active_scope_key']);
+		self::assertFalse($this->repository->releaseCanceledScope($operation['operation_uuid']));
 	}
 
     /** @return array<string, mixed> */

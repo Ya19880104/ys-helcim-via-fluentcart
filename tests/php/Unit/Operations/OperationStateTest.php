@@ -81,9 +81,13 @@ final class OperationStateTest extends TestCase
         foreach (['declined', 'failed', 'expired'] as $remoteState) {
             self::assertTrue(YSHelcimOperationState::shouldReleaseScope($remoteState, 'pending', 'purchase'));
         }
-        self::assertFalse(
+        self::assertTrue(
             YSHelcimOperationState::shouldReleaseScope('canceled', 'pending', 'purchase'),
-            'An empty post-expiry lookup is not definite no-charge proof; the transaction stays quarantined.'
+            'A checkout closed after its Helcim session expired and lookups found nothing must not strand the order.'
+        );
+        self::assertTrue(
+            YSHelcimOperationState::canTransitionRemote('canceled', 'succeeded'),
+            'Exact late approval of a closed checkout must still bind.'
         );
     }
 }

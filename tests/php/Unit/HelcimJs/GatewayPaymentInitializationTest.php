@@ -11,6 +11,7 @@ use FluentCart\App\Modules\PaymentMethods\Core\BaseGatewaySettings;
 use FluentCart\App\Services\Payments\PaymentInstance;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use YangSheep\Helcim\FluentCart\Checkout\YSHelcimPaymentStatusService;
 use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimJsGateway;
 use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimJsSettings;
 
@@ -87,6 +88,15 @@ final class GatewayPaymentInitializationTest extends TestCase
         self::assertIsArray($result);
         self::assertSame('123 Test Street', $result['payment_data']['cardholder_address']);
         self::assertSame('100', $result['payment_data']['cardholder_postal_code']);
+        $instance = $this->paymentInstance();
+        self::assertTrue(
+            YSHelcimPaymentStatusService::statusTokens()->verify(
+                $result['payment_data']['status_token'] ?? null,
+                (string) $instance->transaction->uuid,
+                (int) $instance->transaction->id
+            ),
+            'The browser needs a transaction-bound status token to resolve an uncertain result.'
+        );
     }
 
     public function testPurchaseInitializationFailsClosedWhenRecurringRecoveryCannotBeScheduled(): void

@@ -22,6 +22,7 @@ use FluentCart\Api\CurrencySettings;
 use FluentCart\Api\StoreSettings;
 use FluentCart\App\Modules\PaymentMethods\Core\AbstractPaymentGateway;
 use FluentCart\App\Services\Payments\PaymentInstance;
+use YangSheep\Helcim\FluentCart\Checkout\YSHelcimPaymentStatusService;
 use YangSheep\Helcim\FluentCart\HelcimPay\YSHelcimPayRecoveryCapability;
 use YangSheep\Helcim\FluentCart\Settings\YSHelcimSecretStorage;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimLogger;
@@ -213,6 +214,23 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
             ? trim((string) ($billingAddress->postcode ?? ''))
             : '';
 
+        // Custom data: what the front-end helcimProcess + confirm AJAX need (no secrets of any kind).
+        $paymentData = [
+            'transaction_uuid' => $transaction->uuid,
+            'confirm_nonce'    => wp_create_nonce('ys_helcim_fct_confirm_js'),
+            'confirm_token'    => $confirmToken,
+            'js_token'         => $this->settings->getJsToken(),
+            'cardholder_address' => $cardholderAddress,
+            'cardholder_postal_code' => $cardholderPostalCode,
+        ];
+        $statusToken = YSHelcimPaymentStatusService::statusTokens()->issue(
+            (string) $transaction->uuid,
+            (int) $transaction->id
+        );
+        if (is_string($statusToken)) {
+            $paymentData['status_token'] = $statusToken;
+        }
+
         // The envelope matches ys_helcim (already E2E verified): it omits custom_payment_url —
         // that key would make FluentCart redirect to its built-in custom checkout page, so orderHandler()'s
         // resolved value would not include payment_data (leaving the front end unable to tokenize inline).
@@ -221,15 +239,7 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
             'nextAction'   => 'ys_helcim_js',
             'actionName'   => 'custom',
             'message'      => __('Your order has been created. Please complete the credit card payment.', 'ys-helcim-via-fluentcart'),
-            // Custom data: what the front-end helcimProcess + confirm AJAX need (no secrets of any kind).
-            'payment_data' => [
-                'transaction_uuid' => $transaction->uuid,
-                'confirm_nonce'    => wp_create_nonce('ys_helcim_fct_confirm_js'),
-                'confirm_token'    => $confirmToken,
-                'js_token'         => $this->settings->getJsToken(),
-                'cardholder_address' => $cardholderAddress,
-                'cardholder_postal_code' => $cardholderPostalCode,
-            ],
+            'payment_data' => $paymentData,
         ];
     }
 
@@ -336,6 +346,7 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
             'ys_helcim_js_fct_data' => [
                 'ajax_url'       => admin_url('admin-ajax.php'),
                 'confirm_action' => 'ys_helcim_fct_confirm_js',
+                'status_action'  => YSHelcimPaymentStatusService::AJAX_ACTION,
                 'translations'   => [
                     'button_text'       => $this->settings->getCheckoutButtonText(),
                     'loading'           => __('Loading payment module…', 'ys-helcim-via-fluentcart'),
@@ -358,6 +369,7 @@ class YSHelcimJsGateway extends AbstractPaymentGateway
                     'timeout'           => __('The payment timed out. To prevent an incorrect charge, refresh the page before trying again.', 'ys-helcim-via-fluentcart'),
                     'confirm_failed'    => __('We could not confirm your payment. Please contact the store for help.', 'ys-helcim-via-fluentcart'),
                     'network_error'     => __('The payment result could not be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.', 'ys-helcim-via-fluentcart'),
+                    'still_confirming'  => __('We are still confirming your payment. Please do not pay again. You will receive an email receipt once it is confirmed, or you can contact the store.', 'ys-helcim-via-fluentcart'),
                 ],
             ],
         ];

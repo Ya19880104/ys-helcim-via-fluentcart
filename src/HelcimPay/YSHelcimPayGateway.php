@@ -16,6 +16,7 @@ use FluentCart\Api\CurrencySettings;
 use FluentCart\Api\StoreSettings;
 use FluentCart\App\Modules\PaymentMethods\Core\AbstractPaymentGateway;
 use FluentCart\App\Services\Payments\PaymentInstance;
+use YangSheep\Helcim\FluentCart\Checkout\YSHelcimPaymentStatusService;
 use YangSheep\Helcim\FluentCart\Settings\YSHelcimSecretStorage;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimLogger;
 use YangSheep\Helcim\FluentCart\Webhook\YSHelcimWebhookDeliveryUrl;
@@ -333,6 +334,7 @@ class YSHelcimPayGateway extends AbstractPaymentGateway {
 			'ys_helcim_fct_data' => array(
 				'ajax_url'       => admin_url( 'admin-ajax.php' ),
 				'confirm_action' => 'ys_helcim_fct_confirm_pay',
+				'status_action'  => YSHelcimPaymentStatusService::AJAX_ACTION,
 				'translations'   => array(
 					'button_text'    => $this->settings->getCheckoutButtonText(),
 					'loading'        => __( 'Loading payment module…', 'ys-helcim-via-fluentcart' ),
@@ -346,6 +348,8 @@ class YSHelcimPayGateway extends AbstractPaymentGateway {
 					'uncertain'      => __( 'The payment window closed before its result could be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.', 'ys-helcim-via-fluentcart' ),
 					'window_closed_retry' => __( 'The payment window was closed before finishing. You can reopen it to continue.', 'ys-helcim-via-fluentcart' ),
 					'declined_verifying' => __( 'The payment was declined. Its final result is being verified. Do not retry this payment yet.', 'ys-helcim-via-fluentcart' ),
+					'still_confirming' => __( 'We are still confirming your payment. Please do not pay again. You will receive an email receipt once it is confirmed, or you can contact the store.', 'ys-helcim-via-fluentcart' ),
+					'canceled'       => __( 'The payment was canceled or failed. Please try again.', 'ys-helcim-via-fluentcart' ),
 				),
 			),
 		);

@@ -21,13 +21,16 @@ final class YSHelcimPurchaseConfirmationToken {
 	/** @var callable */
 	private $secret_provider;
 
-	public function __construct( ?callable $clock = null, ?callable $secret_provider = null ) {
-		$this->clock           = $clock ?? static fn (): int => time();
-		$this->secret_provider = $secret_provider ?? static fn (): string => hash(
+	private int $lifetime_seconds;
+
+	public function __construct( ?callable $clock = null, ?callable $secret_provider = null, int $lifetime_seconds = self::LIFETIME_SECONDS ) {
+		$this->clock            = $clock ?? static fn (): int => time();
+		$this->secret_provider  = $secret_provider ?? static fn (): string => hash(
 			'sha256',
 			wp_salt( 'auth' ) . '|ys-helcim-inline-confirm-v1',
 			true
 		);
+		$this->lifetime_seconds = max( 60, $lifetime_seconds );
 	}
 
 	/** @return string|\WP_Error */
@@ -39,7 +42,7 @@ final class YSHelcimPurchaseConfirmationToken {
 			return self::invalid();
 		}
 
-		$expires = $now + self::LIFETIME_SECONDS;
+		$expires = $now + $this->lifetime_seconds;
 		$mac     = hash_hmac( 'sha256', self::material( $identity, $expires ), $secret, true );
 
 		return (string) $expires . '.' . self::base64Url( $mac );
@@ -57,7 +60,7 @@ final class YSHelcimPurchaseConfirmationToken {
 		}
 
 		$expires = self::timestamp( $matches[1] );
-		if ( null === $expires || $expires < $now || $expires > $now + self::LIFETIME_SECONDS ) {
+		if ( null === $expires || $expires < $now || $expires > $now + $this->lifetime_seconds ) {
 			return false;
 		}
 

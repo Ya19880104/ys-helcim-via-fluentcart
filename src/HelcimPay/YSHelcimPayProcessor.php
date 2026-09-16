@@ -12,7 +12,9 @@ use FluentCart\App\Helpers\Status;
 use FluentCart\App\Models\Order;
 use FluentCart\App\Models\OrderTransaction;
 use FluentCart\App\Services\Payments\PaymentInstance;
+use YangSheep\Helcim\FluentCart\Checkout\YSHelcimPaymentStatusService;
 use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimJsPurchaseRuntime;
+use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimPurchaseConfirmationToken;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationRepository;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationState;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimPurchaseOperation;
@@ -62,6 +64,11 @@ class YSHelcimPayProcessor {
 
 	private ?PaymentInstance $legacy_payment_instance = null;
 
+	/** @var callable|null */
+	private $order_note_writer;
+
+	private YSHelcimPurchaseConfirmationToken $status_tokens;
+
 	public function __construct(
 		private YSHelcimPaySettings $settings,
 		?YSHelcimOperationRepository $operations = null,
@@ -69,12 +76,16 @@ class YSHelcimPayProcessor {
 		?callable $transaction_loader = null,
 		?callable $uuid_factory = null,
 		?callable $confirm_token_factory = null,
-		?callable $initialization_clock = null
+		?callable $initialization_clock = null,
+		?callable $order_note_writer = null,
+		?YSHelcimPurchaseConfirmationToken $status_tokens = null
 	) {
 		if ( null === $operations ) {
 			global $wpdb;
 			$operations = new YSHelcimOperationRepository( $wpdb );
 		}
+		$this->order_note_writer = $order_note_writer ?? YSHelcimPayRecoveryService::fluentCartOrderNoteWriter();
+		$this->status_tokens     = $status_tokens ?? YSHelcimPaymentStatusService::statusTokens();
 
 		$this->api_request = $api_request ?? static fn (
 			string $endpoint,
@@ -185,19 +196,25 @@ class YSHelcimPayProcessor {
 			)
 		);
 
+		$payment_data = array(
+			'checkout_token'   => (string) $session['checkout_token'],
+			'transaction_uuid' => (string) $transaction->uuid,
+			'operation_uuid'   => (string) $session['operation_uuid'],
+			'confirm_token'    => (string) $session['confirm_token'],
+			'confirm_nonce'    => wp_create_nonce( self::NONCE_ACTION ),
+			'mode'             => (string) $identity['payment_mode'],
+		);
+		$status_token = $this->status_tokens->issue( (string) $transaction->uuid, (int) $transaction->id );
+		if ( is_string( $status_token ) ) {
+			$payment_data['status_token'] = $status_token;
+		}
+
 		return array(
 			'status'       => 'success',
 			'nextAction'   => self::GATEWAY_SLUG,
 			'actionName'   => 'custom',
 			'message'      => __( 'Your order has been created. Please complete the credit card payment in the secure payment window.', 'ys-helcim-via-fluentcart' ),
-			'payment_data' => array(
-				'checkout_token'   => (string) $session['checkout_token'],
-				'transaction_uuid' => (string) $transaction->uuid,
-				'operation_uuid'   => (string) $session['operation_uuid'],
-				'confirm_token'    => (string) $session['confirm_token'],
-				'confirm_nonce'    => wp_create_nonce( self::NONCE_ACTION ),
-				'mode'             => (string) $identity['payment_mode'],
-			),
+			'payment_data' => $payment_data,
 		);
 	}
 
@@ -289,9 +306,9 @@ class YSHelcimPayProcessor {
 	 *    (Helcim allows at most one successful charge per token, so a second tab can
 	 *    never double-charge) after rotating the one-time confirm token so only the
 	 *    newest browser can confirm.
-	 * 2. QUARANTINE — a session past Helcim's own validity window is verified and
-	 *    moved to canceled while retaining the same transaction scope. No successor
-	 *    provider session is opened because empty lookups are not no-charge proof.
+	 * 2. CLOSE — a session past Helcim's own validity window plus the indexing grace
+	 *    is verified to have no transaction, moved to canceled, and a new session is
+	 *    opened for the shopper. Exact late approval of the closed session still binds.
 	 * 3. Anything else (identity drift, provider transaction found, gray zone between
 	 *    resume window and expiry, lookup failure) keeps the scope locked with an
 	 *    honest shopper-facing message.
@@ -330,6 +347,17 @@ class YSHelcimPayProcessor {
 
 			$blocker_uuid = strtolower( (string) ( $blocker['operation_uuid'] ?? '' ) );
 			$remote       = (string) ( $blocker['remote_status'] ?? '' );
+			// A legacy expired checkout still holding the scope was already verified
+			// without a charge; free the scope and open the shopper's new session.
+			if (
+				YSHelcimOperationState::REMOTE_CANCELED === $remote
+				&& YSHelcimOperationState::LOCAL_PENDING === (string) ( $blocker['local_status'] ?? '' )
+				&& 'purchase' === (string) ( $blocker['operation_type'] ?? '' )
+			) {
+				return true === $this->operations->releaseCanceledScope( $blocker_uuid )
+					? $this->initialization->begin( $identity )
+					: $unresolved();
+			}
 			// Full identity and correlation verification: gateway, operation type,
 			// amount/currency/mode binding, and self-correlation must all match, or
 			// nothing about this blocker may be trusted, resumed, or released.
@@ -362,10 +390,8 @@ class YSHelcimPayProcessor {
 
 			$outcome = $this->quarantineExpiredBlocker( $blocker_uuid );
 			if ( 'canceled' === $outcome ) {
-				return self::error(
-					'ys_helcim_purchase_successor_blocked',
-					'A previous payment attempt for this transaction still requires exact reconciliation. No new payment session was opened; please contact the store.'
-				);
+				// The expired window was verified without a charge and closed.
+				return $this->initialization->begin( $identity );
 			}
 			if ( 'live' === $outcome ) {
 				return $cooling();
@@ -581,9 +607,9 @@ class YSHelcimPayProcessor {
 	}
 
 	/**
-	 * Ask the recovery service to verify and quarantine one expired blocker.
+	 * Ask the recovery service to verify and close one expired blocker.
 	 *
-	 * @return string 'canceled' | 'found' | 'unavailable'
+	 * @return string 'canceled' | 'found' | 'live' | 'unavailable'
 	 */
 	private function quarantineExpiredBlocker( string $blocker_uuid ): string {
 		try {
@@ -615,13 +641,14 @@ class YSHelcimPayProcessor {
 					null,
 					'GET'
 				),
-				clock: $this->clock
+				clock: $this->clock,
+				order_note_writer: $this->order_note_writer
 			);
 
 			$result = $service->releaseExpiredCheckout( $blocker_uuid );
 			if ( is_wp_error( $result ) ) {
 				YSHelcimLogger::info(
-					'Blocked hosted scope could not be quarantined',
+					'Blocked hosted scope could not be closed',
 					array(
 						'operation_uuid' => $blocker_uuid,
 						'error_code'     => $result->get_error_code(),
@@ -633,7 +660,7 @@ class YSHelcimPayProcessor {
 			$status = (string) ( $result['status'] ?? '' );
 			if ( 'canceled' === $status ) {
 				YSHelcimLogger::info(
-					'Quarantined an expired hosted attempt; no successor session was opened',
+					'Closed an expired hosted attempt without a charge; opening a new session',
 					array( 'operation_uuid' => $blocker_uuid )
 				);
 			}

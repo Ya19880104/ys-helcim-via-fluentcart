@@ -30,7 +30,11 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
     private YSHelcimOperationRepository $repository;
     private FakeWpdb $database;
     private array|\WP_Error $lookupResult;
+    /** @var array<int, array|\WP_Error> One-shot lookup results consumed before $lookupResult. */
+    private array $lookupQueue = [];
     private int $lookupCalls = 0;
+    /** @var array<int, array{0:int,1:string,2:string}> */
+    private array $orderNotes = [];
     private YSHelcimPayRecoveryService $service;
 
     protected function setUp(): void
@@ -72,13 +76,16 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
                 ++$this->lookupCalls;
                 self::assertSame(self::OPERATION_UUID, $invoiceNumber);
                 self::assertSame('test-api-secret', $apiToken);
-                return $this->lookupResult;
+                return [] !== $this->lookupQueue ? array_shift($this->lookupQueue) : $this->lookupResult;
             },
-            clock: static fn (): int => self::NOW
+            clock: static fn (): int => self::NOW,
+            order_note_writer: function (int $orderId, string $title, string $message): void {
+                $this->orderNotes[] = [$orderId, $title, $message];
+            }
         );
     }
 
-    /** Move the seeded in-flight operation into the released (canceled) state. */
+    /** Move the seeded in-flight operation into the closed (canceled) state. */
     private function releaseSeededOperation(): void
     {
         self::assertTrue(
@@ -89,9 +96,9 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
                 ['error_code' => 'ys_helcim_session_expired_released']
             )
         );
-        self::assertNotNull(
+        self::assertNull(
             $this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key'],
-            'Canceled empty lookups stay quarantined until exact provider proof arrives.'
+            'A closed expired checkout frees the order for another payment.'
         );
     }
 
@@ -203,68 +210,90 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
 		self::assertArrayHasKey('ys_helcim_checkout_token', OrderTransaction::allRecords()[20]['meta']);
 	}
 
-    public function testAuthoritativeEmptyLookupAfterExpiryKeepsTheScopeIndeterminate(): void
+    /**
+     * Production incident: an abandoned Helcim payment window stayed "indeterminate",
+     * burned seven recovery attempts and raised a permanent administrator alarm although
+     * Helcim never had a transaction. Past the 60-minute token life plus indexing grace,
+     * empty authenticated lookups close the window and free the unpaid order.
+     */
+    public function testEmptyLookupsAfterExpiryCloseTheAbandonedCheckoutAndFreeTheOrder(): void
     {
         $result = $this->service->recover(self::OPERATION_UUID);
 
         self::assertIsArray($result);
-        self::assertSame('pending', $result['status']);
-        self::assertSame('empty_observation_recorded', $result['reason']);
+        self::assertSame('canceled', $result['status'], var_export($result, true));
+        self::assertSame(3, $this->lookupCalls, 'The first recovery read plus two consecutive closing reads.');
         $row = $this->repository->findByUuid(self::OPERATION_UUID);
-        self::assertSame('indeterminate', $row['remote_status']);
-        self::assertNotEmpty($row['active_scope_key']);
-		self::assertSame('ys_helcim_hosted_lookup_empty_unresolved', $row['remote_error_code']);
-        $this->assertTerminalMetaPurged();
-    }
-
-    public function testRepeatedSpacedEmptyLookupNeverTreatsAbsenceAsProofOrReleasesScope(): void
-    {
-        $this->repository->transitionRemote(
-            self::OPERATION_UUID,
-            'processing',
-            'indeterminate',
-            [
-				'error_code' => 'ys_helcim_hosted_lookup_empty_unresolved',
-                'error_message' => 'First empty lookup.',
-            ]
-        );
-        $this->setOperationUpdatedAt('2026-07-21 05:54:00');
-
-        $result = $this->service->recover(self::OPERATION_UUID);
-
-        self::assertIsArray($result);
-        self::assertSame('pending', $result['status']);
-        self::assertSame('empty_observation_recorded', $result['reason']);
-        $row = $this->repository->findByUuid(self::OPERATION_UUID);
-        self::assertSame('indeterminate', $row['remote_status']);
-        self::assertNotEmpty($row['active_scope_key']);
-		self::assertSame('ys_helcim_hosted_lookup_empty_unresolved', $row['remote_error_code']);
+        self::assertSame('canceled', $row['remote_status']);
+        self::assertSame('pending', $row['local_status']);
+        self::assertNull($row['active_scope_key'], 'The shopper must be able to pay the order again.');
+        self::assertSame('ys_helcim_session_expired_released', $row['remote_error_code']);
+        self::assertNotNull($row['next_recovery_at'], 'One late-proof follow-up stays scheduled.');
         self::assertSame(Status::TRANSACTION_PENDING, OrderTransaction::allRecords()[20]['status']);
+        self::assertSame('pending', Order::allRecords()[10]['payment_status'], 'Closing never marks the order paid or failed.');
         $this->assertTerminalMetaPurged();
     }
 
-    public function testAnOlderIndeterminateCauseStillRequiresItsOwnFirstEmptyObservation(): void
+    public function testLegacyIndeterminateAbandonedCheckoutIsClosedOnTheNextLookup(): void
     {
         $this->repository->transitionRemote(
             self::OPERATION_UUID,
             'processing',
             'indeterminate',
             [
-                'error_code' => 'helcim_pay_initialize_unresolved',
-                'error_message' => 'Initialization outcome was unresolved.',
+                'error_code' => 'ys_helcim_hosted_recovery_attention_required',
+                'error_message' => 'Automatic payment recovery paused without exact proof.',
             ]
         );
-        $this->setOperationUpdatedAt('2026-07-21 04:45:00');
 
         $result = $this->service->recover(self::OPERATION_UUID);
 
         self::assertIsArray($result);
-        self::assertSame('pending', $result['status']);
-        self::assertSame('empty_observation_recorded', $result['reason']);
+        self::assertSame('canceled', $result['status']);
         $row = $this->repository->findByUuid(self::OPERATION_UUID);
-        self::assertSame('indeterminate', $row['remote_status']);
-		self::assertSame('ys_helcim_hosted_lookup_empty_unresolved', $row['remote_error_code']);
-        self::assertNotEmpty($row['active_scope_key']);
+        self::assertSame('canceled', $row['remote_status']);
+        self::assertNull($row['active_scope_key']);
+    }
+
+    public function testClosingAnAbandonedCheckoutRecordsAnOrderNote(): void
+    {
+        $this->service->recover(self::OPERATION_UUID);
+
+        self::assertCount(1, $this->orderNotes);
+        self::assertSame(10, $this->orderNotes[0][0]);
+        self::assertSame('Helcim payment window expired', $this->orderNotes[0][1]);
+        self::assertStringContainsString('no payment was taken', $this->orderNotes[0][2]);
+    }
+
+    public function testLookupFailureWhileClosingKeepsTheWindowLocked(): void
+    {
+        $this->lookupQueue = [[], new \WP_Error('http_request_failed', 'Timeout')];
+
+        $result = $this->service->recover(self::OPERATION_UUID);
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        $row = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('processing', $row['remote_status']);
+        self::assertNotNull($row['active_scope_key'], 'An unverified window must never be closed.');
+        self::assertSame([], $this->orderNotes);
+    }
+
+    public function testTransactionAppearingWhileClosingIsReconciledInsteadOfClosed(): void
+    {
+        $this->lookupQueue = [[], [$this->providerTransaction('APPROVED', '51178853')]];
+
+        $closing = $this->service->recover(self::OPERATION_UUID);
+
+        self::assertIsArray($closing);
+        self::assertSame('pending', $closing['status']);
+        self::assertSame('provider_transaction_present', $closing['reason']);
+        self::assertSame('processing', $this->repository->findByUuid(self::OPERATION_UUID)['remote_status']);
+
+        $this->lookupResult = [$this->providerTransaction('APPROVED', '51178853')];
+        $approved = $this->service->recover(self::OPERATION_UUID);
+
+        self::assertSame('succeeded', $approved['status']);
+        self::assertSame('paid', Order::allRecords()[10]['payment_status']);
     }
 
     public function testEmptyLookupBeforeCheckoutExpiryNeverChangesTheOperation(): void
@@ -296,11 +325,11 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
         self::assertSame(Status::TRANSACTION_PENDING, OrderTransaction::allRecords()[20]['status']);
     }
 
-	public function testExactApprovalAfterExpiredEmptyObservationCompletesExactlyOnce(): void
+	public function testExactLateApprovalAfterClosingCompletesExactlyOnce(): void
 	{
 		$empty = $this->service->recover(self::OPERATION_UUID);
 		self::assertIsArray($empty);
-		self::assertSame('pending', $empty['status']);
+		self::assertSame('canceled', $empty['status']);
 		$this->assertTerminalMetaPurged();
 
 		$this->lookupResult = [$this->providerTransaction('APPROVED', '51178848')];
@@ -504,15 +533,6 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
         $this->database->update(
             'wp_ys_helcim_operations',
             ['created_at' => $createdAt],
-            ['operation_uuid' => self::OPERATION_UUID]
-        );
-    }
-
-    private function setOperationUpdatedAt(string $updatedAt): void
-    {
-        $this->database->update(
-            'wp_ys_helcim_operations',
-            ['updated_at' => $updatedAt],
             ['operation_uuid' => self::OPERATION_UUID]
         );
     }

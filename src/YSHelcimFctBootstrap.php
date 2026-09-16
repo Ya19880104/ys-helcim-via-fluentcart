@@ -13,6 +13,7 @@ namespace YangSheep\Helcim\FluentCart;
 
 use FluentCart\App\Models\OrderTransaction;
 use YangSheep\Helcim\FluentCart\Admin\YSHelcimRefundAdminPage;
+use YangSheep\Helcim\FluentCart\Checkout\YSHelcimPaymentStatusService;
 use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimInlineCheckoutCartLock;
 use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimJsPurchaseRuntime;
 use YangSheep\Helcim\FluentCart\HelcimPay\YSHelcimPaySettings;
@@ -241,6 +242,8 @@ final class YSHelcimFctBootstrap {
 			PHP_INT_MAX,
 			2
 		);
+		add_action( 'wp_ajax_' . YSHelcimPaymentStatusService::AJAX_ACTION, array( $this, 'handlePaymentStatusAjax' ) );
+		add_action( 'wp_ajax_nopriv_' . YSHelcimPaymentStatusService::AJAX_ACTION, array( $this, 'handlePaymentStatusAjax' ) );
 		add_action( 'rest_api_init', array( $this, 'registerRefundRoutes' ) );
 		add_action( 'rest_api_init', array( $this, 'registerRefundResolutionRoutes' ) );
 		add_action( 'rest_api_init', array( $this, 'registerWebhookRoutes' ) );
@@ -552,7 +555,80 @@ final class YSHelcimFctBootstrap {
 			}
 		}
 
+		$this->closeExpiredHostedCheckouts();
 		$this->checkReleasedCheckoutsForLateProof();
+	}
+
+	/**
+	 * Close abandoned hosted payment windows that can no longer charge.
+	 *
+	 * Covers rows whose bounded recovery already paused, so an abandoned checkout
+	 * never waits on an administrator, and frees the scope of legacy canceled rows.
+	 */
+	private function closeExpiredHostedCheckouts(): void {
+		$runtime = $this->purchaseRecoveryRuntime( 'ys_helcim' );
+		if ( is_wp_error( $runtime ) || ! is_array( $runtime ) ) {
+			return;
+		}
+		$operations = $runtime['operations'];
+		if ( ! method_exists( $operations, 'findHostedCheckoutsAwaitingRelease' ) ) {
+			return;
+		}
+
+		$now  = $this->recoveryNow();
+		$rows = $operations->findHostedCheckoutsAwaitingRelease(
+			gmdate( 'Y-m-d H:i:s', $now - YSHelcimPayRecoveryService::EXPIRED_MATERIAL_CLEANUP_SECONDS ),
+			gmdate( 'Y-m-d H:i:s', $now ),
+			self::HOSTED_RECOVERY_BATCH_LIMIT
+		);
+		if ( is_wp_error( $rows ) ) {
+			YSHelcimLogger::error( 'Expired hosted checkout scan failed', array( 'error_code' => $rows->get_error_code() ) );
+			return;
+		}
+
+		foreach ( $rows as $row ) {
+			$operation_uuid = is_array( $row ) ? (string) ( $row['operation_uuid'] ?? '' ) : '';
+			if ( ! self::isUuid( $operation_uuid ) ) {
+				continue;
+			}
+			$result = 'canceled' === (string) ( $row['remote_status'] ?? '' )
+				? $operations->releaseCanceledScope( $operation_uuid )
+				: $runtime['service']->releaseExpiredCheckout( $operation_uuid, 0 );
+			if ( is_wp_error( $result ) ) {
+				YSHelcimLogger::error(
+					'Expired hosted checkout could not be closed',
+					array( 'operation_uuid' => $operation_uuid, 'error_code' => $result->get_error_code() )
+				);
+			}
+		}
+	}
+
+	/** Answer a checkout's uncertain payment result from durable local state. */
+	public function handlePaymentStatusAjax(): void {
+		$transaction_uuid = isset( $_POST['transaction_uuid'] ) && is_string( $_POST['transaction_uuid'] ) // phpcs:ignore WordPress.Security.NonceVerification.Missing -- authorized by the transaction-bound status token.
+			? sanitize_text_field( wp_unslash( $_POST['transaction_uuid'] ) ) // phpcs:ignore WordPress.Security.NonceVerification.Missing
+			: '';
+		$status_token     = isset( $_POST['status_token'] ) && is_string( $_POST['status_token'] ) // phpcs:ignore WordPress.Security.NonceVerification.Missing
+			? sanitize_text_field( wp_unslash( $_POST['status_token'] ) ) // phpcs:ignore WordPress.Security.NonceVerification.Missing
+			: '';
+
+		try {
+			global $wpdb;
+			$service = new YSHelcimPaymentStatusService(
+				new YSHelcimOperationRepository( $wpdb ),
+				YSHelcimPaymentStatusService::statusTokens()
+			);
+			$result  = $service->status( $transaction_uuid, $status_token );
+		} catch ( \Throwable $exception ) {
+			YSHelcimLogger::error( 'Payment status check failed', array( 'error' => $exception->getMessage() ) );
+			$result = array(
+				'http' => 200,
+				'body' => array( 'status' => 'pending', 'code' => 'status_unavailable' ),
+			);
+		}
+
+		nocache_headers();
+		wp_send_json( $result['body'], $result['http'] );
 	}
 
 	/**
@@ -1383,7 +1459,8 @@ final class YSHelcimFctBootstrap {
 					$api_token,
 					null,
 					'GET'
-				)
+				),
+				order_note_writer: YSHelcimPayRecoveryService::fluentCartOrderNoteWriter()
 			);
 
 			$this->hosted_recovery_runtime = array(

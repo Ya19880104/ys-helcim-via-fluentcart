@@ -25,6 +25,9 @@ final class FakeWpdb
 	/** @var callable|null One-shot hook after a purchase-family snapshot is read. */
 	public $afterPurchaseHistoryRead = null;
 
+	/** @var callable|null One-shot hook fn(array $data, array $where) run before an update applies. */
+	public $beforeUpdate = null;
+
 	/** @var array<string,mixed> */
 	public array $lastUpdateWhere = [];
 
@@ -133,6 +136,13 @@ final class FakeWpdb
         unset($table, $formats, $whereFormats);
         $this->last_error = '';
 		$this->lastUpdateWhere = $where;
+
+		if (is_callable($this->beforeUpdate)) {
+			$hook = $this->beforeUpdate;
+			$this->beforeUpdate = null;
+			$hook($data, $where);
+			$this->last_error = '';
+		}
 
         if ($this->failNextUpdate) {
             $this->failNextUpdate = false;
@@ -460,6 +470,34 @@ final class FakeWpdb
 				return array_slice($rows, 0, max(0, $limit));
 			}
 
+			if (str_contains($query['query'], 'ys_helcim_hosted_checkout_release_scan')) {
+				$createdBefore = (string) ($query['args'][0] ?? '');
+				$dueBefore = (string) ($query['args'][1] ?? '');
+				$limit = (int) ($query['args'][2] ?? 0);
+				$rows = array_values(array_filter(
+					$this->rows,
+					static fn (array $row): bool =>
+						($row['operation_type'] ?? null) === 'purchase' &&
+						($row['gateway'] ?? null) === 'ys_helcim' &&
+						($row['local_status'] ?? null) === 'pending' &&
+						!empty($row['active_scope_key']) &&
+						(
+							(
+								in_array(($row['remote_status'] ?? null), ['processing', 'indeterminate'], true) &&
+								(string) ($row['created_at'] ?? '') <= $createdBefore &&
+								(empty($row['next_recovery_at']) || (string) $row['next_recovery_at'] <= $dueBefore)
+							) ||
+							($row['remote_status'] ?? null) === 'canceled'
+						)
+				));
+				usort($rows, static fn (array $left, array $right): int =>
+					[(string) ($left['created_at'] ?? ''), (int) ($left['id'] ?? 0)]
+					<=>
+					[(string) ($right['created_at'] ?? ''), (int) ($right['id'] ?? 0)]
+				);
+				return array_slice($rows, 0, max(0, $limit));
+			}
+
 			if (str_contains($query['query'], 'ys_helcim_hosted_purchase_attention_scan')) {
 				$gateway = (string) ($query['args'][0] ?? '');
 				$maxAttempts = (int) ($query['args'][1] ?? 0);
@@ -477,11 +515,6 @@ final class FakeWpdb
 									in_array(($row['remote_status'] ?? null), ['indeterminate', 'succeeded'], true) ||
 									(int) ($row['recovery_attempt_count'] ?? 0) >= $maxAttempts
 								)
-							) ||
-							(
-								// Quarantined expired checkouts (current scope-held or legacy scope-free).
-								($row['remote_status'] ?? null) === 'canceled' &&
-								($row['local_status'] ?? null) === 'pending'
 							) ||
 							(
 								// Remote charge proven but local application is incomplete.

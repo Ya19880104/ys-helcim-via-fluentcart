@@ -100,6 +100,204 @@ final class PurchaseCoordinatorTest extends TestCase
         self::assertSame(1, $binderCalls);
     }
 
+    public function testSynchronousPurchaseSucceedsWhenTheWebhookBindsTheSameApprovalFirst(): void
+    {
+        // Production incident: Helcim delivered the purchase webhook while the synchronous
+        // payment/purchase response was still in flight. The webhook won the durable
+        // transition and bound the order; the browser request then lost its CAS and told
+        // the shopper "still being verified" although the order was already paid.
+        $binderCalls = 0;
+        $boundId = null;
+        $webhookResult = null;
+        $coordinator = null;
+        $coordinator = $this->coordinator(
+            function () use (&$coordinator, &$webhookResult): array {
+                $webhookResult = $coordinator->reconcileProviderProof(
+                    $this->transaction(),
+                    self::OPERATION_UUID,
+                    self::correlatedProof(self::approvedResponse(), self::OPERATION_UUID)
+                );
+                return self::approvedResponse();
+            },
+            static function (array $identity, string $providerId) use (&$binderCalls, &$boundId): array {
+                unset($identity);
+                ++$binderCalls;
+                $boundId = $providerId;
+                return ['bound' => true, 'provider_transaction_id' => $providerId];
+            },
+            null,
+            static function () use (&$boundId): array {
+                return null === $boundId
+                    ? ['status' => 'unbound', 'provider_transaction_id' => null]
+                    : ['status' => 'bound', 'provider_transaction_id' => $boundId];
+            }
+        );
+
+        $result = $coordinator->execute($this->transaction(), 'card-token-secret');
+
+        self::assertSame('succeeded', $webhookResult['status']);
+        self::assertSame('succeeded', $result['status'], 'Losing the CAS to the identical exact approval is success, not an unproven outcome.');
+        self::assertSame('51177123', $result['provider_transaction_id']);
+        self::assertSame('applied', $result['local_status']);
+        self::assertSame(1, $binderCalls, 'The order must be bound exactly once.');
+    }
+
+    public function testSynchronousPurchaseReportsBindingInProgressWhenAConcurrentWorkerHoldsTheLocalClaim(): void
+    {
+        $binderCalls = 0;
+        $coordinator = $this->coordinator(
+            function (): array {
+                self::assertTrue($this->repository->transitionRemote(
+                    self::OPERATION_UUID,
+                    'processing',
+                    'succeeded',
+                    ['vendor_transaction_id' => '51177123']
+                ));
+                self::assertTrue($this->repository->claimLocalApplying(self::OPERATION_UUID, 'pending'));
+                return self::approvedResponse();
+            },
+            static function () use (&$binderCalls): array {
+                ++$binderCalls;
+                return ['bound' => true, 'provider_transaction_id' => '51177123'];
+            },
+            null,
+            null,
+            static fn (): string => '2026-07-21 00:00:00'
+        );
+
+        $result = $coordinator->execute($this->transaction(), 'card-token-secret');
+
+        self::assertSame('attention_required', $result['status']);
+        self::assertSame('local_binding_in_progress', $result['error_code'], 'The concurrent binder is finishing the same approval; this is not an unpersisted outcome.');
+        self::assertSame('succeeded', $result['remote_status']);
+        self::assertSame(0, $binderCalls);
+    }
+
+    public function testWebhookProofSucceedsWhenTheSynchronousPurchaseWinsTheRemoteTransition(): void
+    {
+        $binderCalls = 0;
+        $boundId = null;
+        $webhookResult = null;
+        $coordinator = null;
+        $coordinator = $this->coordinator(
+            function () use (&$coordinator, &$webhookResult): array {
+                // The browser request persists the approval between the webhook's read
+                // and the webhook's own compare-and-swap.
+                $this->database->beforeUpdate = function (array $data, array $where): void {
+                    if (($data['remote_status'] ?? null) === 'succeeded' && ($where['remote_status'] ?? null) === 'processing') {
+                        self::assertTrue($this->repository->transitionRemote(
+                            self::OPERATION_UUID,
+                            'processing',
+                            'succeeded',
+                            ['vendor_transaction_id' => '51177123']
+                        ));
+                    }
+                };
+                $webhookResult = $coordinator->reconcileProviderProof(
+                    $this->transaction(),
+                    self::OPERATION_UUID,
+                    self::correlatedProof(self::approvedResponse(), self::OPERATION_UUID)
+                );
+                return self::approvedResponse();
+            },
+            static function (array $identity, string $providerId) use (&$binderCalls, &$boundId): array {
+                unset($identity);
+                ++$binderCalls;
+                $boundId = $providerId;
+                return ['bound' => true, 'provider_transaction_id' => $providerId];
+            },
+            null,
+            static function () use (&$boundId): array {
+                return null === $boundId
+                    ? ['status' => 'unbound', 'provider_transaction_id' => null]
+                    : ['status' => 'bound', 'provider_transaction_id' => $boundId];
+            }
+        );
+
+        $result = $coordinator->execute($this->transaction(), 'card-token-secret');
+
+        self::assertSame('succeeded', $webhookResult['status'], 'The webhook must converge on the identical persisted approval.');
+        self::assertSame('succeeded', $result['status']);
+        self::assertSame(1, $binderCalls);
+    }
+
+    public function testTimedOutPurchaseSucceedsWhenTheWebhookAlreadyBoundTheApproval(): void
+    {
+        $binderCalls = 0;
+        $boundId = null;
+        $coordinator = null;
+        $coordinator = $this->coordinator(
+            function () use (&$coordinator): never {
+                $coordinator->reconcileProviderProof(
+                    $this->transaction(),
+                    self::OPERATION_UUID,
+                    self::correlatedProof(self::approvedResponse(), self::OPERATION_UUID)
+                );
+                throw new \RuntimeException('timeout after the webhook completed');
+            },
+            static function (array $identity, string $providerId) use (&$binderCalls, &$boundId): array {
+                unset($identity);
+                ++$binderCalls;
+                $boundId = $providerId;
+                return ['bound' => true, 'provider_transaction_id' => $providerId];
+            },
+            null,
+            static function () use (&$boundId): array {
+                return null === $boundId
+                    ? ['status' => 'unbound', 'provider_transaction_id' => null]
+                    : ['status' => 'bound', 'provider_transaction_id' => $boundId];
+            }
+        );
+
+        $result = $coordinator->execute($this->transaction(), 'card-token-secret');
+
+        self::assertSame('succeeded', $result['status'], 'A lost response must not hide an approval another worker already proved.');
+        self::assertSame(1, $binderCalls);
+        self::assertSame('succeeded', $this->repository->findByUuid(self::OPERATION_UUID)['remote_status']);
+    }
+
+    public function testSynchronousDeclineConvergesWhenTheWebhookRecordedTheSameDeclineFirst(): void
+    {
+        $coordinator = null;
+        $webhookResult = null;
+        $coordinator = $this->coordinator(
+            function () use (&$coordinator, &$webhookResult): array {
+                $webhookResult = $coordinator->reconcileProviderProof(
+                    $this->transaction(),
+                    self::OPERATION_UUID,
+                    self::correlatedProof(self::declinedResponse(), self::OPERATION_UUID)
+                );
+                return self::declinedResponse();
+            },
+            static fn (): array => ['bound' => true, 'provider_transaction_id' => '51177123']
+        );
+
+        $result = $coordinator->execute($this->transaction(), 'card-token-secret');
+
+        self::assertSame('declined', $webhookResult['status']);
+        self::assertSame('declined', $result['status'], 'An identical persisted decline lets the shopper retry immediately.');
+    }
+
+    public function testConflictingConcurrentApprovalStillRequiresAttention(): void
+    {
+        $coordinator = $this->coordinator(
+            function (): array {
+                self::assertTrue($this->repository->transitionRemote(
+                    self::OPERATION_UUID,
+                    'processing',
+                    'succeeded',
+                    ['vendor_transaction_id' => '59999999']
+                ));
+                return self::approvedResponse();
+            },
+            static fn (array $identity, string $providerId): array => ['bound' => true, 'provider_transaction_id' => $providerId]
+        );
+
+        $result = $coordinator->execute($this->transaction(), 'card-token-secret');
+
+        self::assertNotSame('succeeded', $result['status'], 'A different provider transaction id must never be treated as convergence.');
+    }
+
     public function testFreshTokenRecoversAnAbandonedCreatedAttemptAfterTheClaimLease(): void
     {
         $now = '2026-07-21 00:00:00';
@@ -790,9 +988,12 @@ final class PurchaseCoordinatorTest extends TestCase
         self::assertSame(0, $binderCalls);
     }
 
-    public function testCanceledAttemptCannotOpenASecondProviderMutationForTheSameTransaction(): void
+    public function testClosedAttemptAllowsASuccessorAndAConflictingLateApprovalIsSurfacedForReview(): void
     {
+        $successorUuid = '00000000-0000-4000-8000-000000000323';
+        $operationUuids = [self::OPERATION_UUID, $successorUuid];
         $providerCalls = 0;
+        $boundId = null;
         $coordinator = $this->coordinator(
             static function () use (&$providerCalls): \WP_Error|array {
                 ++$providerCalls;
@@ -800,10 +1001,23 @@ final class PurchaseCoordinatorTest extends TestCase
                     ? new \WP_Error('timeout', 'Unknown provider response')
                     : self::approvedResponse('51177998');
             },
-            static fn (array $identity, string $providerId): array => [
-                'bound' => true,
-                'provider_transaction_id' => $providerId,
-            ]
+            static function (array $identity, string $providerId) use (&$boundId): array {
+                unset($identity);
+                $boundId = $providerId;
+                return ['bound' => true, 'provider_transaction_id' => $providerId];
+            },
+            static function () use (&$operationUuids): string {
+                return (string) array_shift($operationUuids);
+            },
+            static function (array $identity, string $providerId) use (&$boundId): array {
+                unset($identity);
+                if (null === $boundId) {
+                    return ['status' => 'unbound', 'provider_transaction_id' => null];
+                }
+                return $providerId === $boundId
+                    ? ['status' => 'bound', 'provider_transaction_id' => $boundId]
+                    : ['status' => 'mismatch', 'provider_transaction_id' => $boundId];
+            }
         );
         $first = $coordinator->execute($this->transaction(), 'first-card-token');
         self::assertSame('indeterminate', $first['status']);
@@ -816,12 +1030,28 @@ final class PurchaseCoordinatorTest extends TestCase
 
         $successor = $coordinator->execute($this->transaction(), 'second-card-token');
 
-        self::assertInstanceOf(\WP_Error::class, $successor);
-        self::assertSame('ys_helcim_purchase_successor_blocked', $successor->get_error_code());
-        self::assertSame(1, $providerCalls, 'No B provider call may exist while A can still receive late approval proof.');
-        self::assertCount(1, $this->database->allRows());
-        self::assertSame('canceled', $this->repository->findByUuid(self::OPERATION_UUID)['remote_status']);
-        self::assertNotNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
+        self::assertSame('succeeded', $successor['status'], 'A verified closed attempt must not strand the order.');
+        self::assertSame(2, $providerCalls);
+        self::assertSame('51177998', $boundId);
+
+        $late = $coordinator->reconcileProviderProof(
+            $this->transaction(),
+            self::OPERATION_UUID,
+            self::correlatedProof(self::approvedResponse('51177123'), self::OPERATION_UUID)
+        );
+
+        self::assertSame('attention_required', $late['status']);
+        self::assertSame('provider_id_mismatch', $late['error_code']);
+        self::assertSame('51177998', $boundId, 'The paid order is never rebound to the late charge.');
+        $row = $this->repository->findByUuid(self::OPERATION_UUID);
+        self::assertSame('succeeded', $row['remote_status']);
+        self::assertSame('failed', $row['local_status']);
+        $attention = $this->repository->findPurchasesNeedingAttention('ys_helcim_js', 10, 7);
+        self::assertContains(
+            self::OPERATION_UUID,
+            array_map(static fn (array $attempt): string => (string) $attempt['operation_uuid'], $attention),
+            'A second real charge must reach the administrator for a refund decision.'
+        );
     }
 
     public function testLateApprovalProviderMismatchIsPersistedFromTheSucceededFastPath(): void
@@ -856,7 +1086,12 @@ final class PurchaseCoordinatorTest extends TestCase
         self::assertSame('succeeded', $row['remote_status']);
         self::assertSame('failed', $row['local_status']);
         self::assertSame('provider_id_mismatch', $row['local_error_code']);
-        self::assertNotNull($row['active_scope_key'], 'A proven but locally mismatched charge must keep the purchase quarantined.');
+        $attention = $this->repository->findPurchasesNeedingAttention('ys_helcim_js', 10, 7);
+        self::assertContains(
+            self::OPERATION_UUID,
+            array_map(static fn (array $attempt): string => (string) $attempt['operation_uuid'], $attention),
+            'A proven but locally mismatched charge must stay administrator-visible.'
+        );
     }
 
     public function testAppliedPurchasePersistsASecondProviderIdAsAnAttentionAnomaly(): void

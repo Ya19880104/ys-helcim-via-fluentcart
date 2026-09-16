@@ -2,9 +2,9 @@
 
 Helcim payment integration for FluentCart with durable payment operations, remote-first refunds, and signed webhook recovery.
 
-> **Stable release — 1.1.0**
+> **Stable release — 1.1.1**
 >
-> This is the reviewed dual-gateway v1.1.0 release: the hosted HelcimPay.js modal and the Helcim.js inline form are both registered only when their current-mode credentials and the shared durable recovery runtime are available. Every deployment must still pass the environment, browser, provider, and runtime verification gates below.
+> This is the dual-gateway v1.1.1 maintenance release: the hosted HelcimPay.js modal and the Helcim.js inline form are both registered only when their current-mode credentials and the shared durable recovery runtime are available. Every deployment must still pass the environment, browser, provider, and runtime verification gates below.
 
 ## Payment methods
 
@@ -85,16 +85,20 @@ If the journal cannot be created, claimed, or read back, no hosted session is sh
 
 When the browser callback is lost, the one-minute recovery worker begins provider lookup after the operation is five minutes old. During the early safety window, only one exact approved result bound to that operation can resolve the remote state; persisted success resumes local completion idempotently, and recovery never sends another purchase.
 
-- An empty provider collection is never proof that no charge occurred and never releases the active payment scope.
-- An empty or declined observation before the 70-minute checkout-material safety boundary does not clear the modal metadata or unlock another payment attempt.
-- After that safety boundary, one exact declined result may resolve the operation as declined; an empty result still cannot do so.
-- After that safety boundary, two authenticated empty reads may mark the expired checkout `canceled` for audit and late-proof recovery, but the transaction scope stays quarantined and no Hosted or Inline successor session is opened. This also applies to legacy canceled rows whose older runtime already cleared the scope.
+- An empty provider collection inside the checkout's validity window is never proof that no charge occurred and never releases the active payment scope.
+- An empty or declined observation before the 70-minute checkout-material safety boundary (Helcim's 60-minute token life plus a 10-minute indexing grace) does not clear the modal metadata or unlock another payment attempt.
+- After that safety boundary, one exact declined result resolves the operation as declined.
+- After that safety boundary the payment window can no longer charge and any earlier charge has long been indexed by invoice number, so two consecutive authenticated empty reads close the abandoned checkout as `canceled`, free the transaction scope, and add an order note. The order stays unpaid, matching FluentCart's own gateways, and the shopper can pay again. Exact late approval of a closed checkout still binds; if the order was meanwhile paid by another charge, the conflict is persisted as a provider-ID mismatch for administrator review. The recovery sweep closes expired windows even after automatic lookups paused, and releases legacy canceled rows that still hold the scope.
 - The automatic provider-lookup phase is bounded to seven claimed attempts with persisted backoff. If no exact proof is available, automatic recovery pauses while the operation and active scope remain locked.
-- A paused or charged-but-locally-incomplete operation appears in a `manage_options` WordPress admin notice. An administrator may use **Check Helcim once** for one nonce-protected lookup; this does not reset the automatic retry budget, and an inconclusive result remains locked.
-- Paused operations are intentionally retained rather than auto-deleted or auto-failed. Monitor the admin notice until exact signed-webhook/provider evidence or a conclusive **Check Helcim once** result resolves the operation; an empty lookup is never authority to unlock a replacement charge.
+- A paused or charged-but-locally-incomplete operation appears in a `manage_options` WordPress admin notice. An administrator may use **Check Helcim once** for one nonce-protected lookup; this does not reset the automatic retry budget, and an inconclusive result remains locked. A closed abandoned checkout is not shown there.
+- Paused operations are intentionally retained rather than auto-deleted or auto-failed. Monitor the admin notice until exact signed-webhook/provider evidence or a conclusive **Check Helcim once** result resolves the operation.
 - Retained rows can accumulate, so operators should monitor their count and age. A row that remains after seven attempts is an expected fail-closed state, not by itself evidence that WordPress Cron stopped; expired encrypted checkout material is purged while the audit row and transaction-scoped lock remain.
 - The lock applies only to the original FluentCart transaction. It prevents another charge for that unresolved transaction without disabling the gateway or blocking a different new transaction.
-- A fresh attempt for the same transaction is allowed only after definitive no-charge evidence (`declined`, a never-sent `failed`, or a pre-provider `expired` state). A `canceled` quarantine requires exact reconciliation or administrator handling; empty lookup results never authorize a retry.
+- A fresh attempt for the same transaction is allowed only after no-charge evidence: `declined`, a never-sent `failed`, a pre-provider `expired` state, or a `canceled` checkout closed after the safety boundary.
+
+### Uncertain results in the browser
+
+When a checkout page cannot trust its confirmation (a Helcim webhook finished the same payment first, the response was lost, or a hosted window reported no usable result), it asks the read-only `ys_helcim_fct_payment_status` endpoint, authorized by a transaction-bound status token issued with the order. A paid order redirects to the receipt; a transaction with no journaled charge attempt, or a declined, never-sent, or closed-expired attempt, lets the shopper try again; anything still unresolved keeps the page locked with a "do not pay again" message after about two and a half minutes of checks. The endpoint never contacts Helcim and never changes state.
 - A successfully applied purchase keeps its transaction-family reservation permanently. This is intentional: even if another request read an empty family immediately before the successful row was inserted, the database UNIQUE reservation still prevents that stale request from opening a second provider session. Refund and reverse scopes continue to release after their local effects are applied.
 
 Before enabling hosted checkout on each test/live credential set, confirm that a harmless filtered `GET /card-transactions` request succeeds and returns the documented root JSON list. A `401`, `403`, timeout, malformed envelope, or missing recurring event disables new hosted checkout rather than weakening recovery.

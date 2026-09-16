@@ -189,15 +189,13 @@ final class YSHelcimPurchaseCoordinator {
 				if ( YSHelcimOperationState::REMOTE_SUCCEEDED === $remote_status ) {
 					return self::result( $attempt, self::ATTENTION_REQUIRED, 'transaction_already_paid', true );
 				}
-				if ( YSHelcimOperationState::REMOTE_CANCELED === $remote_status ) {
-					return self::purchaseSuccessorBlocked();
-				}
 				if (
 					! in_array(
 						$remote_status,
 						array(
 							YSHelcimOperationState::REMOTE_DECLINED,
 							YSHelcimOperationState::REMOTE_FAILED,
+							YSHelcimOperationState::REMOTE_CANCELED,
 							YSHelcimOperationState::REMOTE_EXPIRED,
 						),
 						true
@@ -286,14 +284,14 @@ final class YSHelcimPurchaseCoordinator {
 			);
 		} catch ( \Throwable $exception ) {
 			unset( $exception );
-			return $this->persistIndeterminate( $row, 'provider_exception', $replayed );
+			return $this->persistIndeterminate( $operation, $row, 'provider_exception', $replayed, $incoming_id );
 		}
 
 		$approved = self::strictApprovedTransaction( $provider_outcome, $identity );
 		if ( null !== $approved ) {
 			$provider_id = YSHelcimTransactionId::normalize( $approved['transactionId'] );
 			if ( null === $provider_id ) {
-				return $this->persistIndeterminate( $row, 'provider_proof_invalid', $replayed );
+				return $this->persistIndeterminate( $operation, $row, 'provider_proof_invalid', $replayed, $incoming_id );
 			}
 
 			$persisted = $this->operations->transitionRemote(
@@ -309,6 +307,11 @@ final class YSHelcimPurchaseCoordinator {
 				YSHelcimOperationState::REMOTE_SUCCEEDED !== (string) $current['remote_status'] ||
 				$provider_id !== YSHelcimTransactionId::normalize( $current['vendor_transaction_id'] ?? null )
 			) {
+				$converged = $this->convergeOnPersistedOutcome( $operation, $current, $provider_id, false, $incoming_id, $replayed );
+				if ( null !== $converged ) {
+					return $converged;
+				}
+
 				return self::result(
 					$current ?? $row,
 					self::INDETERMINATE,
@@ -333,6 +336,11 @@ final class YSHelcimPurchaseCoordinator {
 			$current = $this->operations->findByUuid( (string) $row['operation_uuid'] );
 			if ( true === $persisted && is_array( $current ) && YSHelcimOperationState::REMOTE_DECLINED === $current['remote_status'] ) {
 				return self::result( $current, self::DECLINED, 'provider_declined', $replayed );
+			}
+
+			$converged = $this->convergeOnPersistedOutcome( $operation, $current, null, true, $incoming_id, $replayed );
+			if ( null !== $converged ) {
+				return $converged;
 			}
 
 			return self::result( $current ?? $row, self::INDETERMINATE, 'journal_outcome_unpersisted', $replayed );
@@ -364,7 +372,7 @@ final class YSHelcimPurchaseCoordinator {
 			return self::result( $current ?? $row, self::INDETERMINATE, 'journal_outcome_unpersisted', $replayed );
 		}
 
-		return $this->persistIndeterminate( $row, 'provider_outcome_unproven', $replayed );
+		return $this->persistIndeterminate( $operation, $row, 'provider_outcome_unproven', $replayed, $incoming_id );
 	}
 
 	/**
@@ -466,6 +474,11 @@ final class YSHelcimPurchaseCoordinator {
 				YSHelcimOperationState::REMOTE_SUCCEEDED !== (string) $current['remote_status'] ||
 				$provider_id !== YSHelcimTransactionId::normalize( $current['vendor_transaction_id'] ?? null )
 			) {
+				$converged = $this->convergeOnPersistedOutcome( $operation, $current, $provider_id, false, $provider_id, true );
+				if ( null !== $converged ) {
+					return $converged;
+				}
+
 				return self::result( $current ?? $row, self::INDETERMINATE, 'journal_outcome_unpersisted', true );
 			}
 
@@ -495,6 +508,11 @@ final class YSHelcimPurchaseCoordinator {
 		);
 		$current = $this->operations->findByUuid( $operation_uuid );
 		if ( true !== $persisted || ! is_array( $current ) || YSHelcimOperationState::REMOTE_DECLINED !== (string) $current['remote_status'] ) {
+			$converged = $this->convergeOnPersistedOutcome( $operation, $current, null, true, null, true );
+			if ( null !== $converged ) {
+				return $converged;
+			}
+
 			return self::result( $current ?? $row, self::INDETERMINATE, 'journal_outcome_unpersisted', true );
 		}
 
@@ -788,7 +806,13 @@ final class YSHelcimPurchaseCoordinator {
 	}
 
 	/** @return array<string, mixed> */
-	private function persistIndeterminate( array $row, string $error_code, bool $replayed ): array {
+	private function persistIndeterminate(
+		YSHelcimPurchaseOperation $operation,
+		array $row,
+		string $error_code,
+		bool $replayed,
+		?string $incoming_id
+	): array {
 		$persisted = $this->operations->transitionRemote(
 			(string) $row['operation_uuid'],
 			YSHelcimOperationState::REMOTE_PROCESSING,
@@ -800,10 +824,55 @@ final class YSHelcimPurchaseCoordinator {
 		);
 		$current = $this->operations->findByUuid( (string) $row['operation_uuid'] );
 		if ( true !== $persisted ) {
+			$converged = $this->convergeOnPersistedOutcome( $operation, $current, null, false, $incoming_id, $replayed );
+			if ( null !== $converged ) {
+				return $converged;
+			}
+
 			return self::result( $current ?? $row, self::INDETERMINATE, 'journal_outcome_unpersisted', $replayed );
 		}
 
 		return self::result( $current ?? $row, self::INDETERMINATE, $error_code, $replayed );
+	}
+
+	/**
+	 * A lost compare-and-swap is not an unproven outcome when another worker (the
+	 * Helcim webhook, recovery, or a second browser request) already persisted the
+	 * same exact result for this attempt. Helcim delivers the purchase webhook within
+	 * seconds, often before the synchronous purchase response returns.
+	 *
+	 * @param array<string, mixed>|null $current     Row re-read after the lost transition.
+	 * @param string|null               $approved_id Exact approval this worker holds, or null.
+	 * @param bool                      $declined    Whether this worker holds an exact decline.
+	 * @return array<string, mixed>|null Converged result; null keeps the caller's unpersisted result.
+	 */
+	private function convergeOnPersistedOutcome(
+		YSHelcimPurchaseOperation $operation,
+		?array $current,
+		?string $approved_id,
+		bool $declined,
+		?string $incoming_id,
+		bool $replayed
+	): ?array {
+		if ( ! is_array( $current ) || ! $operation->matchesIdentityRow( $current ) ) {
+			return null;
+		}
+
+		$remote_status = (string) ( $current['remote_status'] ?? '' );
+		if ( YSHelcimOperationState::REMOTE_SUCCEEDED === $remote_status ) {
+			$persisted_id = YSHelcimTransactionId::normalize( $current['vendor_transaction_id'] ?? null );
+			if ( $declined || null === $persisted_id || ( null !== $approved_id && $approved_id !== $persisted_id ) ) {
+				return null;
+			}
+
+			return $this->completeLocalBinding( $operation, $current, $incoming_id, $replayed );
+		}
+
+		if ( YSHelcimOperationState::REMOTE_DECLINED === $remote_status && null === $approved_id ) {
+			return self::result( $current, self::DECLINED, 'provider_declined', $replayed );
+		}
+
+		return null;
 	}
 
 	/** @param mixed $outcome @param array<string, int|string> $identity */
@@ -933,13 +1002,6 @@ final class YSHelcimPurchaseCoordinator {
 		return new \WP_Error(
 			'ys_helcim_operation_conflict',
 			__( 'The purchase operation changed while it was being claimed.', 'ys-helcim-via-fluentcart' )
-		);
-	}
-
-	private static function purchaseSuccessorBlocked(): \WP_Error {
-		return new \WP_Error(
-			'ys_helcim_purchase_successor_blocked',
-			__( 'A previous payment attempt for this transaction still requires exact reconciliation. No new payment session was opened; please contact the store.', 'ys-helcim-via-fluentcart' )
 		);
 	}
 }

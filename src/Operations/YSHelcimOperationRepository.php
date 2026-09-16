@@ -151,13 +151,13 @@ final class YSHelcimOperationRepository {
 			return self::invalidOperation();
 		}
 
-		// Only a definitive no-charge terminal state may gain a provider successor.
-		// The history decision happens before INSERT, so an in-flight predecessor can
-		// never complete and release its scope between this read and a second session
-		// being created. Canceled is a quarantine, not no-charge proof; succeeded may
-		// still be between remote proof and local apply. The active-scope UNIQUE
-		// constraint remains the concurrent-first-attempt fallback, while this durable
-		// history guard also protects legacy rows whose older code released the scope.
+		// Only a no-charge terminal state may gain a provider successor. The history
+		// decision happens before INSERT, so an in-flight predecessor can never complete
+		// and release its scope between this read and a second session being created.
+		// Canceled is a verified expired checkout; succeeded may still be between remote
+		// proof and local apply. The active-scope UNIQUE constraint remains the
+		// concurrent-first-attempt fallback, while this durable history guard also
+		// protects legacy rows whose older code released the scope.
 		if ( 'purchase' === $operation_type ) {
 			$prior_attempts = $this->findPurchasesByIdentity( (int) $operation['transaction_id'] );
 			if ( is_wp_error( $prior_attempts ) ) {
@@ -183,16 +183,7 @@ final class YSHelcimOperationRepository {
 					return self::purchaseScopeBusy();
 				}
 
-				if (
-					in_array(
-						$prior_status,
-						array(
-							YSHelcimOperationState::REMOTE_CANCELED,
-							YSHelcimOperationState::REMOTE_SUCCEEDED,
-						),
-						true
-					)
-				) {
+				if ( YSHelcimOperationState::REMOTE_SUCCEEDED === $prior_status ) {
 					return self::purchaseSuccessorBlocked();
 				}
 
@@ -202,6 +193,7 @@ final class YSHelcimOperationRepository {
 						array(
 							YSHelcimOperationState::REMOTE_DECLINED,
 							YSHelcimOperationState::REMOTE_FAILED,
+							YSHelcimOperationState::REMOTE_CANCELED,
 							YSHelcimOperationState::REMOTE_EXPIRED,
 						),
 						true
@@ -901,15 +893,9 @@ final class YSHelcimOperationRepository {
 					)
 				)
 				OR (
-					-- Quarantined expired checkouts retain their scope in current
-					-- versions; legacy rows may be scope free. Both require review.
-					remote_status = 'canceled'
-					AND local_status = 'pending'
-				)
-				OR (
 					-- A provider charge is proven but local application is incomplete.
-					-- A legacy scope may already be free when a quarantined checkout
-					-- receives late proof, or after a crash between proof and local bind.
+					-- The scope is already free when an expired checkout receives late
+					-- proof, or after a crash between proof and local bind.
 					-- Every non-applied local state must remain administrator-visible.
 					remote_status = 'succeeded'
 					AND local_status IN ('pending', 'failed', 'applying')
@@ -970,24 +956,68 @@ final class YSHelcimOperationRepository {
 	}
 
 	/**
-	 * Record an empty provider lookup for a hosted purchase as unresolved.
+	 * Hosted checkouts old enough that their Helcim session can no longer charge.
 	 *
-	 * Absence is never proof that no transaction was created. This keeps the
-	 * active scope lock and records durable administrator attention while later
-	 * exact provider evidence may still resolve the operation.
+	 * Includes rows whose bounded recovery already paused, so an abandoned payment
+	 * window is closed automatically instead of waiting on an administrator, and
+	 * legacy canceled rows that still hold the purchase scope.
 	 *
-	 * @return bool|\WP_Error
+	 * @return array<int,array<string,mixed>>|\WP_Error
 	 */
-	public function recordHostedEmptyObservation( string $operation_uuid, string $expected_remote_status ) {
-		$operation_uuid = strtolower( trim( $operation_uuid ) );
+	public function findHostedCheckoutsAwaitingRelease( string $created_before, string $due_before, int $limit ) {
 		if (
-			1 !== preg_match( '/\A[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/', $operation_uuid ) ||
-			! in_array(
-				$expected_remote_status,
-				array( YSHelcimOperationState::REMOTE_PROCESSING, YSHelcimOperationState::REMOTE_INDETERMINATE ),
-				true
-			)
+			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $created_before ) ||
+			1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $due_before ) ||
+			$limit < 1 ||
+			$limit > 100
 		) {
+			return self::invalidOperation();
+		}
+		if ( property_exists( $this->database, 'last_error' ) ) {
+			$this->database->last_error = '';
+		}
+		$query = $this->database->prepare(
+			"/* ys_helcim_hosted_checkout_release_scan */
+			SELECT * FROM {$this->table}
+			WHERE operation_type = 'purchase'
+			AND gateway = 'ys_helcim'
+			AND local_status = 'pending'
+			AND active_scope_key IS NOT NULL
+			AND (
+				(
+					remote_status IN ('processing', 'indeterminate')
+					AND created_at <= %s
+					AND (next_recovery_at IS NULL OR next_recovery_at <= %s)
+				)
+				OR remote_status = 'canceled'
+			)
+			ORDER BY created_at ASC, id ASC
+			LIMIT %d",
+			$created_before,
+			$due_before,
+			$limit
+		);
+		try {
+			$rows = $this->database->get_results( $query, ARRAY_A );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return self::journalUnavailable();
+		}
+		if ( ! is_array( $rows ) || '' !== (string) ( $this->database->last_error ?? '' ) ) {
+			return self::journalUnavailable();
+		}
+
+		return array_values( $rows );
+	}
+
+	/**
+	 * Free the purchase scope a legacy canceled checkout still holds.
+	 *
+	 * @return bool|\WP_Error True when this caller released the scope.
+	 */
+	public function releaseCanceledScope( string $operation_uuid ) {
+		$operation_uuid = strtolower( trim( $operation_uuid ) );
+		if ( 1 !== preg_match( '/\A[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/', $operation_uuid ) ) {
 			return self::invalidOperation();
 		}
 
@@ -998,37 +1028,27 @@ final class YSHelcimOperationRepository {
 		if (
 			! is_array( $current ) ||
 			'purchase' !== (string) ( $current['operation_type'] ?? '' ) ||
-			'ys_helcim' !== (string) ( $current['gateway'] ?? '' ) ||
-			$expected_remote_status !== (string) ( $current['remote_status'] ?? '' ) ||
-			! in_array(
-				(string) ( $current['local_status'] ?? '' ),
-				array( YSHelcimOperationState::LOCAL_PENDING, YSHelcimOperationState::LOCAL_FAILED ),
-				true
-			) ||
-			'' === (string) ( $current['active_scope_key'] ?? '' ) ||
-			'' === (string) ( $current['updated_at'] ?? '' )
+			YSHelcimOperationState::REMOTE_CANCELED !== (string) ( $current['remote_status'] ?? '' ) ||
+			YSHelcimOperationState::LOCAL_PENDING !== (string) ( $current['local_status'] ?? '' ) ||
+			'' === (string) ( $current['active_scope_key'] ?? '' )
 		) {
 			return false;
 		}
 
 		try {
-			$now = ( $this->clock )();
+			$now     = ( $this->clock )();
 			$updated = $this->database->update(
 				$this->table,
 				array(
-					'remote_status'            => YSHelcimOperationState::REMOTE_INDETERMINATE,
-					'remote_error_code'        => 'ys_helcim_hosted_lookup_empty_unresolved',
-					'remote_error_message'     => YSHelcimSanitizer::errorText( 'Helcim returned an empty collection. Absence is not payment proof; this operation remains locked until exact provider evidence is available.' ),
-					'encrypted_material'       => null,
-					'material_expires_at'      => null,
-					'confirm_token_hash'       => null,
-					'confirm_token_expires_at' => null,
-					'updated_at'               => $now,
+					'active_scope_key' => null,
+					'resolved_at'      => $now,
+					'updated_at'       => $now,
 				),
 				array(
-					'operation_uuid' => $operation_uuid,
-					'remote_status'  => $expected_remote_status,
-					'updated_at'     => (string) $current['updated_at'],
+					'operation_uuid'   => $operation_uuid,
+					'remote_status'    => YSHelcimOperationState::REMOTE_CANCELED,
+					'local_status'     => YSHelcimOperationState::LOCAL_PENDING,
+					'active_scope_key' => (string) $current['active_scope_key'],
 				)
 			);
 		} catch ( \Throwable $exception ) {

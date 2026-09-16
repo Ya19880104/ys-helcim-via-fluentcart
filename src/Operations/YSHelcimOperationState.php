@@ -44,9 +44,8 @@ final class YSHelcimOperationState {
 			self::REMOTE_DECLINED,
 			self::REMOTE_FAILED,
 			self::REMOTE_INDETERMINATE,
-			// A checkout whose Helcim session expired with no indexed transaction may
-			// be quarantined; canceled keeps the door open for exact late approval
-			// proof, but it deliberately keeps the purchase scope.
+			// A checkout whose Helcim session expired with no indexed transaction is
+			// closed as canceled; exact late approval proof can still bind it.
 			self::REMOTE_CANCELED,
 		),
 		self::REMOTE_INDETERMINATE => array(
@@ -58,8 +57,8 @@ final class YSHelcimOperationState {
 		self::REMOTE_SUCCEEDED     => array(),
 		self::REMOTE_DECLINED      => array(),
 		self::REMOTE_FAILED        => array(),
-		// Exact late approval proof (webhook or recovery lookup) may still complete a
-		// quarantined checkout, so a real charge can never become an unrecordable orphan.
+		// Exact late approval proof (webhook or recovery lookup) may still complete an
+		// expired checkout, so a real charge can never become an unrecordable orphan.
 		self::REMOTE_CANCELED      => array( self::REMOTE_SUCCEEDED ),
 		self::REMOTE_EXPIRED       => array(),
 	);
@@ -90,6 +89,11 @@ final class YSHelcimOperationState {
 	 * A scope is reusable only after definite no-charge proof, or after a non-purchase
 	 * operation is fully applied. Successful purchases retain their family reservation
 	 * permanently so a stale empty history read cannot insert a second provider session.
+	 *
+	 * Canceled means the Helcim checkout token died (60 minutes) and authenticated
+	 * lookups a further indexing grace later still found no transaction. Holding the
+	 * scope beyond that point strands the shopper's order forever, while a late charge
+	 * (which Helcim indexes within seconds) still binds and is surfaced for review.
 	 */
 	public static function shouldReleaseScope( string $remote_status, string $local_status, string $operation_type ): bool {
 		if ( self::REMOTE_SUCCEEDED === $remote_status ) {
@@ -102,6 +106,7 @@ final class YSHelcimOperationState {
 			array(
 				self::REMOTE_DECLINED,
 				self::REMOTE_FAILED,
+				self::REMOTE_CANCELED,
 				self::REMOTE_EXPIRED,
 			),
 			true

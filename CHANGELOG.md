@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-09-16
+
+### Fixed
+
+- A paid order no longer leaves the shopper on "Your payment result is still being verified. Do not submit another payment." Helcim delivers the purchase webhook within seconds, often before the synchronous purchase or browser confirmation finishes; the request that lost the durable compare-and-swap treated the identical persisted approval (or decline) as an unproven outcome. The purchase coordinator now converges on an identical persisted result in the synchronous purchase, webhook reconciliation, and lost-response paths. A different provider transaction ID is still never treated as convergence.
+- Uncertain checkout results are resolved from server state instead of dead-ending the page. Both checkout runtimes now ask a read-only, transaction-token-bound status endpoint what happened: a paid order redirects to the receipt, a definitive no-charge result (no recorded attempt, declined, never-sent failure, closed expired window) lets the shopper try again, and only a result that stays unknown keeps the page locked. Because every charge attempt is journaled before any provider request, a pending transaction without an attempt provably had no charge.
+- Abandoned hosted payment windows no longer become permanent administrator alarms or stranded orders. Once a HelcimPay.js session is past its 60-minute token life plus the 10-minute indexing grace, two authenticated empty lookups close it as `canceled`, free the purchase scope, and record an order note; the order stays unpaid (FluentCart's own gateways never auto-fail or auto-cancel abandoned payments). This runs in the recovery sweep even after automatic recovery paused, in **Check Helcim once**, and when the shopper returns to pay, which now opens a new payment window instead of asking them to contact the store. Exact late approval of a closed window still binds, and a conflicting second charge is persisted as a provider-ID mismatch for administrator review.
+- Removed the empty-observation journal write whose unchanged-row update was reported by MySQL as zero affected rows and logged as `ys_helcim_journal_unavailable`.
+
+### Changed
+
+- This intentionally relaxes the 1.1.0 rule that a `canceled` checkout quarantined its transaction forever. Production evidence showed Helcim indexes transactions by invoice number within seconds (the invoice is created one second before the purchase) while the permanent quarantine stranded real shoppers. Legacy canceled rows that still hold the scope are released by the recovery sweep or the next checkout attempt.
+
 ## [1.1.0] - 2026-07-30
 
 ### Changed

@@ -16,6 +16,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunClassInSeparateProcess;
 use PHPUnit\Framework\TestCase;
+use YangSheep\Helcim\FluentCart\Checkout\YSHelcimPaymentStatusService;
 use YangSheep\Helcim\FluentCart\HelcimPay\YSHelcimPayProcessor;
 use YangSheep\Helcim\FluentCart\HelcimPay\YSHelcimPaySettings;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationRepository;
@@ -93,6 +94,12 @@ final class YSHelcimPayProcessorTest extends TestCase
         self::assertSame('success', $result['status']);
         self::assertSame('custom', $result['actionName']);
         self::assertSame('ys_helcim', $result['nextAction']);
+        $paymentData = $result['payment_data'];
+        self::assertArrayHasKey('status_token', $paymentData, 'The browser needs a transaction-bound status token to resolve uncertain results.');
+        self::assertTrue(
+            YSHelcimPaymentStatusService::statusTokens()->verify($paymentData['status_token'], 'fc-hosted-transaction-741', 20)
+        );
+        unset($paymentData['status_token']);
         self::assertSame([
             'checkout_token' => 'hosted-checkout-token-741',
             'transaction_uuid' => 'fc-hosted-transaction-741',
@@ -100,7 +107,7 @@ final class YSHelcimPayProcessorTest extends TestCase
             'confirm_token' => self::CONFIRM_TOKEN,
             'confirm_nonce' => 'nonce-' . YSHelcimPayProcessor::NONCE_ACTION,
             'mode' => 'test',
-        ], $result['payment_data']);
+        ], $paymentData);
         self::assertArrayNotHasKey('secret_token', $result['payment_data']);
 
         self::assertCount(1, $this->apiCalls);
@@ -413,7 +420,12 @@ final class YSHelcimPayProcessorTest extends TestCase
      * the release target is canceled (not failed) so exact late proof can still bind.
      * Indeterminate = bounded recovery already observed the expiry.
      */
-    public function testInitializeQuarantinesAnExpiredIndeterminateBlockerWithoutOpeningASuccessor(): void
+    /**
+     * Production incident: a shopper returning to an order whose Helcim window expired was
+     * told to contact the store. Past expiry plus indexing grace, two empty authenticated
+     * reads close the old window (late approval still binds) and a new session opens.
+     */
+    public function testInitializeClosesAnExpiredBlockerAndOpensANewSessionForTheShopper(): void
     {
         self::assertIsArray($this->processor->initialize($this->paymentInstance()));
         self::assertTrue(
@@ -423,28 +435,46 @@ final class YSHelcimPayProcessorTest extends TestCase
         $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID, [], self::clockAtAge(4200));
         $result = $second->initialize($this->paymentInstance());
 
-        self::assertInstanceOf(\WP_Error::class, $result);
-        self::assertSame('ys_helcim_purchase_successor_blocked', $result->get_error_code());
+        self::assertIsArray($result, 'the shopper must be able to pay again');
+        self::assertSame(self::SECOND_OPERATION_UUID, $result['payment_data']['operation_uuid']);
+        self::assertSame('hosted-checkout-token-742', $result['payment_data']['checkout_token']);
 
         $blocker = $this->repository->findByUuid(self::OPERATION_UUID);
-        self::assertSame('canceled', $blocker['remote_status'], 'quarantined checkouts stay reachable for late proof');
-        self::assertNotNull($blocker['active_scope_key'], 'no successor may exist until exact proof resolves the canceled attempt');
+        self::assertSame('canceled', $blocker['remote_status'], 'closed checkouts stay reachable for late proof');
+        self::assertNull($blocker['active_scope_key']);
         self::assertSame('ys_helcim_session_expired_released', $blocker['remote_error_code']);
-        self::assertNotNull($blocker['next_recovery_at'], 'a quarantined checkout schedules exactly one late-proof follow-up');
+        self::assertNotNull($blocker['next_recovery_at'], 'a closed checkout schedules exactly one late-proof follow-up');
 
         $lookups = array_values(array_filter(
             $this->apiCalls,
             static fn (array $call): bool => 'card-transactions' === $call['endpoint']
         ));
-        self::assertCount(2, $lookups, 'quarantine requires two consecutive charge-detection reads');
+        self::assertCount(2, $lookups, 'closing requires two consecutive charge-detection reads');
         self::assertSame(self::OPERATION_UUID, $lookups[0]['payload']['invoiceNumber']);
 
-        self::assertNull($this->repository->findByUuid(self::SECOND_OPERATION_UUID));
-        $sessions = array_values(array_filter(
-            $this->apiCalls,
-            static fn (array $call): bool => 'helcim-pay/initialize' === $call['endpoint']
-        ));
-        self::assertCount(1, $sessions, 'only the expired A session may ever have been issued');
+        $successor = $this->repository->findByUuid(self::SECOND_OPERATION_UUID);
+        self::assertSame('processing', $successor['remote_status']);
+        self::assertNotNull($successor['active_scope_key']);
+    }
+
+    public function testInitializeFreesALegacyCanceledBlockerThatStillHoldsTheScope(): void
+    {
+        self::assertIsArray($this->processor->initialize($this->paymentInstance()));
+        $scope = $this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key'];
+        self::assertTrue($this->repository->transitionRemote(self::OPERATION_UUID, 'processing', 'canceled'));
+        // 1.1.0 kept the purchase scope on canceled rows.
+        $this->database->update(
+            'wp_ys_helcim_operations',
+            ['active_scope_key' => $scope],
+            ['operation_uuid' => self::OPERATION_UUID]
+        );
+
+        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID, [], self::clockAtAge(5000));
+        $result = $second->initialize($this->paymentInstance());
+
+        self::assertIsArray($result);
+        self::assertSame(self::SECOND_OPERATION_UUID, $result['payment_data']['operation_uuid']);
+        self::assertNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
     }
 
     /** An expired blocker with any provider transaction must stay locked and open no new session. */
@@ -735,11 +765,11 @@ final class YSHelcimPayProcessorTest extends TestCase
     }
 
     /** Released and mismatch-failed operations must surface in the attention scan. */
-    public function testAttentionScanSurfacesReleasedAndMismatchFailedOperations(): void
+    public function testAttentionScanOmitsClosedCheckoutsButSurfacesMismatchFailedOperations(): void
     {
         self::assertIsArray($this->processor->initialize($this->paymentInstance()));
 
-        // Released checkout: canceled / pending / scope NULL.
+        // Closed abandoned checkout: canceled / pending / scope NULL — an unpaid order, not an alarm.
         self::assertTrue($this->repository->transitionRemote(self::OPERATION_UUID, 'processing', 'indeterminate'));
         self::assertTrue(
             $this->repository->transitionRemote(
@@ -753,7 +783,7 @@ final class YSHelcimPayProcessorTest extends TestCase
         $rows = $this->repository->findPurchasesNeedingAttention('ys_helcim', 10, 7);
         self::assertIsArray($rows);
         $uuids = array_map(static fn (array $r): string => (string) $r['operation_uuid'], $rows);
-        self::assertContains(self::OPERATION_UUID, $uuids, 'a released checkout must be administrator-visible');
+        self::assertNotContains(self::OPERATION_UUID, $uuids, 'an abandoned, verified no-charge window must not raise an administrator alarm');
 
         // Late-proof bound remotely, locally mismatch-failed: succeeded / failed / scope NULL.
         self::assertTrue(
@@ -802,11 +832,10 @@ final class YSHelcimPayProcessorTest extends TestCase
             return;
         }
 
-        self::assertInstanceOf(\WP_Error::class, $result);
-        self::assertSame('ys_helcim_purchase_successor_blocked', $result->get_error_code());
+        self::assertIsArray($result, 'at the expiry boundary the old window closes and a new session opens');
+        self::assertSame(self::SECOND_OPERATION_UUID, $result['payment_data']['operation_uuid']);
         self::assertSame('canceled', $this->repository->findByUuid(self::OPERATION_UUID)['remote_status']);
-        self::assertNotNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
-        self::assertNull($this->repository->findByUuid(self::SECOND_OPERATION_UUID));
+        self::assertNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
     }
 
     /** @return array<string, array{0:int,1:string}> */
@@ -816,7 +845,7 @@ final class YSHelcimPayProcessorTest extends TestCase
             'one second inside the resume window (54:59)' => [3299, 'resume'],
             'exactly at the resume boundary (55:00)' => [3300, 'cooling'],
             'one second before expiry (69:59)' => [4199, 'cooling'],
-            'exactly at the expiry boundary (70:00)' => [4200, 'quarantined'],
+            'exactly at the expiry boundary (70:00)' => [4200, 'closed'],
         ];
     }
 

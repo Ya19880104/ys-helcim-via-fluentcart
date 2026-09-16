@@ -28,6 +28,8 @@
     var CONTAINER_SELECTOR = '.fluent-cart-checkout_embed_payment_container_' + SLUG;
     var POLL_INTERVAL_MS = 400;      // helcimResults polling interval
     var POLL_TIMEOUT_MS = 120000;    // tokenize wait limit (2 minutes)
+    // Server status checks after an uncertain confirmation (about 2.5 minutes in total)
+    var STATUS_POLL_DELAYS_MS = [1500, 2000, 3000, 4000, 5000, 6000, 8000, 10000, 10000, 15000, 15000, 20000, 30000, 30000];
 
     /** Server-side localized data (read defensively; abort and log if missing) */
     var cfg = window.ys_helcim_js_fct_data || null;
@@ -73,7 +75,8 @@
             tokenize_failed: 'We couldn\'t verify your card. Please check your card details and try again.',
             timeout: 'The payment timed out. To prevent an incorrect charge, refresh the page before trying again.',
             confirm_failed: 'We couldn\'t confirm your payment. Please contact the store for help.',
-            network_error: 'The payment result could not be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.'
+            network_error: 'The payment result could not be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.',
+            still_confirming: 'We are still confirming your payment. Please do not pay again. You will receive an email receipt once it is confirmed, or you can contact the store.'
         };
         var translations = (cfg && cfg.translations) || {};
         return translations[key] || defaults[key] || key;
@@ -574,15 +577,7 @@
         }).then(function (resp) {
             var isSuccess = resp && (resp.status === 'success' || resp.success === true);
             if (isSuccess && resp.redirect_url) {
-                if (detail.paymentLoader) {
-                    detail.paymentLoader.triggerPaymentCompleteEvent(resp);
-                    detail.paymentLoader.changeLoaderStatus(t('redirecting'));
-                }
-                if (window.CheckoutHelper && typeof window.CheckoutHelper.handleCheckoutRedirect === 'function') {
-                    window.CheckoutHelper.handleCheckoutRedirect(resp.redirect_url);
-                } else {
-                    window.location.href = resp.redirect_url;
-                }
+                completeRedirect(detail, resp);
                 return;
             }
             var message = (resp && (resp.message || (resp.data && resp.data.message))) || t('confirm_failed');
@@ -590,10 +585,129 @@
                 resetUi(detail, message);
                 return;
             }
-            requireReload(detail, message);
+            pollPaymentStatus(detail, paymentData, message);
         }).catch(function () {
-            requireReload(detail, t('network_error'));
+            pollPaymentStatus(detail, paymentData, t('network_error'));
         });
+    }
+
+    /**
+     * Hand a confirmed payment to FluentCart and move to the receipt page.
+     *
+     * @param {Object} detail e.detail from the load_payments event
+     * @param {Object} resp   Success payload with redirect_url and order.uuid
+     */
+    function completeRedirect(detail, resp) {
+        if (detail.paymentLoader) {
+            detail.paymentLoader.triggerPaymentCompleteEvent(resp);
+            detail.paymentLoader.changeLoaderStatus(t('redirecting'));
+        }
+        if (window.CheckoutHelper && typeof window.CheckoutHelper.handleCheckoutRedirect === 'function') {
+            window.CheckoutHelper.handleCheckoutRedirect(resp.redirect_url);
+        } else {
+            window.location.href = resp.redirect_url;
+        }
+    }
+
+    /** @returns {number[]} Delays between server status checks */
+    function statusPollDelays() {
+        var configured = cfg && cfg.status_poll_delays_ms;
+        if (Array.isArray(configured) && configured.length > 0) {
+            return configured.map(function (value) {
+                return Math.max(0, Number(value) || 0);
+            });
+        }
+        return STATUS_POLL_DELAYS_MS;
+    }
+
+    /**
+     * Ask the server what actually happened after a confirmation this page could
+     * not trust (a Helcim webhook finishing the same payment first, a dropped
+     * response, a failure before any charge). The server records every payment
+     * attempt before charging, so it can tell a paid order (redirect), a definite
+     * no-charge (allow another try) and a payment still being finalized apart.
+     * Only a result that stays unknown keeps the page locked.
+     *
+     * @param {Object} detail          e.detail from the load_payments event
+     * @param {Object} paymentData     payment_data from the order-creation response
+     * @param {string} fallbackMessage Lock message when status checks are unavailable
+     */
+    function pollPaymentStatus(detail, paymentData, fallbackMessage) {
+        if (!cfg.status_action || !paymentData || !paymentData.status_token || !paymentData.transaction_uuid) {
+            requireReload(detail, fallbackMessage);
+            return;
+        }
+
+        stopPolling();
+        activeResultHandler = null;
+        state.resultHandled = true;
+        state.processing = true;
+        setButtonBusy(true);
+        showError('');
+        if (detail.paymentLoader) {
+            detail.paymentLoader.changeLoaderStatus(t('confirming'));
+        }
+
+        var delays = statusPollDelays();
+        var attempt = 0;
+        var noAttemptObservations = 0;
+        var pendingMessage = '';
+
+        function scheduleCheck() {
+            if (attempt >= delays.length) {
+                requireReload(detail, pendingMessage || t('still_confirming'));
+                return;
+            }
+            setTimeout(checkStatus, delays[attempt]);
+            attempt += 1;
+        }
+
+        function checkStatus() {
+            var body = new URLSearchParams();
+            body.append('action', cfg.status_action);
+            body.append('transaction_uuid', paymentData.transaction_uuid);
+            body.append('status_token', paymentData.status_token);
+
+            fetch(cfg.ajax_url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                credentials: 'include',
+                body: body.toString()
+            }).then(function (response) {
+                return response.json().catch(function () {
+                    return null;
+                });
+            }).then(function (resp) {
+                if (resp && resp.status === 'success' && resp.redirect_url) {
+                    completeRedirect(detail, resp);
+                    return;
+                }
+                if (resp && resp.status === 'failed' && resp.retry_allowed === true) {
+                    // A confirmation still in flight may not have recorded its attempt
+                    // yet; only a repeated "no attempt" answer proves nothing was charged.
+                    if (resp.code === 'no_payment_attempt' && noAttemptObservations < 1) {
+                        noAttemptObservations += 1;
+                        scheduleCheck();
+                        return;
+                    }
+                    resetUi(detail, resp.message || t('confirm_failed'));
+                    return;
+                }
+                if (resp && resp.status === 'failed') {
+                    requireReload(detail, resp.message || fallbackMessage);
+                    return;
+                }
+                noAttemptObservations = 0;
+                if (resp && resp.message) {
+                    pendingMessage = resp.message;
+                }
+                scheduleCheck();
+            }).catch(function () {
+                scheduleCheck();
+            });
+        }
+
+        scheduleCheck();
     }
 
     /**
