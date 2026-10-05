@@ -574,7 +574,7 @@ final class RefundEffectHandlersTest extends TestCase
             'total' => 2100,
             'currency' => 'USD',
             'uuid' => self::OPERATION_UUID,
-            'vendor_charge_id' => '51177123',
+            'vendor_charge_id' => '81177123',
         ];
     }
 
@@ -586,7 +586,7 @@ final class RefundEffectHandlersTest extends TestCase
             'order_uuid' => 'fc-order-10',
             'customer_id' => 77,
             'source_transaction_id' => 20,
-            'provider_transaction_id' => '51177123',
+            'provider_transaction_id' => '81177123',
             'provider_action' => 'refund',
             'refund_amount' => 2100,
             'currency' => 'USD',

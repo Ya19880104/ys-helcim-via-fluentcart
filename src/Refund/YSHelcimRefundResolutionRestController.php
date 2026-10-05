@@ -348,12 +348,23 @@ final class YSHelcimRefundResolutionRestController {
 		$challenge   = $result['challenge'] ?? null;
 		$attestation = $result['parent_attestation_required'] ?? null;
 		$phrase      = $result['confirmation_phrase'] ?? null;
+		// 給操作者核對的 Helcim 讀回：候選交易類型、金額（整數分）、幣別、invoiceNumber。
+		$candidate_type     = $result['candidate_type'] ?? null;
+		$candidate_amount   = $result['candidate_amount_cents'] ?? null;
+		$candidate_currency = $result['candidate_currency'] ?? null;
+		$invoice_number     = $result['invoice_number'] ?? null;
 		if (
 			'confirmation_required' !== ( $result['status'] ?? null ) ||
 			$operation_uuid !== ( $result['operation_uuid'] ?? null ) ||
 			$candidate !== ( $result['candidate_transaction_id'] ?? null ) ||
 			null === $source ||
 			$source === $candidate ||
+			! in_array( $candidate_type, array( 'refund', 'reverse' ), true ) ||
+			! is_int( $candidate_amount ) ||
+			$candidate_amount <= 0 ||
+			! in_array( $candidate_currency, array( 'USD', 'CAD' ), true ) ||
+			! is_string( $invoice_number ) ||
+			YSHelcimRefundResolutionProof::invoiceNumber( $invoice_number ) !== $invoice_number ||
 			'resolve_positive' !== ( $result['action'] ?? null ) ||
 			! is_string( $result['proof_digest'] ?? null ) ||
 			1 !== preg_match( '/\A[a-f0-9]{64}\z/', $result['proof_digest'] ) ||
@@ -373,6 +384,10 @@ final class YSHelcimRefundResolutionRestController {
 			'operation_uuid'              => $operation_uuid,
 			'candidate_transaction_id'    => $candidate,
 			'source_transaction_id'       => $source,
+			'candidate_type'              => $candidate_type,
+			'candidate_amount_cents'      => $candidate_amount,
+			'candidate_currency'          => $candidate_currency,
+			'invoice_number'              => $invoice_number,
 			'action'                      => 'resolve_positive',
 			'parent_attestation_required' => $attestation,
 			'challenge'                   => $challenge,

@@ -6,6 +6,7 @@ namespace YangSheep\Helcim\FluentCart\Tests\Unit\Refund;
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use YangSheep\Helcim\FluentCart\Refund\YSHelcimProviderRefundSync;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundOptionsLoader;
 
 final class RefundOptionsLoaderTest extends TestCase
@@ -77,7 +78,7 @@ final class RefundOptionsLoaderTest extends TestCase
             7 => $this->context(['currency' => 'CAD', 'remaining_refundable' => 1200]),
             8 => $this->context([
                 'transaction_id' => 8,
-                'vendor_transaction_id' => '51177062',
+                'vendor_transaction_id' => '81177062',
                 'gateway' => 'ys_helcim_js',
                 'currency' => 'CAD',
                 'payment_mode' => 'live',
@@ -243,6 +244,38 @@ final class RefundOptionsLoaderTest extends TestCase
                 'effect_status' => 'stock_reconciliation_required',
             ]],
         ];
+    }
+
+    public function testAPendingHelcimSideRefundNamesItselfAsTheBlockerAndIsNeverOfferedForResolution(): void
+    {
+        // Helcim 後台作廢、FluentCart 還沒記錄的外部列：要擋住、要說出原因，且不能出現在「正向解決」候選。
+        $external = [
+            'operation_uuid' => YSHelcimProviderRefundSync::operationUuidFor('ys_helcim', 'test', '85267563'),
+            'order_id' => 42,
+            'operation_type' => 'reverse',
+            'gateway' => 'ys_helcim',
+            'payment_mode' => 'test',
+            'vendor_transaction_id' => '85267563',
+            'active_scope_key' => 'yshs-' . str_repeat('b', 64),
+            'remote_status' => 'succeeded',
+            'local_status' => 'failed',
+        ];
+        $pluginRow = [
+            'operation_uuid' => '00000000-0000-4000-8000-000000000031',
+            'vendor_transaction_id' => '85267599',
+        ] + $external;
+
+        $blocked = $this->loader($this->snapshot(['operations' => [$external]]), [7 => $this->context()])->load(42);
+        $pluginBlocked = $this->loader($this->snapshot(['operations' => [$pluginRow]]), [7 => $this->context()])->load(42);
+        $applied = $this->loader($this->snapshot(['operations' => [['active_scope_key' => null, 'local_status' => 'applied'] + $external]]), [7 => $this->context()])->load(42);
+
+        self::assertSame('blocked', $blocked['classification']);
+        self::assertSame('provider_refund_pending', $blocked['blocker']);
+        self::assertNull($blocked['resolution_operation']);
+        self::assertSame('blocked', $pluginBlocked['classification']);
+        self::assertArrayNotHasKey('blocker', $pluginBlocked);
+        self::assertSame('helcim_only', $applied['classification']);
+        self::assertArrayNotHasKey('blocker', $applied);
     }
 
     public function testMalformedOrUnknownSameOrderOperationRowsFailClosedAsBlocked(): void
@@ -489,7 +522,7 @@ final class RefundOptionsLoaderTest extends TestCase
         return array_replace([
             'order_id' => 42,
             'transaction_id' => 7,
-            'vendor_transaction_id' => '51177061',
+            'vendor_transaction_id' => '81177061',
             'gateway' => 'ys_helcim',
             'status' => 'succeeded',
             'transaction_type' => 'charge',

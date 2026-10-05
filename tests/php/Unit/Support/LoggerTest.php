@@ -57,4 +57,15 @@ final class LoggerTest extends TestCase
         self::assertSame('[redacted]', $masked['billingAddress']);
         self::assertSame('[redacted]', $masked['customer']);
     }
+
+    public function testHelcimCustomerCodeIsFullyRedacted(): void
+    {
+        $masked = YSHelcimLogger::mask_sensitive([
+            'customerCode' => 'CST0001',
+            'response' => ['customer_code' => 'CST1023'],
+        ]);
+
+        self::assertSame('[redacted]', $masked['customerCode']);
+        self::assertSame('[redacted]', $masked['response']['customer_code']);
+    }
 }

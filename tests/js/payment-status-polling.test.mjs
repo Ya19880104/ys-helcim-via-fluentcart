@@ -319,7 +319,7 @@ describe('Uncertain hosted payment results are resolved from server state', () =
       window.dispatchEvent(hostedMessage(window, 'SUCCESS', {
         data: {
           hash: 'provider-hash-741',
-          data: { status: 'APPROVED', type: 'purchase', transactionId: '51177991', invoiceNumber: hostedPaymentData.operation_uuid },
+          data: { status: 'APPROVED', type: 'purchase', transactionId: '81177991', invoiceNumber: hostedPaymentData.operation_uuid },
         },
       }));
       await wait(60);

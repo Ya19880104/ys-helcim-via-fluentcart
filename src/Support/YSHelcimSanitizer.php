@@ -22,7 +22,7 @@ final class YSHelcimSanitizer {
 		'secrettoken', 'secret', 'checkouttoken', 'xmlhash', 'hash', 'token',
 		'js_secret_key', 'cardholdername', 'approvalcode', 'authorization',
 		'password', 'transaction_uuid', 'transactionuuid', 'trxhash',
-		'billingaddress', 'shippingaddress', 'customer', 'customerdata', 'contact',
+		'billingaddress', 'shippingaddress', 'customer', 'customercode', 'customerdata', 'contact',
 		'address', 'name', 'firstname', 'lastname', 'email', 'emailaddress', 'phone',
 		'phonenumber', 'street1', 'street2', 'city', 'province', 'state', 'postalcode',
 		'zipcode', 'country',

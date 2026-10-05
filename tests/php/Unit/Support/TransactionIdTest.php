@@ -24,8 +24,8 @@ final class TransactionIdTest extends TestCase
 
     public static function validIds(): iterable
     {
-        yield 'integer' => [51177061, '51177061'];
-        yield 'numeric string' => ['51177061', '51177061'];
+        yield 'integer' => [81177061, '81177061'];
+        yield 'numeric string' => ['81177061', '81177061'];
         yield 'platform max' => [(string) PHP_INT_MAX, (string) PHP_INT_MAX];
     }
 
@@ -39,11 +39,11 @@ final class TransactionIdTest extends TestCase
         yield 'signed string' => ['+1'];
         yield 'decimal string' => ['1.0'];
         yield 'scientific notation' => ['1e3'];
-        yield 'mixed characters' => ['tx-51177061'];
-        yield 'leading zero' => ['051177061'];
+        yield 'mixed characters' => ['tx-81177061'];
+        yield 'leading zero' => ['081177061'];
         yield 'boolean' => [true];
-        yield 'float' => [51177061.0];
-        yield 'array' => [[51177061]];
+        yield 'float' => [81177061.0];
+        yield 'array' => [[81177061]];
         yield 'above platform max' => [(string) PHP_INT_MAX . '0'];
     }
 }

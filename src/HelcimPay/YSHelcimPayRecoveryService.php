@@ -16,6 +16,7 @@ use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationScope;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationState;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimPurchaseOperation;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimLogger;
+use YangSheep\Helcim\FluentCart\Support\YSHelcimOrderNote;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimTransactionId;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -547,12 +548,7 @@ final class YSHelcimPayRecoveryService {
 
 	/** Order activity writer backed by FluentCart's own order log. */
 	public static function fluentCartOrderNoteWriter(): callable {
-		return static function ( int $order_id, string $title, string $message ): void {
-			$order = \FluentCart\App\Models\Order::query()->where( 'id', $order_id )->first();
-			if ( is_object( $order ) && method_exists( $order, 'addLog' ) ) {
-				$order->addLog( $title, $message, 'info', 'Helcim' );
-			}
-		};
+		return YSHelcimOrderNote::writer();
 	}
 
 	private function writeOrderNote( int $order_id, string $title, string $message ): void {

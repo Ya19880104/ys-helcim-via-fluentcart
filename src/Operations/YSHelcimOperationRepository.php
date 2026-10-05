@@ -70,6 +70,191 @@ final class YSHelcimOperationRepository {
 	}
 
 	/**
+	 * 記錄一筆「Helcim 端已完成、但不是本外掛發起」的退款／作廢（例如店家在 Helcim 後台操作）。
+	 *
+	 * 單一 INSERT 直接寫成 remote succeeded＋供應商交易編號＋本地 pending，並持有
+	 * refund-order 範圍鎖，之後交給既有本地記錄器一次寫進 FluentCart。UNIQUE 是最後防線：
+	 * 撞 vendor_transaction_id＝已記錄過；撞 active_scope_key＝同一訂單有其他退款正在進行。
+	 * 記錄完成（local applied）時沿用既有規則釋放範圍鎖，不會卡住之後的正常退款。
+	 *
+	 * 注意：外部作廢（reverse）的 parent_operation_uuid 是「被作廢的 purchase 作業」UUID，
+	 * 不是 refund 作業（只有外掛自己從 refund 交棒的作廢才掛在 refund 作業底下）；外部退款沒有 parent。
+	 * 因此依 root／parent 查「refund 作業列」的程式不能假設 parent 一定是 refund，必須先看
+	 * operation_type；FluentCart 退款列 meta 的 ys_helcim_root_refund_uuid 與 outbox refund_hooks
+	 * 的 root_refund_uuid 對外部作廢也會是這個 purchase UUID。
+	 *
+	 * @param array $operation Complete provider-recorded refund identity.
+	 * @return array|\WP_Error
+	 */
+	public function createProviderRecordedRefund( array $operation ) {
+		$required = array(
+			'operation_uuid',
+			'idempotency_key',
+			'scope_key',
+			'operation_type',
+			'gateway',
+			'order_id',
+			'transaction_id',
+			'transaction_uuid',
+			'amount',
+			'currency',
+			'payment_mode',
+			'request_fingerprint',
+			'vendor_transaction_id',
+			'source_vendor_transaction_id',
+			'local_payload',
+			'local_payload_hash',
+		);
+		foreach ( $required as $field ) {
+			if ( ! array_key_exists( $field, $operation ) || '' === (string) $operation[ $field ] ) {
+				return self::invalidOperation();
+			}
+		}
+
+		$uuid_pattern   = '/\A[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\z/';
+		$operation_type = strtolower( trim( (string) $operation['operation_type'] ) );
+		$operation_uuid = strtolower( trim( (string) $operation['operation_uuid'] ) );
+		$parent_uuid    = self::nullableString( $operation['parent_operation_uuid'] ?? null );
+		$parent_uuid    = null === $parent_uuid ? null : strtolower( $parent_uuid );
+		$vendor_id      = YSHelcimTransactionId::normalize( $operation['vendor_transaction_id'] );
+		$source_id      = YSHelcimTransactionId::normalize( $operation['source_vendor_transaction_id'] );
+		$local_payload  = (string) $operation['local_payload'];
+		$payload_hash   = (string) $operation['local_payload_hash'];
+		$payment_mode   = strtolower( trim( (string) $operation['payment_mode'] ) );
+
+		// 作廢（reverse）一定掛在被作廢的 purchase 作業底下；退款（refund）沒有父作業。
+		if (
+			! in_array( $operation_type, array( 'refund', 'reverse' ), true ) ||
+			( 'reverse' === $operation_type && ( null === $parent_uuid || 1 !== preg_match( $uuid_pattern, $parent_uuid ) ) ) ||
+			( 'refund' === $operation_type && null !== $parent_uuid )
+		) {
+			return self::invalidOperation();
+		}
+
+		try {
+			$scope_key    = YSHelcimOperationScope::fromBusinessKey( (string) $operation['scope_key'] );
+			$expected_key = YSHelcimIdempotency::generate(
+				$operation_type,
+				(string) $operation['transaction_uuid'],
+				(int) $operation['amount'],
+				$payment_mode,
+				$operation_uuid
+			);
+		} catch ( \InvalidArgumentException $exception ) {
+			unset( $exception );
+			return self::invalidOperation();
+		}
+
+		$decoded_payload = json_decode( $local_payload, true );
+		if (
+			1 !== preg_match( $uuid_pattern, $operation_uuid ) ||
+			! hash_equals( $expected_key, (string) $operation['idempotency_key'] ) ||
+			null === $vendor_id ||
+			null === $source_id ||
+			$vendor_id === $source_id ||
+			! is_array( $decoded_payload ) ||
+			1 !== preg_match( '/\A[a-f0-9]{64}\z/', $payload_hash ) ||
+			! hash_equals( $payload_hash, hash( 'sha256', $local_payload ) ) ||
+			! in_array( (string) $operation['gateway'], array( 'ys_helcim', 'ys_helcim_js' ), true ) ||
+			(int) $operation['order_id'] <= 0 ||
+			(int) $operation['transaction_id'] <= 0 ||
+			1 !== preg_match( '/\A[A-Z]{3}\z/', strtoupper( (string) $operation['currency'] ) ) ||
+			1 !== preg_match( '/\A[a-f0-9]{64}\z/', (string) $operation['request_fingerprint'] )
+		) {
+			return self::invalidOperation();
+		}
+
+		$expired = $this->expireStaleCreatedScope( (string) $operation['scope_key'] );
+		if ( is_wp_error( $expired ) ) {
+			return $expired;
+		}
+
+		$now = ( $this->clock )();
+		$row = array(
+			'operation_uuid'               => $operation_uuid,
+			'idempotency_key'              => (string) $operation['idempotency_key'],
+			'scope_key'                    => $scope_key,
+			'active_scope_key'             => $scope_key,
+			'operation_type'               => $operation_type,
+			'gateway'                      => (string) $operation['gateway'],
+			'order_id'                     => (int) $operation['order_id'],
+			'transaction_id'               => (int) $operation['transaction_id'],
+			'transaction_uuid'             => (string) $operation['transaction_uuid'],
+			'parent_operation_uuid'        => $parent_uuid,
+			'amount'                       => (int) $operation['amount'],
+			'currency'                     => strtoupper( (string) $operation['currency'] ),
+			'payment_mode'                 => $payment_mode,
+			'remote_status'                => YSHelcimOperationState::REMOTE_SUCCEEDED,
+			'local_status'                 => YSHelcimOperationState::LOCAL_PENDING,
+			'source_vendor_transaction_id' => $source_id,
+			'vendor_transaction_id'        => $vendor_id,
+			'provider_correlation_id'      => null,
+			'request_fingerprint'          => (string) $operation['request_fingerprint'],
+			'remote_error_code'            => null,
+			'remote_error_message'         => null,
+			'local_error_code'             => null,
+			'local_error_message'          => null,
+			'local_payload'                => $local_payload,
+			'local_payload_hash'           => $payload_hash,
+			'local_transaction_id'         => null,
+			'local_claimed_at'             => null,
+			'local_recorded_at'            => null,
+			'local_applied_at'             => null,
+			'encrypted_material'           => null,
+			'material_expires_at'          => null,
+			'confirm_token_hash'           => null,
+			'confirm_token_expires_at'     => null,
+			'recovery_attempt_count'       => 0,
+			'next_recovery_at'             => null,
+			'created_at'                   => $now,
+			'updated_at'                   => $now,
+			'resolved_at'                  => null,
+		);
+
+		if ( property_exists( $this->database, 'last_error' ) ) {
+			$this->database->last_error = '';
+		}
+		try {
+			$inserted = $this->database->insert( $this->table, $row );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return self::journalUnavailable();
+		}
+		if ( false === $inserted ) {
+			if ( false === stripos( (string) ( $this->database->last_error ?? '' ), 'duplicate' ) ) {
+				return self::journalUnavailable();
+			}
+
+			$existing = $this->findByVendorTransactionIdStrict( $vendor_id );
+			if ( is_wp_error( $existing ) ) {
+				return $existing;
+			}
+			if ( is_array( $existing ) ) {
+				return new \WP_Error(
+					'ys_helcim_provider_refund_already_recorded',
+					__( 'This Helcim refund is already recorded.', 'ys-helcim-via-fluentcart' ),
+					array( 'operation_uuid' => strtolower( (string) ( $existing['operation_uuid'] ?? '' ) ) )
+				);
+			}
+			if ( null !== $this->findActiveByScope( $scope_key ) ) {
+				return self::purchaseScopeBusy();
+			}
+
+			return new \WP_Error(
+				'ys_helcim_operation_conflict',
+				__( 'This payment operation already exists.', 'ys-helcim-via-fluentcart' )
+			);
+		}
+
+		$stored = $this->findByUuid( $operation_uuid );
+		if ( null === $stored ) {
+			return self::journalUnavailable();
+		}
+
+		return $stored;
+	}
+
+	/**
 	 * @param array $operation    Immutable operation identity and business fields.
 	 * @param bool  $allow_reverse Reverse rows may only be inserted by atomic handoff.
 	 * @return array|\WP_Error
@@ -349,6 +534,153 @@ final class YSHelcimOperationRepository {
 
 		$row = $this->database->get_row( $query, ARRAY_A );
 		return is_array( $row ) ? $row : null;
+	}
+
+	/**
+	 * 依 Helcim 交易編號找作業列（外部退款同步用來判斷「已記錄過」）。
+	 *
+	 * @return array|null|\WP_Error
+	 */
+	public function findByVendorTransactionIdStrict( string $vendor_transaction_id ) {
+		$vendor_transaction_id = YSHelcimTransactionId::normalize( $vendor_transaction_id );
+		if ( null === $vendor_transaction_id ) {
+			return self::invalidOperation();
+		}
+
+		if ( property_exists( $this->database, 'last_error' ) ) {
+			$this->database->last_error = '';
+		}
+		$query = $this->database->prepare(
+			"SELECT * FROM {$this->table} WHERE vendor_transaction_id = %s LIMIT 1",
+			$vendor_transaction_id
+		);
+
+		try {
+			$row = $this->database->get_row( $query, ARRAY_A );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return self::journalUnavailable();
+		}
+		if ( '' !== (string) ( $this->database->last_error ?? '' ) ) {
+			return self::journalUnavailable();
+		}
+
+		return null === $row || is_array( $row ) ? $row : self::journalUnavailable();
+	}
+
+	/**
+	 * Helcim 端已完成、但 FluentCart 還沒寫完的退款／作廢（最後更新早於 $updated_before），給管理員通知用。
+	 *
+	 * @return array<int,array<string,mixed>>|\WP_Error
+	 */
+	public function findRefundsAwaitingLocalRecording( string $updated_before, int $limit = 10 ) {
+		if ( 1 !== preg_match( '/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $updated_before ) || $limit < 1 || $limit > 50 ) {
+			return self::invalidOperation();
+		}
+
+		if ( property_exists( $this->database, 'last_error' ) ) {
+			$this->database->last_error = '';
+		}
+		$query = $this->database->prepare(
+			"/* ys_helcim_refund_local_attention_scan */
+			SELECT * FROM {$this->table}
+			WHERE operation_type IN ('refund', 'reverse')
+			AND remote_status = 'succeeded'
+			AND local_status IN ('pending', 'failed', 'applying', 'recorded')
+			AND updated_at <= %s
+			ORDER BY updated_at ASC, id ASC
+			LIMIT %d",
+			$updated_before,
+			$limit
+		);
+
+		try {
+			$rows = $this->database->get_results( $query, ARRAY_A );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return self::journalUnavailable();
+		}
+		if ( ! is_array( $rows ) || '' !== (string) ( $this->database->last_error ?? '' ) ) {
+			return self::journalUnavailable();
+		}
+
+		return array_values( $rows );
+	}
+
+	/**
+	 * 一張訂單上 Helcim 已成功、本地寫入未完成（pending／failed）的退款／作廢列（手動同步起頭重跑用）。
+	 *
+	 * @return array<int,array<string,mixed>>|\WP_Error
+	 */
+	public function findRefundsAwaitingLocalRecordingForOrder( int $order_id ) {
+		if ( $order_id <= 0 ) {
+			return self::invalidOperation();
+		}
+
+		if ( property_exists( $this->database, 'last_error' ) ) {
+			$this->database->last_error = '';
+		}
+		$query = $this->database->prepare(
+			"/* ys_helcim_order_refunds_awaiting_local */
+			SELECT * FROM {$this->table}
+			WHERE order_id = %d
+			AND operation_type IN ('refund', 'reverse')
+			AND remote_status = 'succeeded'
+			AND local_status IN ('pending', 'failed')
+			ORDER BY id ASC
+			LIMIT 20",
+			$order_id
+		);
+
+		try {
+			$rows = $this->database->get_results( $query, ARRAY_A );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return self::journalUnavailable();
+		}
+		if ( ! is_array( $rows ) || '' !== (string) ( $this->database->last_error ?? '' ) ) {
+			return self::journalUnavailable();
+		}
+
+		return array_values( $rows );
+	}
+
+	/**
+	 * 列出一張訂單已付款且已套用到 FluentCart 的 Helcim purchase 作業（手動同步外部退款用）。
+	 *
+	 * @return array<int,array<string,mixed>>|\WP_Error
+	 */
+	public function findAppliedPurchasesForOrder( int $order_id ) {
+		if ( $order_id <= 0 ) {
+			return self::invalidOperation();
+		}
+
+		if ( property_exists( $this->database, 'last_error' ) ) {
+			$this->database->last_error = '';
+		}
+		$query = $this->database->prepare(
+			"/* ys_helcim_order_applied_purchases */
+			SELECT * FROM {$this->table}
+			WHERE order_id = %d
+			AND operation_type = 'purchase'
+			AND remote_status = 'succeeded'
+			AND local_status = 'applied'
+			ORDER BY id ASC
+			LIMIT 20",
+			$order_id
+		);
+
+		try {
+			$rows = $this->database->get_results( $query, ARRAY_A );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return self::journalUnavailable();
+		}
+		if ( ! is_array( $rows ) || '' !== (string) ( $this->database->last_error ?? '' ) ) {
+			return self::journalUnavailable();
+		}
+
+		return array_values( $rows );
 	}
 
 	/**

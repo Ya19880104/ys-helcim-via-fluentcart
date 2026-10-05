@@ -22,11 +22,17 @@ final class YSHelcimRefundResolutionService {
 
 	private const CHALLENGE_TTL_SECONDS = 300;
 
+	/** 同 invoice 家族清單的上限：超過就不判斷（不截斷，截斷可能剛好丟掉決定結果的那一筆）。 */
+	private const MAX_FAMILY_RECORDS = 100;
+
 	/** @var callable */
 	private $credential_resolver;
 
 	/** @var callable */
 	private $provider_reader;
+
+	/** @var callable fn(string $invoice_number, string $api_token): mixed（card-transactions?invoiceNumber= 清單） */
+	private $family_lister;
 
 	/** @var callable */
 	private $local_recorder;
@@ -42,12 +48,14 @@ final class YSHelcimRefundResolutionService {
 		callable $credential_resolver,
 		callable $provider_reader,
 		callable $local_recorder,
+		callable $family_lister,
 		?callable $random_factory = null,
 		?callable $clock = null
 	) {
 		$this->credential_resolver = $credential_resolver;
 		$this->provider_reader      = $provider_reader;
 		$this->local_recorder       = $local_recorder;
+		$this->family_lister        = $family_lister;
 		$this->random_factory       = $random_factory ?? static fn (): string => random_bytes( 32 );
 		$this->clock                = $clock ?? static fn (): int => time();
 	}
@@ -130,6 +138,11 @@ final class YSHelcimRefundResolutionService {
 			'operation_uuid'              => $input['operation_uuid'],
 			'candidate_transaction_id'    => $proof['candidate_transaction_id'],
 			'source_transaction_id'       => $proof['source_transaction_id'],
+			// 讓操作者在 attestation 前有東西可以核對：Helcim 讀回的候選交易類型、金額、幣別與 invoiceNumber。
+			'candidate_type'              => $proof['candidate']['type'],
+			'candidate_amount_cents'      => $proof['candidate']['amount_cents'],
+			'candidate_currency'          => $proof['candidate']['currency'],
+			'invoice_number'              => $proof['invoice_number'],
 			'action'                      => $proof['action'],
 			'proof_digest'                => $proof['proof_digest'],
 			'parent_attestation_required' => (bool) $proof['parent_attestation_required'],
@@ -266,9 +279,46 @@ final class YSHelcimRefundResolutionService {
 		if ( is_wp_error( $source ) ) {
 			return $source;
 		}
+		$family = $this->providerFamily( $source, $credential );
+		if ( is_wp_error( $family ) ) {
+			return $family;
+		}
 
 		$operation['resolution_candidate_id'] = $candidate_transaction_id;
-		return YSHelcimRefundResolutionProof::verify( $operation, $candidate, $source );
+		return YSHelcimRefundResolutionProof::verify( $operation, $candidate, $source, $family );
+	}
+
+	/**
+	 * 列出來源交易同一 invoice 的全部 Helcim 交易，交給 verify() 套用與同步路徑相同的家族規則。
+	 * 列不出來（例外、WP_Error、形狀不對、超過上限）一律拒絕，不退回只看單筆。
+	 *
+	 * @param array<string,mixed> $source
+	 * @return array<int,mixed>|\WP_Error
+	 */
+	private function providerFamily( array $source, string $credential ) {
+		$invoice = YSHelcimRefundResolutionProof::invoiceNumber( $source['invoiceNumber'] ?? null );
+		if ( null === $invoice ) {
+			// 來源交易沒有 invoiceNumber：無從列出家族，也無從綁定候選；交給 verify() 以 mismatch 拒絕。
+			return array();
+		}
+
+		try {
+			$listed = ( $this->family_lister )( $invoice, $credential );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return self::providerUnavailable();
+		}
+		if ( is_wp_error( $listed ) || ! is_array( $listed ) ) {
+			return self::providerUnavailable();
+		}
+		if ( array_key_exists( 'data', $listed ) ) {
+			$listed = $listed['data'];
+		}
+		if ( ! is_array( $listed ) || ! array_is_list( $listed ) || count( $listed ) > self::MAX_FAMILY_RECORDS ) {
+			return self::providerUnavailable();
+		}
+
+		return $listed;
 	}
 
 	/** @return array<string,mixed>|\WP_Error */

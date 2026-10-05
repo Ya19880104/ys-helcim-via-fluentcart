@@ -178,7 +178,7 @@ final class RefundFinalizerTest extends TestCase
             'request_fingerprint' => hash('sha256', 'request-finalizer-1'),
             'local_payload' => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
             'local_payload_hash' => YSHelcimRefundPayload::hash($payload),
-            'source_vendor_transaction_id' => '51177061',
+            'source_vendor_transaction_id' => '81177061',
         ];
 
         self::assertIsArray($this->operations->create($operation));
@@ -187,7 +187,7 @@ final class RefundFinalizerTest extends TestCase
             self::OPERATION_UUID,
             'processing',
             'succeeded',
-            ['vendor_transaction_id' => '51177123']
+            ['vendor_transaction_id' => '81177123']
         ));
         self::assertTrue($this->operations->claimLocalApplying(self::OPERATION_UUID, 'pending'));
         self::assertTrue($this->operations->transitionLocal(

@@ -365,6 +365,16 @@ final class FakeWpdb
 			return null;
 		}
 
+		if (str_contains($query, 'WHERE vendor_transaction_id = %s')) {
+			foreach ($this->rows as $row) {
+				if (($row['vendor_transaction_id'] ?? null) !== null && (string) $row['vendor_transaction_id'] === (string) $value) {
+					return $row;
+				}
+			}
+
+			return null;
+		}
+
 		$field = str_contains($query, 'active_scope_key') ? 'active_scope_key' : 'operation_uuid';
         foreach ($this->rows as $row) {
             if (($row[$field] ?? null) === $value) {
@@ -536,6 +546,53 @@ final class FakeWpdb
 					[(string) ($right['updated_at'] ?? ''), (int) ($right['id'] ?? 0)]
 				);
 				return array_slice($rows, 0, max(0, $limit));
+			}
+
+			if (str_contains($query['query'], 'ys_helcim_refund_local_attention_scan')) {
+				$updatedBefore = (string) ($query['args'][0] ?? '');
+				$limit = (int) ($query['args'][1] ?? 0);
+				$rows = array_values(array_filter(
+					$this->rows,
+					static fn (array $row): bool =>
+						in_array(($row['operation_type'] ?? null), ['refund', 'reverse'], true) &&
+						($row['remote_status'] ?? null) === 'succeeded' &&
+						in_array(($row['local_status'] ?? null), ['pending', 'failed', 'applying', 'recorded'], true) &&
+						(string) ($row['updated_at'] ?? '') <= $updatedBefore
+				));
+				usort($rows, static fn (array $left, array $right): int =>
+					[(string) ($left['updated_at'] ?? ''), (int) ($left['id'] ?? 0)]
+					<=>
+					[(string) ($right['updated_at'] ?? ''), (int) ($right['id'] ?? 0)]
+				);
+				return array_slice($rows, 0, max(0, $limit));
+			}
+
+			if (str_contains($query['query'], 'ys_helcim_order_refunds_awaiting_local')) {
+				$orderId = (int) ($query['args'][0] ?? 0);
+				$rows = array_values(array_filter(
+					$this->rows,
+					static fn (array $row): bool =>
+						(int) ($row['order_id'] ?? 0) === $orderId &&
+						in_array(($row['operation_type'] ?? null), ['refund', 'reverse'], true) &&
+						($row['remote_status'] ?? null) === 'succeeded' &&
+						in_array(($row['local_status'] ?? null), ['pending', 'failed'], true)
+				));
+				usort($rows, static fn (array $left, array $right): int => (int) $left['id'] <=> (int) $right['id']);
+				return array_slice($rows, 0, 20);
+			}
+
+			if (str_contains($query['query'], 'ys_helcim_order_applied_purchases')) {
+				$orderId = (int) ($query['args'][0] ?? 0);
+				$rows = array_values(array_filter(
+					$this->rows,
+					static fn (array $row): bool =>
+						(int) ($row['order_id'] ?? 0) === $orderId &&
+						($row['operation_type'] ?? null) === 'purchase' &&
+						($row['remote_status'] ?? null) === 'succeeded' &&
+						($row['local_status'] ?? null) === 'applied'
+				));
+				usort($rows, static fn (array $left, array $right): int => (int) $left['id'] <=> (int) $right['id']);
+				return array_slice($rows, 0, 20);
 			}
 
 			if (str_contains($query['query'], 'operation_type = %s')) {

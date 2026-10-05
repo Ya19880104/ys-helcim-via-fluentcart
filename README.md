@@ -2,9 +2,9 @@
 
 Helcim payment integration for FluentCart with durable payment operations, remote-first refunds, and signed webhook recovery.
 
-> **Stable release — 1.1.1**
+> **Stable release — 1.1.3**
 >
-> This is the dual-gateway v1.1.1 maintenance release: the hosted HelcimPay.js modal and the Helcim.js inline form are both registered only when their current-mode credentials and the shared durable recovery runtime are available. Every deployment must still pass the environment, browser, provider, and runtime verification gates below.
+> This is the dual-gateway v1.1.3 maintenance release: the hosted HelcimPay.js modal and the Helcim.js inline form are both registered only when their current-mode credentials and the shared durable recovery runtime are available. Every deployment must still pass the environment, browser, provider, and runtime verification gates below.
 
 ## Payment methods
 
@@ -105,6 +105,10 @@ Before enabling hosted checkout on each test/live credential set, confirm that a
 
 The recurring event stored by WordPress is only a schedule record; it does not prove that a process is executing due events. If `DISABLE_WP_CRON` is enabled, configure and monitor an external runner that invokes WordPress cron at least once per minute. Verify that the Helcim events advance and that a deliberately due recovery operation is claimed before treating hosted recovery as available.
 
+### Card declines
+
+A declined card never leaves the shopper guessing. Helcim's decline text is mapped to one actionable message (check the security code, the card has expired, the card number is not valid, not enough funds, the billing address does not match, try again in a moment, contact your bank, or contact the store), and every message states that no payment was taken. Fraud screening and lost/stolen reasons are only ever shown as a bank decline. When Helcim returns its reason to the server (inline purchases and hash-verified hosted results), the reason (with markup removed and card-like numbers masked) and the declined transaction ID are written to the order activity log as "Helcim declined a payment attempt".
+
 ## Mandatory clean webhook
 
 The v1.1.0 recovery design requires a signed webhook for every enabled current-mode payment path. Settings validation and checkout for both hosted and inline payments fail closed when the current-mode verifier is missing.
@@ -126,6 +130,8 @@ Requirements:
 
 On receipt, the plugin verifies the signed timestamp/body, rejects stale or replayed deliveries, records a durable receipt, fetches the transaction from the API with the credential for the candidate mode, and binds the provider event to one durable payment attempt before changing FluentCart state.
 
+Refund and void events for payments taken by this plugin, such as a void made in the Helcim dashboard, go through the same checks and are recorded as described in [Refunds and voids made in Helcim](#refunds-and-voids-made-in-helcim).
+
 ## Durable purchase behavior
 
 Both payment flows use a persistent operation journal and an active-scope lock:
@@ -143,6 +149,8 @@ Do not tell a shopper to submit again while an operation is indeterminate. Resol
 
 FluentCart 1.5.2's native refund service records a local refund before calling the gateway and can leave a false local refund when the provider fails. This plugin therefore vetoes the native Helcim refund path and provides a dedicated **FluentCart → Helcim Refunds** workflow.
 
+On a FluentCart order page, **Refund** opens the same Helcim refund panel in a dialog without leaving the order; closing the dialog after a refund, void or sync reloads the order so its payment status is current. The **Helcim Refunds** page remains available for looking up any order by its number, and Ctrl-click or middle-click on the order page's Helcim refund action opens it in a new tab.
+
 The replacement flow is remote-first:
 
 1. Load and lock the refundable Helcim parent transaction.
@@ -154,7 +162,13 @@ The replacement flow is remote-first:
 
 For a full refund against a proven open batch, the narrow reverse fallback is allowed only after the original transaction and batch response prove the same approved purchase, amount, currency, batch ID, and `closed=false`. Refund and reverse are separate journaled operations with separate persisted keys.
 
-An indeterminate refund remains locked for reconciliation. The positive-resolution UI requires fresh provider proof, an explicit candidate transaction ID, operator attestation, and an exact confirmation phrase. It never converts an unknown outcome to failure merely to permit another refund.
+In practice this means a same-day payment that Helcim has not settled yet can be cancelled from the panel: enter the full amount and the plugin sends a void (Helcim "reverse"), which carries no processing fee and clears the pending charge from the card within one to two days. Helcim refuses partial refunds until the batch settles (it settles once a day), and the panel says so without moving any money. Prefer cancelling through this panel; a void or refund made directly in the Helcim dashboard is recorded back in FluentCart as described below.
+
+An indeterminate refund remains locked for reconciliation. The positive-resolution UI requires fresh provider proof, an explicit candidate transaction ID, operator attestation, and an exact confirmation phrase. The candidate must carry the same Helcim invoice number as the original payment, and Helcim's transaction list for that invoice is checked with the same rules as the Helcim sync, so a refund of another order or a refund Helcim later voided is rejected. The panel shows the candidate's type, amount and invoice number before you attest. It never converts an unknown outcome to failure merely to permit another refund.
+
+### Refunds and voids made in Helcim
+
+A refund or void made directly in the Helcim dashboard is recorded in FluentCart from Helcim's own transaction records: automatically when the signed webhook delivers it, or on demand with **Sync refunds from Helcim** in the Helcim Refunds panel. A record is written only when it matches the original payment's order, account, remaining refundable amount, and FluentCart refund accounting. A void when Helcim also lists a refund for the same payment, a refund that was later voided, or anything else that does not line up is reported for review instead of changing the order, and a Helcim transaction list too long to check completely is retried later. If Helcim has completed a refund that FluentCart could not finish recording, new refunds for that order stay blocked and an administrator notice explains the next step. Orders paid before the plugin kept its payment journal cannot be synced automatically; compare them with Helcim before refunding.
 
 ## WordPress Cron requirement
 

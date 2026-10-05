@@ -160,7 +160,7 @@ final class ApiClientFailureClassificationTest extends TestCase
             'payment/purchase',
             400,
             'POST',
-            '{"errors":{"verification":"Card is not verified"},"transactionId":51177123}',
+            '{"errors":{"verification":"Card is not verified"},"transactionId":81177123}',
         ];
         yield 'contradictory success proof' => [
             'payment/purchase',
@@ -251,6 +251,77 @@ final class ApiClientFailureClassificationTest extends TestCase
         );
     }
 
+    public function testProductionDeclinedTransactionRecordIsADefinitiveDeclineWithoutCardData(): void
+    {
+        \YSHelcimWpDouble::$response = [
+            'response' => ['code' => 500],
+            'body' => json_encode([
+                'transactionId' => '85267545',
+                'dateCreated' => '2026-01-02 03:04:05',
+                'cardBatchId' => '7100001',
+                'status' => 'DECLINED',
+                'user' => 'Helcim System',
+                'type' => 'purchase',
+                'amount' => '15',
+                'currency' => 'USD',
+                'avsResponse' => 'U',
+                'cvvResponse' => '',
+                'cardType' => 'VI',
+                'approvalCode' => '',
+                'cardToken' => 'card-token-must-not-be-kept',
+                'cardNumber' => '4111********1111',
+                'cardHolderName' => 'Card Holder',
+                'customerCode' => 'CST0001',
+                'invoiceNumber' => '9f000000-0000-4000-8000-000000000001',
+                'warning' => '',
+                'errors' => 'Transaction Declined: SUSPECTED FRAUD',
+            ], JSON_THROW_ON_ERROR),
+        ];
+
+        $result = YSHelcimApiClient::request(
+            'payment/purchase',
+            [],
+            'test-api-token',
+            'ysh-' . str_repeat('a', 32)
+        );
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        $data = $result->get_error_data();
+        self::assertSame('provider', $data['kind']);
+        self::assertFalse($data['indeterminate']);
+        self::assertTrue($data['definitive_decline']);
+        self::assertSame('definitive_decline', $data['mutation_disposition']);
+        self::assertSame('Transaction Declined: SUSPECTED FRAUD', $data['provider_errors']);
+        self::assertSame(
+            [
+                'transactionId' => '85267545',
+                'status' => 'DECLINED',
+                'type' => 'purchase',
+                'amount' => '15',
+                'currency' => 'USD',
+                'invoiceNumber' => '9f000000-0000-4000-8000-000000000001',
+                'avsResponse' => 'U',
+            ],
+            $data['declined_transaction']
+        );
+        self::assertStringNotContainsString('card-token-must-not-be-kept', (string) json_encode($data));
+        self::assertStringNotContainsString('4111', (string) json_encode($data));
+    }
+
+    public function testResponseZeroWithAConsistentDeclinedRecordIsStillADefinitiveDecline(): void
+    {
+        \YSHelcimWpDouble::$response = [
+            'response' => ['code' => 500],
+            'body' => '{"response":0,"transactionId":"85267545","status":"DECLINED","type":"purchase","amount":"15","currency":"USD","invoiceNumber":"9f000000-0000-4000-8000-000000000001","errors":"Transaction Declined: SUSPECTED FRAUD"}',
+        ];
+
+        $result = YSHelcimApiClient::request('payment/purchase', [], 'test-api-token', 'ysh-' . str_repeat('a', 32));
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertTrue($result->get_error_data()['definitive_decline']);
+        self::assertSame('85267545', $result->get_error_data()['declined_transaction']['transactionId']);
+    }
+
     /** @dataProvider nonDefinitiveServerErrorProvider */
     public function testUnknownOrIncompleteHttp500ResponsesRemainIndeterminate(string $endpoint, string $body): void
     {
@@ -276,6 +347,16 @@ final class ApiClientFailureClassificationTest extends TestCase
             'non-decline error' => ['payment/purchase', '{"response":0,"errors":"Internal server error"}'],
             'wrong mutation type' => ['payment/refund', '{"response":0,"errors":"Transaction Declined: DECLINED - Do Not Honor"}'],
             'multiple error fields' => ['payment/purchase', '{"response":0,"errors":{"one":"Transaction Declined: DECLINED","two":"Service unavailable"}}'],
+            'record says approved' => ['payment/purchase', '{"transactionId":"85267545","status":"APPROVED","type":"purchase","amount":"15","currency":"USD","errors":"Transaction Declined: SUSPECTED FRAUD"}'],
+            'record is not a purchase' => ['payment/purchase', '{"transactionId":"85267545","status":"DECLINED","type":"refund","amount":"15","currency":"USD","errors":"Transaction Declined: SUSPECTED FRAUD"}'],
+            'record without transaction id' => ['payment/purchase', '{"status":"DECLINED","type":"purchase","amount":"15","currency":"USD","errors":"Transaction Declined: SUSPECTED FRAUD"}'],
+            'record with a non-zero response' => ['payment/purchase', '{"response":1,"transactionId":"85267545","status":"DECLINED","type":"purchase","amount":"15","currency":"USD","errors":"Transaction Declined: SUSPECTED FRAUD"}'],
+            'record without decline text' => ['payment/purchase', '{"transactionId":"85267545","status":"DECLINED","type":"purchase","amount":"15","currency":"USD","errors":"Internal server error"}'],
+            'record on refund endpoint' => ['payment/refund', '{"transactionId":"85267545","status":"DECLINED","type":"purchase","amount":"15","currency":"USD","errors":"Transaction Declined: SUSPECTED FRAUD"}'],
+            // 自相矛盾：response=0 卻附 APPROVED 紀錄 → 不可判定為拒絕（顧客會被告知未扣款而重試）。
+            'response zero with an approved record' => ['payment/purchase', '{"response":0,"errors":"Transaction Declined: X","transactionId":"85267545","status":"APPROVED","type":"purchase","amount":"15","currency":"USD"}'],
+            'response zero with only a status field' => ['payment/purchase', '{"response":0,"status":"APPROVED","errors":"Transaction Declined: X"}'],
+            'response zero with only a transaction id' => ['payment/purchase', '{"response":"0","transactionId":"85267545","errors":"Transaction Declined: X"}'],
         ];
     }
 

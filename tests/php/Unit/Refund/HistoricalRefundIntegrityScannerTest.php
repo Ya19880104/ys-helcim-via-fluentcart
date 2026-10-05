@@ -57,6 +57,29 @@ final class HistoricalRefundIntegrityScannerTest extends TestCase
         }
     }
 
+    public function testARefundRecordedFromHelcimSideRecordsIsTreatedLikeAnyOtherHelcimRefund(): void
+    {
+        // 外部作廢的收據 meta：root 指向被作廢的 purchase 作業，而不是外掛的退款作業；scanner 不得視為異常。
+        $this->mutateTransaction(21, [
+            'meta' => wp_json_encode([
+                'parent_id' => 20,
+                'reason' => 'Voided in Helcim (Helcim transaction 81177123).',
+                'ys_helcim_operation_uuid' => '9a0c7f3e-1b2d-5c4e-8f60-7a8b9c0d1e2f',
+                'ys_helcim_root_refund_uuid' => '29000000-0000-4000-8000-000000000002',
+                'ys_helcim_provider_action' => 'reverse',
+                'ys_helcim_original_vendor_transaction_id' => '81177081',
+                'item_ids' => [],
+                'actor_user_id' => 0,
+            ]),
+        ]);
+
+        $report = $this->scanner()->scan();
+
+        self::assertTrue($report->isDeploymentAllowed());
+        self::assertSame(0, $report->blockerCount());
+        self::assertSame([], $this->issueCodes($report));
+    }
+
     #[DataProvider('invalidReceiptProvider')]
     public function testMissingOrMalformedRefundReceiptBlocksDeployment(mixed $receipt, string $expectedCode): void
     {
@@ -75,21 +98,21 @@ final class HistoricalRefundIntegrityScannerTest extends TestCase
         return [
             'empty legacy receipt' => ['', 'missing_refund_vendor_id'],
             'null legacy receipt' => [null, 'missing_refund_vendor_id'],
-            'non-numeric receipt' => ['refund-51177123', 'invalid_refund_vendor_id'],
-            'whitespace padded receipt' => [' 51177123 ', 'invalid_refund_vendor_id'],
+            'non-numeric receipt' => ['refund-81177123', 'invalid_refund_vendor_id'],
+            'whitespace padded receipt' => [' 81177123 ', 'invalid_refund_vendor_id'],
             'zero receipt' => ['0', 'invalid_refund_vendor_id'],
         ];
     }
 
     public function testDuplicateProviderRefundReceiptInOneModeIsReportedWithoutExposingIt(): void
     {
-        $this->seedCanonicalOrder(11, 30, 31, 'ys_helcim_js', 'test', '51177123');
+        $this->seedCanonicalOrder(11, 30, 31, 'ys_helcim_js', 'test', '81177123');
 
         $report = $this->scanner()->scan();
         $serialized = wp_json_encode($report->toArray());
 
         self::assertContains('duplicate_refund_vendor_id', $this->issueCodes($report));
-        self::assertStringNotContainsString('51177123', (string) $serialized);
+        self::assertStringNotContainsString('81177123', (string) $serialized);
         self::assertSame([
             'code' => 'duplicate_refund_vendor_id',
             'transaction_id' => 21,
@@ -100,7 +123,7 @@ final class HistoricalRefundIntegrityScannerTest extends TestCase
 
     public function testProviderReceiptMayRepeatAcrossIsolatedTestAndLiveModes(): void
     {
-        $this->seedCanonicalOrder(11, 30, 31, 'ys_helcim_js', 'live', '51177123');
+        $this->seedCanonicalOrder(11, 30, 31, 'ys_helcim_js', 'live', '81177123');
 
         $report = $this->scanner()->scan();
 
@@ -211,7 +234,7 @@ final class HistoricalRefundIntegrityScannerTest extends TestCase
             'order_id' => 999,
             'order_type' => 'payment',
             'transaction_type' => 'charge',
-            'vendor_charge_id' => '61177061',
+            'vendor_charge_id' => '91177061',
             'payment_method' => 'ys_helcim_js',
             'payment_mode' => 'test',
             'status' => 'succeeded',
@@ -347,7 +370,7 @@ final class HistoricalRefundIntegrityScannerTest extends TestCase
         int $refundId = 21,
         string $gateway = 'ys_helcim',
         string $mode = 'test',
-        string $refundReceipt = '51177123'
+        string $refundReceipt = '81177123'
     ): void {
         $this->database->seed('wp_fct_orders', [
             'id' => $orderId,
@@ -365,7 +388,7 @@ final class HistoricalRefundIntegrityScannerTest extends TestCase
             'order_id' => $orderId,
             'order_type' => 'payment',
             'transaction_type' => 'charge',
-            'vendor_charge_id' => (string) (51177061 + $chargeId),
+            'vendor_charge_id' => (string) (81177061 + $chargeId),
             'payment_method' => $gateway,
             'payment_mode' => $mode,
             'status' => 'succeeded',

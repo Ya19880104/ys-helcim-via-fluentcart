@@ -63,10 +63,66 @@
             declined_verifying: 'The payment was declined. Its final result is being verified. Do not retry this payment yet.',
             incomplete_data: 'The payment data was incomplete. Please try again.',
             window_closed_retry: 'The payment window was closed before finishing. You can reopen it to continue.',
-            still_confirming: 'We are still confirming your payment. Please do not pay again. You will receive an email receipt once it is confirmed, or you can contact the store.'
+            still_confirming: 'We are still confirming your payment. Please do not pay again. You will receive an email receipt once it is confirmed, or you can contact the store.',
+            decline_store: 'This payment could not be processed right now. No payment was taken. Please try again later or contact the store.',
+            decline_cvv: 'The card security code (CVV) did not match. No payment was taken. Please check the code and try again.',
+            decline_expired: 'The card has expired or the expiry date is incorrect. No payment was taken. Please check the date or use a different card.',
+            decline_invalid_card: 'The card number is not valid. No payment was taken. Please check the number or use a different card.',
+            decline_funds: 'The card does not have enough available funds or credit. No payment was taken. Please use a different card.',
+            decline_address: 'The billing address does not match the card. No payment was taken. Please check the billing address and try again.',
+            decline_retry: 'The card could not be processed right now. No payment was taken. Please try again in a moment.',
+            decline_issuer: 'Your bank declined this payment. No payment was taken. Please contact your bank or use a different card.',
+            decline_generic: 'The card was declined and no payment was taken. Please check the details or use a different card.'
         };
         var translations = (cfg && cfg.translations) || {};
         return translations[key] || defaults[key] || key;
+    }
+
+    // Ordered like YSHelcimDeclineMessage::PATTERNS on the server; the first match wins.
+    var DECLINE_PATTERNS = [
+        ['store', /APPL TYPE|INVALID TERM|INVALID MERCHANT|AMOUNT ERROR|SVC LMT|SERVICE LIMIT|DUPLICATE|\bDUP\b/i],
+        ['cvv', /\bCV[VCF]2?\b|\bCID\b|SECURITY CODE/i],
+        ['expired', /EXPIRED CARD|CARD (?:HAS )?EXPIRED|EXPIRY|EXPIRATION/i],
+        ['invalid_card', /\bINVALID CARD\b|INVALID (?:CARD )?NUMBER|INVALID ACCOUNT|NO SUCH (?:CARD|ACCOUNT|ISSUER)/i],
+        ['funds', /INSUFFICIENT|\bNSF\b|EXCEEDS BAL|EXCEEDS (?:THE )?(?:CREDIT |WITHDRAWAL )?LIMIT|OVER (?:CREDIT )?LIMIT/i],
+        ['address', /\bAVS\b|ADDRESS|POSTAL|\bZIP\b/i],
+        ['retry', /PLEASE RETRY|RE-?ENTER|NETWORK ERROR|SYSTEM ERROR|TIME ?OUT|TRY AGAIN/i],
+        ['issuer', /FRAUD|PICK ?UP|LOST|STOLEN|RESTRICTED|HONOU?R|REFER|\bCALL\b|SECURITY VIOLATION|NOT PERMITTED|NOT ALLOWED|BLOCKED/i]
+    ];
+
+    /**
+     * Classify Helcim's decline text. HelcimPay.js only emits ABORTED for a
+     * declined attempt, so unrecognized text is still a (generic) decline.
+     *
+     * @param {*} text Helcim decline message
+     * @returns {string} Decline category
+     */
+    function declineCategory(text) {
+        var value = typeof text === 'string' ? text : '';
+        for (var i = 0; i < DECLINE_PATTERNS.length; i++) {
+            if (DECLINE_PATTERNS[i][1].test(value)) {
+                return DECLINE_PATTERNS[i][0];
+            }
+        }
+        return 'generic';
+    }
+
+    /**
+     * @param {string} category Decline category from declineCategory()
+     * @returns {string} Shopper message that always states no payment was taken
+     */
+    function declineMessage(category) {
+        switch (category) {
+            case 'store': return t('decline_store');
+            case 'cvv': return t('decline_cvv');
+            case 'expired': return t('decline_expired');
+            case 'invalid_card': return t('decline_invalid_card');
+            case 'funds': return t('decline_funds');
+            case 'address': return t('decline_address');
+            case 'retry': return t('decline_retry');
+            case 'issuer': return t('decline_issuer');
+            default: return t('decline_generic');
+        }
     }
 
     /**
@@ -235,6 +291,10 @@
     function parseEventMessage(eventMessage) {
         var msg = eventMessage;
         if (typeof msg === 'string') {
+            // A decline arrives as plain text ("HelcimPay.js transaction failed - …"), not JSON.
+            if (!/^\s*[{[]/.test(msg)) {
+                return { txData: null, hash: '' };
+            }
             try {
                 msg = JSON.parse(msg);
             } catch (err) {
@@ -357,7 +417,7 @@
      * @param {Object} paymentData     payment_data from the order-creation response
      * @param {string} fallbackMessage Lock message when status checks are unavailable
      */
-    function pollPaymentStatus(detail, paymentData, fallbackMessage) {
+    function pollPaymentStatus(detail, paymentData, fallbackMessage, declinedMessage) {
         if (!cfg.status_action || !paymentData || !paymentData.status_token || !paymentData.transaction_uuid) {
             lockUi(detail, fallbackMessage);
             return;
@@ -406,7 +466,10 @@
                     return;
                 }
                 if (resp && resp.status === 'failed' && resp.retry_allowed === true) {
-                    resetUi(detail, resp.message || t('canceled'));
+                    // The server proves the decline; Helcim's own reason from the window explains it.
+                    resetUi(detail, resp.code === 'payment_declined' && declinedMessage
+                        ? declinedMessage
+                        : (resp.message || t('canceled')));
                     return;
                 }
                 if (resp && resp.status === 'failed') {
@@ -480,7 +543,12 @@
                     confirmPayment(detail, paymentData, aborted.txData, aborted.hash);
                     return;
                 }
-                pollPaymentStatus(detail, paymentData, t('declined_verifying'));
+                pollPaymentStatus(
+                    detail,
+                    paymentData,
+                    t('declined_verifying'),
+                    declineMessage(declineCategory(event.data.eventMessage))
+                );
                 return;
             }
 

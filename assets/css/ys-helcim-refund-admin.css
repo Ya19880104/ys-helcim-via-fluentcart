@@ -16,6 +16,22 @@
   font-weight: 600;
 }
 
+.ys-helcim-refund-admin .ys-helcim-refund-sync {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-sync[hidden] {
+  display: none;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-sync .description {
+  margin: 0;
+}
+
 .ys-helcim-refund-admin .ys-helcim-refund-context {
   margin-top: 18px;
   padding: 20px;
@@ -164,6 +180,11 @@
   text-decoration: none;
 }
 
+/* 接管後隱藏 FluentCart 原生退款鈕：.el-button 的 display 會蓋過 hidden 屬性，所以要 !important。 */
+[data-ys-helcim-native-refund-hidden="true"] {
+  display: none !important;
+}
+
 .ys-helcim-refund-spa-notice {
   display: inline-flex;
   align-items: center;
@@ -177,7 +198,125 @@
   line-height: 1.4;
 }
 
+/* 訂單頁退款彈窗：規則全部限定在 .ys-helcim-refund-modal 底下，不碰 FluentCart／Element Plus 的 .el-* 彈層。 */
+/* hidden 屬性會被框架的 display 樣式蓋掉，所以要 !important。 */
+.ys-helcim-refund-modal[hidden],
+.ys-helcim-refund-modal [hidden] {
+  display: none !important;
+}
+
+/* 高於 WP 工具列（99999）與 Element Plus 彈層（從 2000 起遞增）。 */
+.ys-helcim-refund-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100050;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 50%);
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-modal__dialog {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 720px;
+  max-height: 90vh;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 25%);
+  outline: none;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px;
+  border-bottom: 1px solid #dcdcde;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-modal__header h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.4;
+}
+
+/* FluentCart 深色模式（html.fluent_theme_dark）把 h1–h6、p、code 改成淺色字，但彈窗背景固定是白色／淺黃，
+   所以彈窗內這幾種元素要明確指定深色字。p.description 由 WP 自己優先權較高的規則上色，不受影響。 */
+.ys-helcim-refund-modal h2,
+.ys-helcim-refund-modal p:not(.description),
+.ys-helcim-refund-modal code {
+  color: #1d2327;
+}
+
+/* FluentCart 後台樣式表有一條頂層規則 .notice:not(.fluent-cart){display:none!important}（隱藏第三方通知），
+   彈窗內的狀態列顯示訊息時沿用 WP 的 .notice class 會被一起藏掉；以較高優先權顯示回來。hidden 時仍由上面的 [hidden] 規則隱藏。
+   （FluentCart 掛載時還會把 .notice／.error 節點移出 DOM，所以狀態列只在顯示訊息時才帶 .notice，見 setStatus()。） */
+.ys-helcim-refund-modal #ys-helcim-refund-status:not([hidden]) {
+  display: block !important;
+  margin: 12px 0;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-modal__close {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #50575e;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-modal__close:hover,
+.ys-helcim-refund-modal .ys-helcim-refund-modal__close:focus {
+  background: #f0f0f1;
+  color: #1d2327;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-modal__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-width: none;
+  padding: 4px 20px 20px;
+  overflow: auto;
+}
+
+/* 彈窗只處理目前這張訂單：訂單編號查詢表單保留在 HTML（JS 會綁它），只在彈窗內隱藏。 */
+.ys-helcim-refund-modal .ys-helcim-refund-modal__body .ys-helcim-refund-lookup {
+  display: none !important;
+}
+
+/* 開啟時鎖住訂單頁捲動。 */
+.ys-helcim-refund-modal-open,
+.ys-helcim-refund-modal-open body {
+  overflow: hidden;
+}
+
 @media (max-width: 782px) {
+  .ys-helcim-refund-modal {
+    padding: 0;
+  }
+
+  .ys-helcim-refund-modal .ys-helcim-refund-modal__dialog {
+    max-width: none;
+    height: 100%;
+    max-height: none;
+    border-radius: 0;
+  }
+
   .ys-helcim-refund-admin .ys-helcim-refund-item-row {
     grid-template-columns: auto 1fr;
   }

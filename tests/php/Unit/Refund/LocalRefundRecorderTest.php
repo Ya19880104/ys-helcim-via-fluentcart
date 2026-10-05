@@ -46,7 +46,7 @@ final class LocalRefundRecorderTest extends TestCase
         self::assertNull($created['subscription_id']);
         self::assertSame(4242, $created['card_last_4']);
         self::assertSame('visa', $created['card_brand']);
-        self::assertSame('51177123', $created['vendor_charge_id']);
+        self::assertSame('81177123', $created['vendor_charge_id']);
         self::assertSame('ys_helcim', $created['payment_method']);
         self::assertSame('test', $created['payment_mode']);
         self::assertSame('card', $created['payment_method_type']);
@@ -64,7 +64,7 @@ final class LocalRefundRecorderTest extends TestCase
         self::assertSame(self::OPERATION_UUID, $meta['ys_helcim_operation_uuid']);
         self::assertSame(self::OPERATION_UUID, $meta['ys_helcim_root_refund_uuid']);
         self::assertSame('refund', $meta['ys_helcim_provider_action']);
-        self::assertSame('51177061', $meta['ys_helcim_original_vendor_transaction_id']);
+        self::assertSame('81177061', $meta['ys_helcim_original_vendor_transaction_id']);
         self::assertSame([], $meta['item_ids']);
         self::assertFalse($meta['manageStock']);
         self::assertSame([], $meta['refunded_items']);
@@ -434,7 +434,7 @@ final class LocalRefundRecorderTest extends TestCase
             'subscription_id' => null,
             'card_last_4' => 4242,
             'card_brand' => 'visa',
-            'vendor_charge_id' => '51177124',
+            'vendor_charge_id' => '81177124',
             'payment_method' => 'ys_helcim',
             'payment_mode' => 'test',
             'payment_method_type' => 'card',
@@ -539,9 +539,9 @@ final class LocalRefundRecorderTest extends TestCase
             'parent metadata is not valid JSON' => ['wp_fct_order_transactions', 20, 'meta', '{invalid'],
             'order total disagrees with refund rows' => ['wp_fct_orders', 10, 'total_refund', 999],
             'source UUID differs from immutable journal identity' => ['wp_fct_order_transactions', 20, 'uuid', 'different-source'],
-            'source provider transaction differs from remote identity' => ['wp_fct_order_transactions', 20, 'vendor_charge_id', '51177062'],
+            'source provider transaction differs from remote identity' => ['wp_fct_order_transactions', 20, 'vendor_charge_id', '81177062'],
             'source total differs from remote identity' => ['wp_fct_order_transactions', 20, 'total', 5001],
-            'journal source provider identity was tampered' => ['wp_ys_helcim_operations', 1, 'source_vendor_transaction_id', '51177062'],
+            'journal source provider identity was tampered' => ['wp_ys_helcim_operations', 1, 'source_vendor_transaction_id', '81177062'],
             'journal request fingerprint was tampered' => ['wp_ys_helcim_operations', 1, 'request_fingerprint', hash('sha256', 'tampered')],
             'order currency differs from immutable journal identity' => ['wp_fct_orders', 10, 'currency', 'CAD'],
         ];
@@ -891,8 +891,8 @@ final class LocalRefundRecorderTest extends TestCase
             'payment_mode' => 'test',
             'remote_status' => 'succeeded',
             'local_status' => 'pending',
-            'vendor_transaction_id' => '51177123',
-            'source_vendor_transaction_id' => '51177061',
+            'vendor_transaction_id' => '81177123',
+            'source_vendor_transaction_id' => '81177061',
             'scope_key' => YSHelcimOperationScope::fromBusinessKey('refund-order:10'),
             'local_payload' => $payloadJson,
             'local_payload_hash' => hash('sha256', $payloadJson),
@@ -913,7 +913,7 @@ final class LocalRefundRecorderTest extends TestCase
             'subscription_id' => null,
             'card_last_4' => 4242,
             'card_brand' => 'visa',
-            'vendor_charge_id' => '51177061',
+            'vendor_charge_id' => '81177061',
             'payment_method' => 'ys_helcim',
             'payment_mode' => 'test',
             'payment_method_type' => 'card',
@@ -934,7 +934,7 @@ final class LocalRefundRecorderTest extends TestCase
             'subscription_id' => null,
             'card_last_4' => 4242,
             'card_brand' => 'visa',
-            'vendor_charge_id' => '51177099',
+            'vendor_charge_id' => '81177099',
             'payment_method' => 'ys_helcim',
             'payment_mode' => 'test',
             'payment_method_type' => 'card',

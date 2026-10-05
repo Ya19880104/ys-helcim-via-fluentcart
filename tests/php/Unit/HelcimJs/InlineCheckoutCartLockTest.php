@@ -314,7 +314,7 @@ final class InlineCheckoutCartLockTest extends TestCase
     /** @return iterable<string,array{0:string,1:string}> */
     public static function unsafeJournalFreeTransactions(): iterable
     {
-        yield 'provider receipt on pending transaction' => ['pending', '51935987'];
+        yield 'provider receipt on pending transaction' => ['pending', '81935987'];
         yield 'succeeded without receipt' => ['succeeded', ''];
         yield 'authorized without receipt' => ['authorized', ''];
         yield 'refunded without receipt' => ['refunded', ''];

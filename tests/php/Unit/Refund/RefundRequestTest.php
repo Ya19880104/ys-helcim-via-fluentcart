@@ -48,7 +48,7 @@ final class RefundRequestTest extends TestCase
         self::assertSame(10, $result['order_id']);
         self::assertSame(20, $result['transaction_id']);
         self::assertSame('fc-transaction-123', $result['transaction_uuid']);
-        self::assertSame('51177061', $result['vendor_transaction_id']);
+        self::assertSame('81177061', $result['vendor_transaction_id']);
         self::assertSame(2100, $result['transaction_total']);
         self::assertSame(0, $result['refunded_total']);
         self::assertSame(2100, $result['remaining_refundable']);
@@ -121,7 +121,7 @@ final class RefundRequestTest extends TestCase
             'body order id' => ['order_id', 10],
             'gateway' => ['gateway', 'ys_helcim'],
             'currency' => ['currency', 'USD'],
-            'vendor id' => ['vendor_transaction_id', '51177061'],
+            'vendor id' => ['vendor_transaction_id', '81177061'],
             'transaction total' => ['transaction_total', 2100],
             'refunded total' => ['refunded_total', 0],
             'remaining amount' => ['remaining_refundable', 2100],
@@ -333,7 +333,7 @@ final class RefundRequestTest extends TestCase
             'order_id' => 10,
             'transaction_id' => 20,
             'transaction_uuid' => 'fc-transaction-123',
-            'vendor_transaction_id' => '51177061',
+            'vendor_transaction_id' => '81177061',
             'gateway' => 'ys_helcim',
             'status' => 'succeeded',
             'transaction_type' => 'charge',

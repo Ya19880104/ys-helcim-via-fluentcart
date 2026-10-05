@@ -76,10 +76,66 @@
             timeout: 'The payment timed out. To prevent an incorrect charge, refresh the page before trying again.',
             confirm_failed: 'We couldn\'t confirm your payment. Please contact the store for help.',
             network_error: 'The payment result could not be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.',
-            still_confirming: 'We are still confirming your payment. Please do not pay again. You will receive an email receipt once it is confirmed, or you can contact the store.'
+            still_confirming: 'We are still confirming your payment. Please do not pay again. You will receive an email receipt once it is confirmed, or you can contact the store.',
+            decline_store: 'This payment could not be processed right now. No payment was taken. Please try again later or contact the store.',
+            decline_cvv: 'The card security code (CVV) did not match. No payment was taken. Please check the code and try again.',
+            decline_expired: 'The card has expired or the expiry date is incorrect. No payment was taken. Please check the date or use a different card.',
+            decline_invalid_card: 'The card number is not valid. No payment was taken. Please check the number or use a different card.',
+            decline_funds: 'The card does not have enough available funds or credit. No payment was taken. Please use a different card.',
+            decline_address: 'The billing address does not match the card. No payment was taken. Please check the billing address and try again.',
+            decline_retry: 'The card could not be processed right now. No payment was taken. Please try again in a moment.',
+            decline_issuer: 'Your bank declined this payment. No payment was taken. Please contact your bank or use a different card.',
+            decline_generic: 'The card was declined and no payment was taken. Please check the details or use a different card.'
         };
         var translations = (cfg && cfg.translations) || {};
         return translations[key] || defaults[key] || key;
+    }
+
+    // Ordered like YSHelcimDeclineMessage::PATTERNS on the server; the first match wins.
+    var DECLINE_PATTERNS = [
+        ['store', /APPL TYPE|INVALID TERM|INVALID MERCHANT|AMOUNT ERROR|SVC LMT|SERVICE LIMIT|DUPLICATE|\bDUP\b/i],
+        ['cvv', /\bCV[VCF]2?\b|\bCID\b|SECURITY CODE/i],
+        ['expired', /EXPIRED CARD|CARD (?:HAS )?EXPIRED|EXPIRY|EXPIRATION/i],
+        ['invalid_card', /\bINVALID CARD\b|INVALID (?:CARD )?NUMBER|INVALID ACCOUNT|NO SUCH (?:CARD|ACCOUNT|ISSUER)/i],
+        ['funds', /INSUFFICIENT|\bNSF\b|EXCEEDS BAL|EXCEEDS (?:THE )?(?:CREDIT |WITHDRAWAL )?LIMIT|OVER (?:CREDIT )?LIMIT/i],
+        ['address', /\bAVS\b|ADDRESS|POSTAL|\bZIP\b/i],
+        ['retry', /PLEASE RETRY|RE-?ENTER|NETWORK ERROR|SYSTEM ERROR|TIME ?OUT|TRY AGAIN/i],
+        ['issuer', /FRAUD|PICK ?UP|LOST|STOLEN|RESTRICTED|HONOU?R|REFER|\bCALL\b|SECURITY VIOLATION|NOT PERMITTED|NOT ALLOWED|BLOCKED/i]
+    ];
+
+    /**
+     * Classify Helcim's decline text. Fraud and similar issuer reasons are only
+     * ever shown to the shopper as a bank decline.
+     *
+     * @param {*} text Helcim response message
+     * @returns {string|null} Decline category, or null when the text is not a card decline
+     */
+    function declineCategory(text) {
+        var value = typeof text === 'string' ? text : '';
+        for (var i = 0; i < DECLINE_PATTERNS.length; i++) {
+            if (DECLINE_PATTERNS[i][1].test(value)) {
+                return DECLINE_PATTERNS[i][0];
+            }
+        }
+        return /DECLIN/i.test(value) ? 'generic' : null;
+    }
+
+    /**
+     * @param {string|null} category Decline category from declineCategory()
+     * @returns {string} Shopper message that always states no payment was taken
+     */
+    function declineMessage(category) {
+        switch (category) {
+            case 'store': return t('decline_store');
+            case 'cvv': return t('decline_cvv');
+            case 'expired': return t('decline_expired');
+            case 'invalid_card': return t('decline_invalid_card');
+            case 'funds': return t('decline_funds');
+            case 'address': return t('decline_address');
+            case 'retry': return t('decline_retry');
+            case 'issuer': return t('decline_issuer');
+            default: return t('decline_generic');
+        }
     }
 
     /**
@@ -727,8 +783,16 @@
 
         // helcim.js response: response == 1 means success
         if (String(fields.response) !== '1') {
-            var reason = fields.responseMessage ? String(fields.responseMessage) : t('tokenize_failed');
-            resetUi(detail, t('tokenize_failed_prefix') + reason);
+            var reason = fields.responseMessage ? String(fields.responseMessage) : '';
+            // 只有看起來是卡片拒絕的原文才套分類文案；設定類錯誤（例如 "Call support to enable this
+            // feature"）含 CALL／ADDRESS 等字也不得被翻成拒絕文案，維持顯示 Helcim 原文。
+            var category = /DECLIN|INVALID|EXPIR/i.test(reason) ? declineCategory(reason) : null;
+            if (category) {
+                resetUi(detail, declineMessage(category));
+                return;
+            }
+            // Not a card decline (for example a Helcim.js configuration error): keep Helcim's text visible.
+            resetUi(detail, t('tokenize_failed_prefix') + (reason || t('tokenize_failed')));
             return;
         }
 

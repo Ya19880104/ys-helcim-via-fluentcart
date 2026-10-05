@@ -16,6 +16,7 @@ use YangSheep\Helcim\FluentCart\Operations\YSHelcimPurchaseCoordinator;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimPurchaseOperation;
 use YangSheep\Helcim\FluentCart\Settings\YSHelcimModeApiSettings;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimApiClient;
+use YangSheep\Helcim\FluentCart\Support\YSHelcimDeclineMessage;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimTransactionId;
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -55,6 +56,14 @@ final class YSHelcimJsPurchaseRuntime {
 	private YSHelcimOperationRepository $operations;
 
 	private string $method_slug;
+
+	/**
+	 * Helcim's own decline text from this request's purchase call. The coordinator
+	 * accepts only an exact decline envelope, so the reason travels beside it.
+	 *
+	 * @var array{reason:string,transaction_id:?string}|null
+	 */
+	private ?array $provider_decline = null;
 
 	/** @var string[] */
 	private array $terminal_meta_keys;
@@ -156,6 +165,7 @@ final class YSHelcimJsPurchaseRuntime {
 	 * @return array<string, mixed>|\WP_Error
 	 */
 	public function executeInline( OrderTransaction $transaction, string $card_token ) {
+		$this->provider_decline = null;
 		$loaded = $this->loadExactTransaction( $transaction );
 		if ( is_wp_error( $loaded ) ) {
 			return $loaded;
@@ -204,7 +214,17 @@ final class YSHelcimJsPurchaseRuntime {
 			return $preflight;
 		}
 
-		return $this->coordinator->execute( $identity, $card_token );
+		$result = $this->coordinator->execute( $identity, $card_token );
+		if (
+			is_array( $result ) &&
+			YSHelcimPurchaseCoordinator::DECLINED === ( $result['status'] ?? null ) &&
+			null !== $this->provider_decline
+		) {
+			$result['decline_reason']         = $this->provider_decline['reason'];
+			$result['decline_transaction_id'] = $this->provider_decline['transaction_id'];
+		}
+
+		return $result;
 	}
 
 	/**
@@ -326,7 +346,43 @@ final class YSHelcimJsPurchaseRuntime {
 			$api_token = '';
 		}
 
-		return YSHelcimJsPurchaseResponseAdapter::toCoordinatorOutcome( $provider_result, $identity );
+		$outcome = YSHelcimJsPurchaseResponseAdapter::toCoordinatorOutcome( $provider_result, $identity, $operation_uuid );
+		// 只有 Adapter 判定為本次確定拒絕，才帶出 Helcim 原因與交易編號；不吻合的紀錄不得進訂單備註。
+		$this->provider_decline = is_array( $outcome ) && 'declined' === ( $outcome['outcome'] ?? null )
+			? self::providerDecline( $provider_result )
+			: null;
+
+		return $outcome;
+	}
+
+	/**
+	 * Helcim's decline text and declined transaction ID, when the provider
+	 * answered with a decline.
+	 *
+	 * @param mixed $provider_result Raw API client result.
+	 * @return array{reason:string,transaction_id:?string}|null
+	 */
+	private static function providerDecline( mixed $provider_result ): ?array {
+		if ( is_wp_error( $provider_result ) ) {
+			$data = $provider_result->get_error_data();
+			if ( ! is_array( $data ) || true !== ( $data['definitive_decline'] ?? null ) ) {
+				return null;
+			}
+			$reason = YSHelcimDeclineMessage::reason( $data['provider_errors'] ?? null );
+			$record = is_array( $data['declined_transaction'] ?? null ) ? $data['declined_transaction'] : array();
+		} elseif ( is_array( $provider_result ) && 'DECLINED' === strtoupper( trim( (string) ( $provider_result['status'] ?? '' ) ) ) ) {
+			$reason = YSHelcimDeclineMessage::reason( $provider_result['errors'] ?? null );
+			$record = $provider_result;
+		} else {
+			return null;
+		}
+
+		return null === $reason
+			? null
+			: array(
+				'reason'         => $reason,
+				'transaction_id' => YSHelcimTransactionId::normalize( $record['transactionId'] ?? null ),
+			);
 	}
 
 	/**

@@ -103,7 +103,7 @@ final class PaymentStatusServiceTest extends TestCase
             self::OPERATION_UUID,
             'processing',
             'succeeded',
-            ['vendor_transaction_id' => '54938399']
+            ['vendor_transaction_id' => '84938399']
         ));
 
         $result = $this->service->status(self::TRANSACTION_UUID, $this->token());
@@ -114,7 +114,7 @@ final class PaymentStatusServiceTest extends TestCase
 
     public function testPaidTransactionRedirectsToTheReceipt(): void
     {
-        $this->seedTransaction(Status::TRANSACTION_SUCCEEDED, '54938399');
+        $this->seedTransaction(Status::TRANSACTION_SUCCEEDED, '84938399');
 
         $result = $this->service->status(self::TRANSACTION_UUID, $this->token());
 

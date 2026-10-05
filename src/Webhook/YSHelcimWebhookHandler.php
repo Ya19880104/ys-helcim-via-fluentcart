@@ -42,6 +42,9 @@ final class YSHelcimWebhookHandler {
 	/** @var callable|null */
 	private $completed_receipt_writer;
 
+	/** @var callable|null Helcim 後台作廢／退款（reverse、refund）事件的第二個 reconciler；null＝維持 ignored。 */
+	private $refund_reconciler;
+
 	public function __construct(
 		callable $credential_resolver,
 		callable $signature_verifier,
@@ -49,7 +52,8 @@ final class YSHelcimWebhookHandler {
 		callable $reconciler,
 		callable $correlation_binding_resolver,
 		?callable $completed_receipt_reader = null,
-		?callable $completed_receipt_writer = null
+		?callable $completed_receipt_writer = null,
+		?callable $refund_reconciler = null
 	) {
 		$this->credential_resolver = $credential_resolver;
 		$this->signature_verifier  = $signature_verifier;
@@ -58,6 +62,7 @@ final class YSHelcimWebhookHandler {
 		$this->correlation_binding_resolver = $correlation_binding_resolver;
 		$this->completed_receipt_reader = $completed_receipt_reader;
 		$this->completed_receipt_writer = $completed_receipt_writer;
+		$this->refund_reconciler        = $refund_reconciler;
 	}
 
 	/** @return array{status:int,body:array{message:string}} */
@@ -174,6 +179,21 @@ final class YSHelcimWebhookHandler {
 			)
 		);
 		if ( array() === $purchase_matches ) {
+			if ( null !== $this->refund_reconciler ) {
+				$refund_matches = array_values(
+					array_filter(
+						$matches,
+						static fn ( array $match ): bool => in_array(
+							strtolower( trim( (string) ( $match['proof']['type'] ?? '' ) ) ),
+							array( 'refund', 'reverse' ),
+							true
+						)
+					)
+				);
+				if ( array() !== $refund_matches ) {
+					return $this->reconcileProviderRefund( $refund_matches, $transaction_id, $receipt_key, $lookup_failed );
+				}
+			}
 			if ( $lookup_failed ) {
 				return self::response( 502, 'transaction lookup incomplete' );
 			}
@@ -220,6 +240,74 @@ final class YSHelcimWebhookHandler {
 
 		try {
 			$result = ( $this->reconciler )( $match['proof'], $transaction_id, $match['bindings'] );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			$result = null;
+		}
+		if (
+			! is_array( $result ) ||
+			! is_int( $result['code'] ?? null ) ||
+			! in_array( $result['code'], array( 200, 400, 409, 422, 500, 502, 503 ), true ) ||
+			! is_string( $result['message'] ?? null ) ||
+			'' === trim( $result['message'] ) ||
+			strlen( $result['message'] ) > 200 ||
+			1 === preg_match( '/[\x00-\x1F\x7F]/', $result['message'] )
+		) {
+			return self::response( 500, 'local reconciliation failed' );
+		}
+
+		return 200 === $result['code']
+			? $this->completeReceipt( $receipt_key, trim( $result['message'] ) )
+			: self::response( $result['code'], trim( $result['message'] ) );
+	}
+
+	/**
+	 * 作廢／退款紀錄繼承原 purchase 的 invoiceNumber，所以沿用同一個 binding resolver
+	 * 找回帳號綁定，再交給第二個 reconciler；綁定與回碼規則與 purchase 路徑相同。
+	 *
+	 * @param array<int,array{proof:array,bindings:array}> $matches
+	 * @return array{status:int,body:array{message:string}}
+	 */
+	private function reconcileProviderRefund( array $matches, string $transaction_id, ?string $receipt_key, bool $lookup_failed ): array {
+		$eligible_matches    = array();
+		$binding_unavailable = false;
+		$binding_conflict    = false;
+		foreach ( $matches as $match ) {
+			try {
+				$resolution = ( $this->correlation_binding_resolver )( $match['proof'] );
+			} catch ( \Throwable $exception ) {
+				unset( $exception );
+				$resolution = array( 'status' => 'unavailable' );
+			}
+			$status  = is_array( $resolution ) ? ( $resolution['status'] ?? null ) : null;
+			$binding = is_array( $resolution ) ? ( $resolution['binding'] ?? null ) : null;
+			if ( 'matched' === $status && self::isBinding( $binding ) && self::containsBinding( $match['bindings'], $binding ) ) {
+				$eligible_matches[] = $match;
+			} elseif ( 'unavailable' === $status ) {
+				$binding_unavailable = true;
+			} elseif ( 'unrelated' !== $status ) {
+				$binding_conflict = true;
+			}
+		}
+		if ( array() === $eligible_matches ) {
+			if ( $binding_unavailable ) {
+				return self::response( 503, 'transaction operation binding unavailable' );
+			}
+			if ( $binding_conflict ) {
+				return self::response( 409, 'transaction operation binding conflict' );
+			}
+			if ( $lookup_failed ) {
+				return self::response( 502, 'transaction lookup incomplete' );
+			}
+			return $this->completeReceipt( $receipt_key, 'ignored' );
+		}
+		if ( count( $eligible_matches ) > 1 ) {
+			return self::response( 409, 'transaction account is ambiguous' );
+		}
+		$match = $eligible_matches[0];
+
+		try {
+			$result = ( $this->refund_reconciler )( $match['proof'], $transaction_id, $match['bindings'] );
 		} catch ( \Throwable $exception ) {
 			unset( $exception );
 			$result = null;

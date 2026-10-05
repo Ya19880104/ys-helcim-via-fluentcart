@@ -27,6 +27,8 @@ final class YSHelcimRefundRestController {
 
 	public const OPERATION_ROUTE = '/refund-operations/(?P<operation_uuid>[0-9a-f-]{36})';
 
+	public const PROVIDER_SYNC_ROUTE = '/orders/(?P<order_id>\d+)/sync-provider-refunds';
+
 	/** @var callable */
 	private $service_execute;
 
@@ -66,6 +68,12 @@ final class YSHelcimRefundRestController {
 	/** @var callable|null */
 	private $stale_scope_expirer;
 
+	/** @var callable|null 手動同步 Helcim 後台作廢／退款：fn(int $order_id): array|\WP_Error */
+	private $provider_refund_sync;
+
+	/** @var callable|null 退款交棒給作廢子列時讀子列：fn(string $parent_uuid): array|null|\WP_Error */
+	private $child_operation_reader;
+
 	public function __construct(
 		private YSHelcimRefundRequest $request_builder,
 		callable $service_execute,
@@ -80,7 +88,9 @@ final class YSHelcimRefundRestController {
 		?callable $local_failure_recorder = null,
 		?callable $effect_state_reader = null,
 		?callable $options_loader = null,
-		?callable $stale_scope_expirer = null
+		?callable $stale_scope_expirer = null,
+		?callable $provider_refund_sync = null,
+		?callable $child_operation_reader = null
 	) {
 		$this->service_execute    = $service_execute;
 		$this->recorder           = $recorder;
@@ -99,6 +109,8 @@ final class YSHelcimRefundRestController {
 		$this->effect_state_reader    = $effect_state_reader;
 		$this->options_loader         = $options_loader;
 		$this->stale_scope_expirer    = $stale_scope_expirer;
+		$this->provider_refund_sync   = $provider_refund_sync;
+		$this->child_operation_reader = $child_operation_reader;
 	}
 
 	/** Register the mutation and read-only reconciliation endpoints. */
@@ -131,6 +143,122 @@ final class YSHelcimRefundRestController {
 				'callback'            => array( $this, 'show' ),
 				'permission_callback' => array( $this, 'permissionsCheck' ),
 			)
+		);
+
+		if ( null !== $this->provider_refund_sync ) {
+			( $this->route_registrar )(
+				self::REST_NAMESPACE,
+				self::PROVIDER_SYNC_ROUTE,
+				array(
+					'methods'             => 'POST',
+					'callback'            => array( $this, 'syncProviderRefunds' ),
+					'permission_callback' => array( $this, 'permissionsCheck' ),
+				)
+			);
+		}
+	}
+
+	/**
+	 * 手動把 Helcim 後台做的作廢／退款記回 FluentCart（權限與 nonce 同退款端點）。
+	 *
+	 * @param mixed $request WP_REST_Request-compatible object.
+	 * @return mixed WP_REST_Response-compatible object.
+	 */
+	public function syncProviderRefunds( mixed $request ): mixed {
+		$route    = is_object( $request ) && method_exists( $request, 'get_url_params' )
+			? $request->get_url_params()
+			: null;
+		$order_id = is_array( $route ) ? self::positiveInteger( $route['order_id'] ?? null ) : null;
+		if ( null === $order_id ) {
+			return $this->syncErrorResponse(
+				new \WP_Error( 'ys_helcim_invalid_order', 'Invalid order.', array( 'status' => 422 ) )
+			);
+		}
+		if ( null === $this->provider_refund_sync ) {
+			return $this->syncErrorResponse(
+				new \WP_Error( 'ys_helcim_provider_refund_sync_unavailable', 'Provider refund sync unavailable.' )
+			);
+		}
+
+		try {
+			$summary = ( $this->provider_refund_sync )( $order_id );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			$summary = new \WP_Error( 'ys_helcim_provider_refund_sync_unavailable', 'Provider refund sync unavailable.' );
+		}
+		if ( is_wp_error( $summary ) ) {
+			return $this->syncErrorResponse( $summary );
+		}
+		if ( ! is_array( $summary ) || $order_id !== ( $summary['order_id'] ?? null ) ) {
+			return $this->syncErrorResponse(
+				new \WP_Error( 'ys_helcim_provider_refund_sync_unavailable', 'Provider refund sync returned invalid data.' )
+			);
+		}
+
+		return $this->response( self::syncSummary( $summary, $order_id ), 200 );
+	}
+
+	/**
+	 * 只輸出白名單欄位：交易編號（純數字）、動作（refund／reverse）、原因代碼；
+	 * 作業日誌上線前付款（legacy_payment）只多一個非負整數筆數。
+	 *
+	 * @param array<string,mixed> $summary
+	 * @return array<string,mixed>
+	 */
+	private static function syncSummary( array $summary, int $order_id ): array {
+		$status = is_string( $summary['status'] ?? null ) && in_array(
+			$summary['status'],
+			array( 'recorded', 'nothing_new', 'needs_review', 'retry_later', 'legacy_payment' ),
+			true
+		)
+			? $summary['status']
+			: 'retry_later';
+		$payments = is_int( $summary['helcim_payments'] ?? null ) && $summary['helcim_payments'] >= 0
+			? $summary['helcim_payments']
+			: 0;
+		$data = array(
+			'order_id'        => $order_id,
+			'status'          => $status,
+			'helcim_payments' => $payments,
+		);
+		if ( 'legacy_payment' === $status ) {
+			$data['legacy_payments'] = is_int( $summary['legacy_payments'] ?? null ) && $summary['legacy_payments'] >= 0
+				? $summary['legacy_payments']
+				: 0;
+		}
+
+		foreach ( array( 'recorded', 'already_recorded', 'skipped', 'retry', 'review' ) as $bucket ) {
+			$entries = array();
+			foreach ( array_slice( is_array( $summary[ $bucket ] ?? null ) ? $summary[ $bucket ] : array(), 0, 100 ) as $entry ) {
+				if ( ! is_array( $entry ) ) {
+					continue;
+				}
+				$transaction_id = self::positiveIntegerString( $entry['transaction_id'] ?? null );
+				$action         = $entry['provider_action'] ?? '';
+				$entries[]      = array(
+					'transaction_id'  => $transaction_id ?? '',
+					'provider_action' => in_array( $action, array( 'refund', 'reverse' ), true ) ? $action : '',
+					'reason'          => self::safeErrorCode( $entry['reason'] ?? '' ),
+				);
+			}
+			$data[ $bucket ] = $entries;
+		}
+
+		return $data;
+	}
+
+	private function syncErrorResponse( \WP_Error $error ): mixed {
+		$status = self::errorStatus( $error );
+		return $this->response(
+			array(
+				'error_code' => self::safeErrorCode( $error->get_error_code() ),
+				'message'    => match ( $status ) {
+					404 => __( 'The requested order was not found.', 'ys-helcim-via-fluentcart' ),
+					422 => __( 'The requested order is invalid.', 'ys-helcim-via-fluentcart' ),
+					default => __( 'Refunds could not be synced from Helcim.', 'ys-helcim-via-fluentcart' ),
+				},
+			),
+			$status
 		);
 	}
 
@@ -435,6 +563,32 @@ final class YSHelcimRefundRestController {
 			);
 		}
 
+		// 退款被拒後已交棒給作廢子列：父列停在 failed，但錢由子列處理。
+		// 用父列查詢（例如 POST 回應遺失後按 Reconcile）時改回報子列，且絕不回報可重試。
+		$handoff_without_child = false;
+		if ( self::isReverseHandoffParent( $row ) ) {
+			try {
+				$child = null === $this->child_operation_reader
+					? null
+					: ( $this->child_operation_reader )( strtolower( (string) $row['operation_uuid'] ) );
+			} catch ( \Throwable $exception ) {
+				unset( $exception );
+				$child = new \WP_Error( 'ys_helcim_journal_unavailable', 'Operation journal unavailable.' );
+			}
+			if ( is_wp_error( $child ) ) {
+				return $this->errorResponse( $child, $uuid, $uuid, 'unknown' );
+			}
+			if (
+				is_array( $child ) &&
+				'reverse' === ( $child['operation_type'] ?? null ) &&
+				strtolower( (string) ( $child['parent_operation_uuid'] ?? '' ) ) === strtolower( (string) $row['operation_uuid'] )
+			) {
+				$row = $child;
+			} else {
+				$handoff_without_child = true;
+			}
+		}
+
 		$data = self::operationEnvelope( $row );
 		if ( null === $data ) {
 			return $this->errorResponse(
@@ -476,8 +630,18 @@ final class YSHelcimRefundRestController {
 			$data['warnings']                     = $effect_state['warnings'];
 			$data['manual_reconciliation_required'] = 'stock_reconciliation_required' === $effect_state['status'];
 		}
+		if ( $handoff_without_child ) {
+			$data['retry_allowed'] = false;
+		}
 
 		return $this->response( $data, 200 );
+	}
+
+	/** @param array<string,mixed> $row */
+	private static function isReverseHandoffParent( array $row ): bool {
+		return 'refund' === ( $row['operation_type'] ?? null )
+			&& YSHelcimOperationState::REMOTE_FAILED === ( $row['remote_status'] ?? null )
+			&& 'open_batch_verified_reverse' === ( $row['remote_error_code'] ?? null );
 	}
 
 	/** @return array{status:string,notification_status:string,warnings:array<int,string>}|null */
@@ -605,7 +769,17 @@ final class YSHelcimRefundRestController {
 			return null;
 		}
 
-		return self::envelope(
+		$terminal_failure = in_array(
+			$remote_status,
+			array(
+				YSHelcimOperationState::REMOTE_DECLINED,
+				YSHelcimOperationState::REMOTE_FAILED,
+				YSHelcimOperationState::REMOTE_CANCELED,
+				YSHelcimOperationState::REMOTE_EXPIRED,
+			),
+			true
+		);
+		$data = self::envelope(
 			$root_uuid,
 			$effective_uuid,
 			$provider_action,
@@ -614,17 +788,14 @@ final class YSHelcimRefundRestController {
 			$remote_status,
 			$local_status,
 			YSHelcimOperationState::LOCAL_APPLIED === $local_status ? 'delivered' : 'pending',
-			in_array(
-				$remote_status,
-				array(
-					YSHelcimOperationState::REMOTE_DECLINED,
-					YSHelcimOperationState::REMOTE_FAILED,
-					YSHelcimOperationState::REMOTE_CANCELED,
-					YSHelcimOperationState::REMOTE_EXPIRED,
-				),
-				true
-			)
+			$terminal_failure
 		);
+		// 讀回失敗列時也帶安全化的錯誤碼，面板才能顯示與送出當下相同的白話說明。
+		if ( $terminal_failure && is_string( $row['remote_error_code'] ?? null ) && '' !== trim( $row['remote_error_code'] ) ) {
+			$data['error_code'] = self::safeErrorCode( $row['remote_error_code'] );
+		}
+
+		return $data;
 	}
 
 	private function localUnknownResponse(
@@ -728,7 +899,10 @@ final class YSHelcimRefundRestController {
 			422 === $status
 		);
 		$data['error_code'] = self::safeErrorCode( $error->get_error_code() );
-		$data['message']    = self::publicMessage( $status );
+		// 外部退款待記錄：訊息是外掛自己的譯文（不含供應商原文），直接告訴店家解法。
+		$data['message'] = 'ys_helcim_provider_refund_pending' === $data['error_code']
+			? __( 'A refund or void made directly in Helcim for this order is not recorded in FluentCart yet. Use “Sync refunds from Helcim” to finish recording it before refunding again.', 'ys-helcim-via-fluentcart' )
+			: self::publicMessage( $status );
 
 		return $this->response( $data, $status );
 	}

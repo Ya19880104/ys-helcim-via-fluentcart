@@ -69,6 +69,7 @@ class YSHelcimLogger {
 		'billingaddress',
 		'shippingaddress',
 		'customer',
+		'customercode',
 		'customerdata',
 		'contact',
 		'address',

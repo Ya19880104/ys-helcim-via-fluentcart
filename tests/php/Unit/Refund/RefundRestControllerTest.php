@@ -233,7 +233,7 @@ final class RefundRestControllerTest extends TestCase
                 $serviceRequests[] = $request;
                 return new YSHelcimRefundResult(
                     YSHelcimRefundResult::SUCCEEDED,
-                    '51177094',
+                    '81177094',
                     null,
                     null,
                     self::ROOT_UUID,
@@ -266,7 +266,7 @@ final class RefundRestControllerTest extends TestCase
             'operation_uuid' => self::ROOT_UUID,
             'effective_operation_uuid' => self::CHILD_UUID,
             'provider_action' => 'reverse',
-            'provider_transaction_id' => '51177094',
+            'provider_transaction_id' => '81177094',
             'refund_transaction_id' => 44,
             'remote_status' => 'succeeded',
             'local_status' => 'applied',
@@ -552,7 +552,7 @@ final class RefundRestControllerTest extends TestCase
                     'operation_uuid' => self::CHILD_UUID,
                     'parent_operation_uuid' => self::ROOT_UUID,
                     'operation_type' => 'reverse',
-                    'vendor_transaction_id' => '51177094',
+                    'vendor_transaction_id' => '81177094',
                     'remote_status' => 'succeeded',
                     'local_status' => 'recorded',
                     'local_transaction_id' => 44,
@@ -568,13 +568,153 @@ final class RefundRestControllerTest extends TestCase
             'operation_uuid' => self::ROOT_UUID,
             'effective_operation_uuid' => self::CHILD_UUID,
             'provider_action' => 'reverse',
-            'provider_transaction_id' => '51177094',
+            'provider_transaction_id' => '81177094',
             'refund_transaction_id' => 44,
             'remote_status' => 'succeeded',
             'local_status' => 'recorded',
             'notification_status' => 'pending',
             'retry_allowed' => false,
         ], $response->get_data());
+    }
+
+    public function testGetOfAHelcimSideReverseShowsItAsTheEffectiveOperationWithoutRetry(): void
+    {
+        // 外部作廢的 parent 是被作廢的 purchase 作業；讀它時不得當成「退款交棒」重導，也不得允許重試。
+        $childReads = 0;
+        $response = $this->controller(
+            operationReader: static fn (): array => [
+                'operation_uuid' => self::CHILD_UUID,
+                'parent_operation_uuid' => '29000000-0000-4000-8000-000000000002',
+                'operation_type' => 'reverse',
+                'vendor_transaction_id' => '85267563',
+                'remote_status' => 'succeeded',
+                'local_status' => 'applied',
+                'local_transaction_id' => 61,
+            ],
+            childOperationReader: static function () use (&$childReads): ?array {
+                ++$childReads;
+                return null;
+            }
+        )->show(new RefundRestRequest(route: ['operation_uuid' => self::CHILD_UUID]));
+
+        self::assertSame(200, $response->get_status());
+        self::assertSame(0, $childReads);
+        self::assertSame('29000000-0000-4000-8000-000000000002', $response->get_data()['operation_uuid']);
+        self::assertSame(self::CHILD_UUID, $response->get_data()['effective_operation_uuid']);
+        self::assertSame('reverse', $response->get_data()['provider_action']);
+        self::assertFalse($response->get_data()['retry_allowed']);
+    }
+
+    public function testPostExplainsThatAHelcimSideRefundIsStillPending(): void
+    {
+        $response = $this->controller(
+            serviceExecute: static fn (): \WP_Error => new \WP_Error(
+                'ys_helcim_provider_refund_pending',
+                'Provider-side refund pending.',
+                ['status' => 409]
+            )
+        )->create($this->validRequest());
+
+        self::assertSame(409, $response->get_status());
+        self::assertSame('ys_helcim_provider_refund_pending', $response->get_data()['error_code']);
+        self::assertSame(
+            'A refund or void made directly in Helcim for this order is not recorded in FluentCart yet. Use “Sync refunds from Helcim” to finish recording it before refunding again.',
+            $response->get_data()['message']
+        );
+        self::assertFalse($response->get_data()['retry_allowed']);
+    }
+
+    public function testGetIncludesTheSafeErrorCodeOfATerminalFailure(): void
+    {
+        $failed = $this->controller(
+            operationReader: static fn (): array => [
+                'operation_uuid' => self::ROOT_UUID,
+                'operation_type' => 'refund',
+                'remote_status' => 'failed',
+                'local_status' => 'pending',
+                'remote_error_code' => 'open_batch_partial_refund_unsupported',
+            ]
+        )->show(new RefundRestRequest(route: ['operation_uuid' => self::ROOT_UUID]));
+        $unsafe = $this->controller(
+            operationReader: static fn (): array => [
+                'operation_uuid' => self::ROOT_UUID,
+                'operation_type' => 'refund',
+                'remote_status' => 'declined',
+                'local_status' => 'pending',
+                'remote_error_code' => '<script>Provider Declined</script>',
+            ]
+        )->show(new RefundRestRequest(route: ['operation_uuid' => self::ROOT_UUID]));
+        $succeeded = $this->controller(
+            operationReader: static fn (): array => [
+                'operation_uuid' => self::ROOT_UUID,
+                'operation_type' => 'refund',
+                'vendor_transaction_id' => '81177094',
+                'remote_status' => 'succeeded',
+                'local_status' => 'applied',
+                'local_transaction_id' => 44,
+                'remote_error_code' => 'stale-code',
+            ]
+        )->show(new RefundRestRequest(route: ['operation_uuid' => self::ROOT_UUID]));
+
+        self::assertSame('open_batch_partial_refund_unsupported', $failed->get_data()['error_code']);
+        self::assertTrue($failed->get_data()['retry_allowed']);
+        self::assertSame('scriptproviderdeclinedscript', $unsafe->get_data()['error_code']);
+        self::assertArrayNotHasKey('error_code', $succeeded->get_data());
+    }
+
+    public function testGetOfARefundHandedOffToAReverseReportsTheChildAndNeverAllowsRetry(): void
+    {
+        $parent = [
+            'operation_uuid' => self::ROOT_UUID,
+            'operation_type' => 'refund',
+            'remote_status' => 'failed',
+            'local_status' => 'pending',
+            'remote_error_code' => 'open_batch_verified_reverse',
+        ];
+        $childReads = [];
+        $controller = $this->controller(
+            operationReader: static fn (): array => $parent,
+            childOperationReader: static function (string $parentUuid) use (&$childReads): array {
+                $childReads[] = $parentUuid;
+                return [
+                    'operation_uuid' => self::CHILD_UUID,
+                    'parent_operation_uuid' => self::ROOT_UUID,
+                    'operation_type' => 'reverse',
+                    'vendor_transaction_id' => '81177094',
+                    'remote_status' => 'succeeded',
+                    'local_status' => 'applied',
+                    'local_transaction_id' => 44,
+                ];
+            }
+        );
+
+        $response = $controller->show(new RefundRestRequest(route: ['operation_uuid' => self::ROOT_UUID]));
+
+        self::assertSame([self::ROOT_UUID], $childReads);
+        self::assertSame([
+            'operation_uuid' => self::ROOT_UUID,
+            'effective_operation_uuid' => self::CHILD_UUID,
+            'provider_action' => 'reverse',
+            'provider_transaction_id' => '81177094',
+            'refund_transaction_id' => 44,
+            'remote_status' => 'succeeded',
+            'local_status' => 'applied',
+            'notification_status' => 'delivered',
+            'retry_allowed' => false,
+        ], $response->get_data());
+
+        $withoutChild = $this->controller(
+            operationReader: static fn (): array => $parent,
+            childOperationReader: static fn (): ?array => null
+        )->show(new RefundRestRequest(route: ['operation_uuid' => self::ROOT_UUID]));
+        self::assertSame(self::ROOT_UUID, $withoutChild->get_data()['effective_operation_uuid']);
+        self::assertFalse($withoutChild->get_data()['retry_allowed']);
+
+        $unreadable = $this->controller(
+            operationReader: static fn (): array => $parent,
+            childOperationReader: static fn (): \WP_Error => new \WP_Error('ys_helcim_journal_unavailable', 'down')
+        )->show(new RefundRestRequest(route: ['operation_uuid' => self::ROOT_UUID]));
+        self::assertSame(503, $unreadable->get_status());
     }
 
     public function testGetUsesDurableEffectStateInsteadOfAssumingAppliedHooksWereDelivered(): void
@@ -584,7 +724,7 @@ final class RefundRestControllerTest extends TestCase
                 'operation_uuid' => self::ROOT_UUID,
                 'parent_operation_uuid' => null,
                 'operation_type' => 'refund',
-                'vendor_transaction_id' => '51177094',
+                'vendor_transaction_id' => '81177094',
                 'remote_status' => 'succeeded',
                 'local_status' => 'applied',
                 'local_transaction_id' => 44,
@@ -618,7 +758,7 @@ final class RefundRestControllerTest extends TestCase
                 'operation_uuid' => self::ROOT_UUID,
                 'parent_operation_uuid' => null,
                 'operation_type' => 'refund',
-                'vendor_transaction_id' => '51177094',
+                'vendor_transaction_id' => '81177094',
                 'remote_status' => 'succeeded',
                 'local_status' => 'applied',
                 'local_transaction_id' => 44,
@@ -643,7 +783,7 @@ final class RefundRestControllerTest extends TestCase
                 'operation_uuid' => self::ROOT_UUID,
                 'parent_operation_uuid' => null,
                 'operation_type' => 'refund',
-                'vendor_transaction_id' => '51177094',
+                'vendor_transaction_id' => '81177094',
                 'remote_status' => 'succeeded',
                 'local_status' => 'applied',
                 'local_transaction_id' => 44,
@@ -688,6 +828,169 @@ final class RefundRestControllerTest extends TestCase
         self::assertSame(0, $readCalls);
     }
 
+    public function testProviderRefundSyncRouteIsRegisteredOnlyWithTheServiceAndUsesTheSamePermissionGate(): void
+    {
+        $registered = [];
+        $controller = $this->controller(
+            routeRegistrar: static function (string $namespace, string $route, array $args) use (&$registered): bool {
+                $registered[] = [$namespace, $route, $args];
+                return true;
+            },
+            providerRefundSync: static fn (): array => []
+        );
+
+        $controller->registerRoutes();
+
+        self::assertCount(4, $registered);
+        self::assertSame('ys-fc-pay/v1', $registered[3][0]);
+        self::assertSame('/orders/(?P<order_id>\d+)/sync-provider-refunds', $registered[3][1]);
+        self::assertSame('POST', $registered[3][2]['methods']);
+        self::assertSame([$controller, 'syncProviderRefunds'], $registered[3][2]['callback']);
+        self::assertSame([$controller, 'permissionsCheck'], $registered[3][2]['permission_callback']);
+
+        $calls = 0;
+        $guarded = $this->controller(
+            nonceVerifier: static fn (): bool => false,
+            providerRefundSync: static function () use (&$calls): array {
+                ++$calls;
+                return [];
+            }
+        );
+        $denied = $guarded->permissionsCheck(new RefundRestRequest(headers: ['X-WP-Nonce' => 'stale'], route: ['order_id' => '48']));
+        self::assertInstanceOf(\WP_Error::class, $denied);
+        self::assertSame(403, $denied->get_error_data()['status']);
+        self::assertSame(0, $calls);
+    }
+
+    public function testProviderRefundSyncReturnsOnlyTheWhitelistedSummary(): void
+    {
+        $orders = [];
+        $controller = $this->controller(
+            providerRefundSync: static function (int $orderId) use (&$orders): array {
+                $orders[] = $orderId;
+                return [
+                    'order_id' => 48,
+                    'status' => 'recorded',
+                    'helcim_payments' => 1,
+                    'api_token' => 'must-not-leak',
+                    'recorded' => [['transaction_id' => '85267563', 'provider_action' => 'reverse', 'reason' => 'recorded', 'proof' => ['cardNumber' => '4111']]],
+                    'already_recorded' => [],
+                    'skipped' => [['transaction_id' => '<b>1</b>', 'provider_action' => 'purchase', 'reason' => 'Not A Refund!']],
+                    'retry' => [],
+                    'review' => 'not-a-list',
+                ];
+            }
+        );
+
+        $response = $controller->syncProviderRefunds(new RefundRestRequest(route: ['order_id' => '48']));
+
+        self::assertSame(200, $response->get_status());
+        self::assertSame([48], $orders);
+        self::assertSame([
+            'order_id' => 48,
+            'status' => 'recorded',
+            'helcim_payments' => 1,
+            'recorded' => [['transaction_id' => '85267563', 'provider_action' => 'reverse', 'reason' => 'recorded']],
+            'already_recorded' => [],
+            'skipped' => [['transaction_id' => '', 'provider_action' => '', 'reason' => 'notarefund']],
+            'retry' => [],
+            'review' => [],
+        ], $response->get_data());
+    }
+
+    public function testProviderRefundSyncPassesALegacyPaymentResultAsOnlyAStatusAndACount(): void
+    {
+        // 作業日誌上線前付款的訂單：回應只多「legacy_payment」狀態與一個非負整數筆數，不帶任何付款細節。
+        $controller = $this->controller(
+            providerRefundSync: static fn (int $orderId): array => [
+                'order_id' => $orderId,
+                'status' => 'legacy_payment',
+                'helcim_payments' => 0,
+                'legacy_payments' => 2,
+                'api_token' => 'must-not-leak',
+                'charges' => [['vendor_charge_id' => '82553743', 'card_last_4' => '4242']],
+                'recorded' => [],
+                'already_recorded' => [],
+                'skipped' => [],
+                'retry' => [],
+                'review' => [],
+            ]
+        );
+
+        $response = $controller->syncProviderRefunds(new RefundRestRequest(route: ['order_id' => '47']));
+
+        self::assertSame(200, $response->get_status());
+        self::assertSame([
+            'order_id' => 47,
+            'status' => 'legacy_payment',
+            'helcim_payments' => 0,
+            'legacy_payments' => 2,
+            'recorded' => [],
+            'already_recorded' => [],
+            'skipped' => [],
+            'retry' => [],
+            'review' => [],
+        ], $response->get_data());
+        self::assertStringNotContainsString('82553743', (string) json_encode($response->get_data()));
+
+        foreach ([-1, '2', 2.0, null, '2; DROP TABLE'] as $unsafe) {
+            $sanitized = $this->controller(
+                providerRefundSync: static fn (int $orderId): array => [
+                    'order_id' => $orderId,
+                    'status' => 'legacy_payment',
+                    'helcim_payments' => 0,
+                    'legacy_payments' => $unsafe,
+                ]
+            )->syncProviderRefunds(new RefundRestRequest(route: ['order_id' => '47']));
+            self::assertSame('legacy_payment', $sanitized->get_data()['status']);
+            self::assertSame(0, $sanitized->get_data()['legacy_payments']);
+        }
+
+        $other = $this->controller(
+            providerRefundSync: static fn (int $orderId): array => [
+                'order_id' => $orderId,
+                'status' => 'nothing_new',
+                'helcim_payments' => 1,
+                'legacy_payments' => 5,
+            ]
+        )->syncProviderRefunds(new RefundRestRequest(route: ['order_id' => '47']));
+        self::assertSame('nothing_new', $other->get_data()['status']);
+        self::assertArrayNotHasKey('legacy_payments', $other->get_data());
+    }
+
+    public function testProviderRefundSyncFailsClosedWithoutLeakingDetails(): void
+    {
+        $calls = 0;
+        $invalid = $this->controller(providerRefundSync: static function () use (&$calls): array {
+            ++$calls;
+            return [];
+        })->syncProviderRefunds(new RefundRestRequest(route: ['order_id' => '0']));
+        self::assertSame(422, $invalid->get_status());
+        self::assertSame(0, $calls);
+
+        $failed = $this->controller(
+            providerRefundSync: static fn (): \WP_Error => new \WP_Error('ys_helcim_provider_refund_sync_unavailable', 'db password=hunter2', ['status' => 503])
+        )->syncProviderRefunds(new RefundRestRequest(route: ['order_id' => '48']));
+        self::assertSame(503, $failed->get_status());
+        self::assertSame('Refunds could not be synced from Helcim.', $failed->get_data()['message']);
+        self::assertStringNotContainsString('hunter2', (string) json_encode($failed->get_data()));
+
+        $thrown = $this->controller(
+            providerRefundSync: static function (): array {
+                throw new \RuntimeException('secret');
+            }
+        )->syncProviderRefunds(new RefundRestRequest(route: ['order_id' => '48']));
+        self::assertSame(503, $thrown->get_status());
+
+        $otherOrder = $this->controller(
+            providerRefundSync: static fn (): array => ['order_id' => 47, 'status' => 'recorded']
+        )->syncProviderRefunds(new RefundRestRequest(route: ['order_id' => '48']));
+        self::assertSame(503, $otherOrder->get_status());
+
+        $unavailable = $this->controller()->syncProviderRefunds(new RefundRestRequest(route: ['order_id' => '48']));
+        self::assertSame(503, $unavailable->get_status());
+    }
+
     private function controller(
         ?callable $serviceExecute = null,
         ?callable $recorder = null,
@@ -699,7 +1002,9 @@ final class RefundRestControllerTest extends TestCase
         ?callable $localFailureRecorder = null,
         ?callable $effectStateReader = null,
         ?callable $optionsLoader = null,
-        ?callable $staleScopeExpirer = null
+        ?callable $staleScopeExpirer = null,
+        ?callable $providerRefundSync = null,
+        ?callable $childOperationReader = null
     ): YSHelcimRefundRestController {
         return new YSHelcimRefundRestController(
             $this->requestBuilder(),
@@ -720,7 +1025,9 @@ final class RefundRestControllerTest extends TestCase
             $localFailureRecorder,
             $effectStateReader,
             $optionsLoader,
-            $staleScopeExpirer
+            $staleScopeExpirer,
+            $providerRefundSync,
+            $childOperationReader
         );
     }
 
@@ -731,7 +1038,7 @@ final class RefundRestControllerTest extends TestCase
                 'order_id' => 10,
                 'transaction_id' => 20,
                 'transaction_uuid' => 'fc-transaction-123',
-                'vendor_transaction_id' => '51177061',
+                'vendor_transaction_id' => '81177061',
                 'gateway' => 'ys_helcim',
                 'status' => 'succeeded',
                 'transaction_type' => 'charge',
@@ -770,7 +1077,7 @@ final class RefundRestControllerTest extends TestCase
     {
         return new YSHelcimRefundResult(
             YSHelcimRefundResult::SUCCEEDED,
-            '51177094',
+            '81177094',
             null,
             null,
             self::ROOT_UUID,

@@ -98,11 +98,7 @@ final class YSHelcimRefundAdminPage {
 		}
 
 		$page   = is_string( $config['page'] ?? null ) ? $config['page'] : '';
-		$screen = match ( $page ) {
-			self::PAGE_SLUG => 'canonical',
-			'fluent-cart'   => 'spa',
-			default         => '',
-		};
+		$screen = self::screenForPage( $page );
 		if ( '' === $screen || ! $this->canAccess() ) {
 			return;
 		}
@@ -121,6 +117,7 @@ final class YSHelcimRefundAdminPage {
 						'pollAttempts',
 						'autoStart',
 						'canResolve',
+						'modalEnabled',
 					)
 				)
 			)
@@ -128,6 +125,10 @@ final class YSHelcimRefundAdminPage {
 		$browser_config['screen'] = $screen;
 		if ( array_key_exists( 'canResolve', $browser_config ) ) {
 			$browser_config['canResolve'] = true === $browser_config['canResolve'];
+		}
+		if ( array_key_exists( 'modalEnabled', $browser_config ) ) {
+			// 退款彈窗只存在於 FluentCart 訂單頁（spa）；獨立頁面一律關閉，避免同頁 id 重複。
+			$browser_config['modalEnabled'] = 'spa' === $screen && true === $browser_config['modalEnabled'];
 		}
 		if ( is_array( $browser_config['labels'] ?? null ) ) {
 			$browser_config['labels'] = array_filter(
@@ -175,15 +176,62 @@ final class YSHelcimRefundAdminPage {
 		$initial_order_id = is_int( $browser_config['initialOrderId'] ?? null ) && $browser_config['initialOrderId'] > 0
 			? (string) $browser_config['initialOrderId']
 			: '';
-		$render_messages = self::renderMessages();
-		$escape          = static fn ( string $key ): string => htmlspecialchars(
-			$render_messages[ $key ] ?? '',
-			ENT_QUOTES | ENT_SUBSTITUTE,
-			'UTF-8'
-		);
+		$escape = self::messageEscaper();
 
 		echo '<div class="wrap ys-helcim-refund-admin" id="ys-helcim-refund-admin">';
 		echo '<h1>' . $escape( 'Helcim Refunds' ) . '</h1>';
+		$this->renderPanelBody( $initial_order_id );
+		echo '</div>';
+	}
+
+	/**
+	 * 在 FluentCart 訂單頁（spa）輸出隱藏的退款彈窗，掛在 admin_footer。
+	 *
+	 * 彈窗位於 #fluent_cart_plugin_app 之外，Vue 重繪不會清掉它；也不帶
+	 * data-ys-helcim-refund-order／-enhancement 屬性，SPA 接管清理時不會被移除。
+	 * 面板本體與獨立頁面共用 renderPanelBody()，控制項 id 只有一個來源。
+	 */
+	public function renderModal(): void {
+		try {
+			$config = ( $this->config_provider )( 'modal' );
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			return;
+		}
+		if ( ! is_array( $config ) ) {
+			return;
+		}
+
+		$page = is_string( $config['page'] ?? null ) ? $config['page'] : '';
+		// 與 enqueueAssets() 判定 spa 的條件相同；獨立頁面已有同一份面板，不可再輸出（id 會重複）。
+		if ( 'spa' !== self::screenForPage( $page ) || ! $this->canAccess() ) {
+			return;
+		}
+
+		$escape = self::messageEscaper();
+
+		echo '<div id="ys-helcim-refund-modal" class="ys-helcim-refund-modal" hidden aria-hidden="true">';
+		echo '<div class="ys-helcim-refund-modal__backdrop" data-ys-helcim-refund-modal-close></div>';
+		echo '<div class="ys-helcim-refund-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="ys-helcim-refund-modal-title" tabindex="-1">';
+		echo '<div class="ys-helcim-refund-modal__header">';
+		echo '<h2 id="ys-helcim-refund-modal-title">' . $escape( 'Refund through Helcim' ) . '</h2>';
+		echo '<button type="button" class="ys-helcim-refund-modal__close" data-ys-helcim-refund-modal-close aria-label="' . $escape( 'Close' ) . '">&times;</button>';
+		echo '</div>';
+		echo '<div class="ys-helcim-refund-admin ys-helcim-refund-modal__body" id="ys-helcim-refund-admin">';
+		$this->renderPanelBody( '' );
+		echo '</div>';
+		echo '</div>';
+		echo '</div>';
+	}
+
+	/**
+	 * 退款面板本體（獨立頁面與訂單頁彈窗共用的唯一標記來源）。
+	 *
+	 * @param string $initial_order_id 已驗證的訂單編號字串；沒有時為空字串。
+	 */
+	private function renderPanelBody( string $initial_order_id ): void {
+		$escape = self::messageEscaper();
+
 		echo '<p class="description">' . $escape( 'Refund Helcim transactions remotely before FluentCart records the local refund.' ) . '</p>';
 		echo '<form id="ys-helcim-refund-order-lookup" class="ys-helcim-refund-lookup" method="get" action="admin.php">';
 		echo '<input type="hidden" name="page" value="' . self::PAGE_SLUG . '">';
@@ -191,14 +239,22 @@ final class YSHelcimRefundAdminPage {
 		echo '<input id="ys-helcim-refund-order-id" name="order_id" type="number" min="1" step="1" required value="' . $initial_order_id . '">';
 		echo '<button type="submit" class="button button-secondary">' . $escape( 'Load order' ) . '</button>';
 		echo '</form>';
-		echo '<div id="ys-helcim-refund-status" class="notice inline" role="status" aria-live="polite" hidden></div>';
+		// 狀態列在伺服器輸出時不可帶 notice／error class：FluentCart 後台根元件掛載時會執行
+		// jQuery(".notice:not(.fluent-cart), .error:not(.fluent-cart)").remove()，帶了就整個被移出 DOM，
+		// 訂單頁彈窗的所有狀態訊息都不會顯示。顯示訊息時才由 JS 加上 notice class 套用 WP 的通知樣式。
+		echo '<div id="ys-helcim-refund-status" class="ys-helcim-refund-status inline" role="status" aria-live="polite" hidden></div>';
+		echo '<section id="ys-helcim-refund-sync" class="ys-helcim-refund-sync" hidden>';
+		echo '<p class="description">' . $escape( 'Refunded or voided this payment directly in Helcim? Sync it so FluentCart shows the same result.' ) . '</p>';
+		echo '<button id="ys-helcim-refund-sync-button" type="button" class="button button-secondary">' . $escape( 'Sync refunds from Helcim' ) . '</button>';
+		echo '</section>';
 		echo '<section id="ys-helcim-refund-context" class="ys-helcim-refund-context" hidden>';
 		echo '<div id="ys-helcim-refund-summary" class="ys-helcim-refund-summary"></div>';
 		echo '<form id="ys-helcim-refund-form">';
 		echo '<label for="ys-helcim-refund-transaction">' . $escape( 'Helcim transaction' ) . '</label>';
 		echo '<select id="ys-helcim-refund-transaction" name="transaction_id" required></select>';
 		echo '<label for="ys-helcim-refund-amount">' . $escape( 'Refund amount' ) . '</label>';
-		echo '<input id="ys-helcim-refund-amount" name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" required>';
+		echo '<input id="ys-helcim-refund-amount" name="amount" type="number" min="0.01" step="0.01" inputmode="decimal" aria-describedby="ys-helcim-refund-amount-note" required>';
+		echo '<p id="ys-helcim-refund-amount-note" class="description">' . $escape( 'Payments that Helcim has not settled yet (usually the same day) can only be cancelled in full. A full refund is then sent as a void: no processing fee applies and the pending charge disappears from the card within 1 to 2 days. Partial refunds work once the payment has settled.' ) . '</p>';
 		echo '<label for="ys-helcim-refund-reason">' . $escape( 'Reason' ) . '</label>';
 		echo '<textarea id="ys-helcim-refund-reason" name="reason" rows="3" maxlength="500"></textarea>';
 		echo '<fieldset><legend>' . $escape( 'Refunded items' ) . '</legend>';
@@ -225,6 +281,10 @@ final class YSHelcimRefundAdminPage {
 		echo '<dl id="ys-helcim-refund-resolution-evidence" class="ys-helcim-refund-resolution-evidence" hidden>';
 		echo '<dt>' . $escape( 'Evidence' ) . '</dt><dd id="ys-helcim-refund-resolution-evidence-status"></dd>';
 		echo '<dt>' . $escape( 'Source transaction' ) . '</dt><dd id="ys-helcim-refund-resolution-source"></dd>';
+		// 候選交易在 Helcim 的類型、金額與 invoiceNumber（由 JS 以 textContent 填入），attestation 前可以核對。
+		echo '<dt>' . $escape( 'Candidate transaction type' ) . '</dt><dd id="ys-helcim-refund-resolution-candidate-type"></dd>';
+		echo '<dt>' . $escape( 'Candidate amount' ) . '</dt><dd id="ys-helcim-refund-resolution-candidate-amount"></dd>';
+		echo '<dt>' . $escape( 'Helcim invoice number' ) . '</dt><dd id="ys-helcim-refund-resolution-invoice"></dd>';
 		echo '<dt>' . $escape( 'Action' ) . '</dt><dd id="ys-helcim-refund-resolution-action"></dd>';
 		echo '</dl>';
 		echo '<div id="ys-helcim-refund-resolution-confirmation" class="ys-helcim-refund-resolution-confirmation" hidden>';
@@ -237,7 +297,30 @@ final class YSHelcimRefundAdminPage {
 		echo '</div>';
 		echo '</section>';
 		echo '</section>';
-		echo '</div>';
+	}
+
+	/** 由頁面 slug 判定畫面：canonical（獨立頁面）、spa（FluentCart 後台）或空字串。 */
+	private static function screenForPage( string $page ): string {
+		return match ( $page ) {
+			self::PAGE_SLUG => 'canonical',
+			'fluent-cart'   => 'spa',
+			default         => '',
+		};
+	}
+
+	/**
+	 * 伺服器端渲染字串的跳脫器：只接受 renderMessages() 內的鍵。
+	 *
+	 * @return \Closure(string):string
+	 */
+	private static function messageEscaper(): \Closure {
+		$render_messages = self::renderMessages();
+
+		return static fn ( string $key ): string => htmlspecialchars(
+			$render_messages[ $key ] ?? '',
+			ENT_QUOTES | ENT_SUBSTITUTE,
+			'UTF-8'
+		);
 	}
 
 	/**
@@ -280,8 +363,11 @@ final class YSHelcimRefundAdminPage {
 			'errorCodeLabel'                     => __( 'Error code', 'ys-helcim-via-fluentcart' ),
 			'providerOutcomeIndeterminate'       => __( 'The provider outcome is indeterminate. Do not submit another refund; inspect positive evidence or reconcile this operation.', 'ys-helcim-via-fluentcart' ),
 			'manualReconciliationRequired'      => __( 'The provider refund succeeded, but manual stock or local reconciliation is required. Do not submit another refund.', 'ys-helcim-via-fluentcart' ),
-			'refundCompleted'                    => __( 'The Helcim refund and local reconciliation completed.', 'ys-helcim-via-fluentcart' ),
+			'refundCompleted'                    => __( 'Helcim refunded the payment and FluentCart recorded the refund. The money usually reaches the card within 5 to 10 business days.', 'ys-helcim-via-fluentcart' ),
+			'paymentVoided'                      => __( 'The payment had not settled yet, so Helcim cancelled (voided) it instead of refunding it, and FluentCart recorded the refund. No processing fee applies, and the pending charge disappears from the card within 1 to 2 days.', 'ys-helcim-via-fluentcart' ),
 			'refundNotCompleted'                 => __( 'The refund was not completed. Review the result before trying again.', 'ys-helcim-via-fluentcart' ),
+			'openBatchPartialRefund'             => __( 'This payment has not settled yet, so Helcim can only cancel the full amount. No money was moved. Enter the full amount to cancel the payment now, or make this partial refund after the payment settles (Helcim settles once a day).', 'ys-helcim-via-fluentcart' ),
+			'openBatchUnproven'                  => __( 'Helcim did not accept the refund, and the plugin could not confirm that the payment is still unsettled, so nothing was sent. Wait a few minutes and try again.', 'ys-helcim-via-fluentcart' ),
 			'operationStatusUnreadable'          => __( 'Operation status could not be read.', 'ys-helcim-via-fluentcart' ),
 			'refundStillReconciling'             => __( 'The refund is still reconciling. Do not submit it again; reconcile this operation.', 'ys-helcim-via-fluentcart' ),
 			'noOperationToReconcile'             => __( 'There is no valid operation to reconcile.', 'ys-helcim-via-fluentcart' ),
@@ -291,6 +377,20 @@ final class YSHelcimRefundAdminPage {
 			'refundStatusUnknownNoRetry'         => __( 'Refund status is unknown. Do not submit it again.', 'ys-helcim-via-fluentcart' ),
 			'refundStatusUnknown'                => __( 'Refund status is unknown.', 'ys-helcim-via-fluentcart' ),
 			'refundOptionsLoadFailed'            => __( 'Refund options could not be loaded.', 'ys-helcim-via-fluentcart' ),
+			'classificationPending'              => __( 'Checking whether this payment was taken through Helcim. Please wait a moment and try again.', 'ys-helcim-via-fluentcart' ),
+			'syncingProviderRefunds'             => __( 'Checking Helcim for refunds or voids made outside this plugin…', 'ys-helcim-via-fluentcart' ),
+			/* translators: %1$s: number of Helcim refunds or voids that were recorded. */
+			'providerRefundsRecorded'            => __( 'Recorded refunds or voids from Helcim: %1$s. FluentCart now matches Helcim.', 'ys-helcim-via-fluentcart' ),
+			'providerRefundsNothingNew'          => __( 'Helcim has no refunds or voids for this order that are missing from FluentCart.', 'ys-helcim-via-fluentcart' ),
+			'providerRefundsNoHelcimPayment'     => __( 'This order has no completed Helcim payment to check.', 'ys-helcim-via-fluentcart' ),
+			/* translators: %1$s: comma-separated review reason codes. */
+			'providerRefundsNeedReview'          => __( 'Some refunds in Helcim could not be recorded automatically (%1$s). Compare this order with Helcim before refunding again.', 'ys-helcim-via-fluentcart' ),
+			'providerRefundsRetryLater'          => __( 'Another refund for this order is still in progress, or Helcim could not be reached. Try again in a few minutes.', 'ys-helcim-via-fluentcart' ),
+			'providerRefundsSyncFailed'          => __( 'Refunds could not be synced from Helcim.', 'ys-helcim-via-fluentcart' ),
+			'providerRefundsLegacyPayment'       => __( 'This order was paid before this plugin started keeping a payment journal, so a refund or void made in Helcim cannot be synced automatically. Compare this order with Helcim before refunding.', 'ys-helcim-via-fluentcart' ),
+			'batchClosedRefundRejected'          => __( 'Helcim rejected this refund, and the payment has already settled, so nothing was sent. Check in Helcim whether this payment was already refunded or voided. If it was, use “Sync refunds from Helcim” to record it in FluentCart.', 'ys-helcim-via-fluentcart' ),
+			'providerRefundPending'              => __( 'A refund or void made directly in Helcim for this order is not recorded in FluentCart yet. Use “Sync refunds from Helcim” to finish recording it before refunding again.', 'ys-helcim-via-fluentcart' ),
+			'refundModalBusy'                    => __( 'The refund request is still being processed. Wait for the result before closing this window.', 'ys-helcim-via-fluentcart' ),
 		);
 	}
 
@@ -305,8 +405,11 @@ final class YSHelcimRefundAdminPage {
 			'Refund Helcim transactions remotely before FluentCart records the local refund.' => __( 'Refund Helcim transactions remotely before FluentCart records the local refund.', 'ys-helcim-via-fluentcart' ),
 			'Order ID' => __( 'Order ID', 'ys-helcim-via-fluentcart' ),
 			'Load order' => __( 'Load order', 'ys-helcim-via-fluentcart' ),
+			'Refunded or voided this payment directly in Helcim? Sync it so FluentCart shows the same result.' => __( 'Refunded or voided this payment directly in Helcim? Sync it so FluentCart shows the same result.', 'ys-helcim-via-fluentcart' ),
+			'Sync refunds from Helcim' => __( 'Sync refunds from Helcim', 'ys-helcim-via-fluentcart' ),
 			'Helcim transaction' => __( 'Helcim transaction', 'ys-helcim-via-fluentcart' ),
 			'Refund amount' => __( 'Refund amount', 'ys-helcim-via-fluentcart' ),
+			'Payments that Helcim has not settled yet (usually the same day) can only be cancelled in full. A full refund is then sent as a void: no processing fee applies and the pending charge disappears from the card within 1 to 2 days. Partial refunds work once the payment has settled.' => __( 'Payments that Helcim has not settled yet (usually the same day) can only be cancelled in full. A full refund is then sent as a void: no processing fee applies and the pending charge disappears from the card within 1 to 2 days. Partial refunds work once the payment has settled.', 'ys-helcim-via-fluentcart' ),
 			'Reason' => __( 'Reason', 'ys-helcim-via-fluentcart' ),
 			'Refunded items' => __( 'Refunded items', 'ys-helcim-via-fluentcart' ),
 			'Restore managed stock' => __( 'Restore managed stock', 'ys-helcim-via-fluentcart' ),
@@ -321,11 +424,16 @@ final class YSHelcimRefundAdminPage {
 			'Inspect positive evidence' => __( 'Inspect positive evidence', 'ys-helcim-via-fluentcart' ),
 			'Evidence' => __( 'Evidence', 'ys-helcim-via-fluentcart' ),
 			'Source transaction' => __( 'Source transaction', 'ys-helcim-via-fluentcart' ),
+			'Candidate transaction type' => __( 'Candidate transaction type', 'ys-helcim-via-fluentcart' ),
+			'Candidate amount' => __( 'Candidate amount', 'ys-helcim-via-fluentcart' ),
+			'Helcim invoice number' => __( 'Helcim invoice number', 'ys-helcim-via-fluentcart' ),
 			'Action' => __( 'Action', 'ys-helcim-via-fluentcart' ),
 			'I attest that the candidate belongs to the source transaction shown above.' => __( 'I attest that the candidate belongs to the source transaction shown above.', 'ys-helcim-via-fluentcart' ),
 			'Type this exact confirmation phrase:' => __( 'Type this exact confirmation phrase:', 'ys-helcim-via-fluentcart' ),
 			'Confirmation phrase' => __( 'Confirmation phrase', 'ys-helcim-via-fluentcart' ),
 			'Commit positive resolution' => __( 'Commit positive resolution', 'ys-helcim-via-fluentcart' ),
+			'Refund through Helcim' => __( 'Refund through Helcim', 'ys-helcim-via-fluentcart' ),
+			'Close' => __( 'Close', 'ys-helcim-via-fluentcart' ),
 		);
 	}
 

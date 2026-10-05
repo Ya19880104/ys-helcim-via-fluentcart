@@ -154,7 +154,7 @@ final class YSHelcimRefundOptionsLoader {
 			}
 		}
 
-		return array(
+		$options = array(
 			'order_id'        => $order_id,
 			'classification' => $classification,
 			'currency'        => $order['currency'],
@@ -163,6 +163,29 @@ final class YSHelcimRefundOptionsLoader {
 			'items'           => $items,
 			'resolution_operation' => $resolution_operation,
 		);
+		// 被「Helcim 後台已退款、FluentCart 還沒記錄」的外部列擋住時，讓面板說出具體原因與解法。
+		if ( 'blocked' === $classification && self::hasPendingProviderRecordedRefund( $snapshot['operations'], $order_id ) ) {
+			$options['blocker'] = 'provider_refund_pending';
+		}
+
+		return $options;
+	}
+
+	/** @param array<int,mixed> $operations */
+	private static function hasPendingProviderRecordedRefund( array $operations, int $order_id ): bool {
+		foreach ( $operations as $operation ) {
+			if (
+				is_array( $operation ) &&
+				$order_id === self::positiveInteger( $operation['order_id'] ?? null ) &&
+				'succeeded' === ( $operation['remote_status'] ?? null ) &&
+				'applied' !== ( $operation['local_status'] ?? null ) &&
+				YSHelcimProviderRefundSync::isProviderRecordedOperation( $operation )
+			) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/** @return array{currency:string,remaining:int}|null */

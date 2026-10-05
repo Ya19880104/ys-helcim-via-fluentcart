@@ -74,7 +74,7 @@ final class ProcessorCoordinatorTest extends TestCase
         self::assertSame('success', $response->payload['status']);
         self::assertSame('https://shop.test/receipt/fc-transaction-123', $response->payload['redirect_url']);
         self::assertSame(1, $apiCalls);
-        self::assertSame('51177123', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+        self::assertSame('81177123', OrderTransaction::allRecords()[20]['vendor_charge_id']);
         self::assertArrayNotHasKey('card_token', OrderTransaction::allRecords()[20]['meta']);
     }
 
@@ -107,6 +107,7 @@ final class ProcessorCoordinatorTest extends TestCase
 
     public function testStrictDeclineStaysUnpaidAndExplicitlyAllowsDifferentCard(): void
     {
+        $notes = [];
         $processor = new YSHelcimJsProcessor(
             $this->settings,
             $this->runtime(static fn (): \WP_Error => new \WP_Error('ys_helcim_api_error', 'Declined', [
@@ -115,7 +116,11 @@ final class ProcessorCoordinatorTest extends TestCase
                 'indeterminate' => false,
                 'provider_errors' => 'Transaction Declined: CVV does not match',
                 'definitive_decline' => true,
-            ]))
+            ])),
+            null,
+            static function (int $orderId, string $title, string $message) use (&$notes): void {
+                $notes[] = [$orderId, $title, $message];
+            }
         );
         $this->postVerifiedConfirm('declined-card-token');
 
@@ -124,7 +129,208 @@ final class ProcessorCoordinatorTest extends TestCase
         self::assertSame(402, $response->statusCode);
         self::assertSame('failed', $response->payload['status']);
         self::assertTrue($response->payload['retry_allowed']);
+        self::assertSame(
+            'The card security code (CVV) did not match. No payment was taken. Please check the code and try again.',
+            $response->payload['message']
+        );
         self::assertSame(Status::TRANSACTION_PENDING, OrderTransaction::allRecords()[20]['status']);
+        self::assertSame(
+            [[
+                10,
+                'Helcim declined a payment attempt',
+                'Helcim declined the card payment. Reason from Helcim: Transaction Declined: CVV does not match. No payment was taken, and the customer can try again.',
+            ]],
+            $notes
+        );
+    }
+
+    public function testProductionDeclineRecordIsDefinitiveAndKeepsFraudDetailOutOfTheShopperMessage(): void
+    {
+        $notes = [];
+        $apiCalls = 0;
+        $processor = new YSHelcimJsProcessor(
+            $this->settings,
+            $this->runtime(static function (string $endpoint, array $payload) use (&$apiCalls): \WP_Error {
+                unset($endpoint);
+                ++$apiCalls;
+                // 正式站 Helcim 的拒絕紀錄會帶本次送出的 invoiceNumber（＝作業 UUID）。
+                return new \WP_Error('ys_helcim_api_error', 'Transaction Declined: SUSPECTED FRAUD', [
+                    'kind' => 'provider',
+                    'http_code' => 500,
+                    'indeterminate' => false,
+                    'mutation_disposition' => 'definitive_decline',
+                    'provider_errors' => 'Transaction Declined: SUSPECTED FRAUD',
+                    'definitive_decline' => true,
+                    'declined_transaction' => [
+                        'transactionId' => '85267545',
+                        'status' => 'DECLINED',
+                        'type' => 'purchase',
+                        'amount' => '21',
+                        'currency' => 'USD',
+                        'invoiceNumber' => $payload['invoice']['invoiceNumber'],
+                        'avsResponse' => 'U',
+                    ],
+                ]);
+            }),
+            null,
+            static function (int $orderId, string $title, string $message) use (&$notes): void {
+                $notes[] = [$orderId, $title, $message];
+            }
+        );
+        $this->postVerifiedConfirm('fraud-screened-card-token');
+
+        $response = $this->invoke($processor);
+
+        self::assertSame(402, $response->statusCode);
+        self::assertTrue($response->payload['retry_allowed']);
+        self::assertSame(
+            'Your bank declined this payment. No payment was taken. Please contact your bank or use a different card.',
+            $response->payload['message']
+        );
+        self::assertStringNotContainsStringIgnoringCase('fraud', $response->payload['message']);
+        self::assertSame(1, $apiCalls);
+        $attempts = $this->repository->findPurchasesByIdentity(20);
+        self::assertCount(1, $attempts);
+        self::assertSame('declined', $attempts[0]['remote_status']);
+        self::assertSame(
+            [[
+                10,
+                'Helcim declined a payment attempt',
+                'Helcim declined the card payment (Helcim transaction 85267545). Reason from Helcim: Transaction Declined: SUSPECTED FRAUD. No payment was taken, and the customer can try again.',
+            ]],
+            $notes
+        );
+    }
+
+    /** @return array<string, array{?string}> */
+    public static function declineRecordsForAnotherAttempt(): array
+    {
+        return [
+            'record of an earlier attempt on the same order' => ['00000000-0000-4000-8000-0000000000aa'],
+            'record without an invoice number' => [null],
+        ];
+    }
+
+    #[DataProvider('declineRecordsForAnotherAttempt')]
+    public function testADeclineRecordThatIsNotProvablyThisAttemptStaysUnresolved(?string $invoiceNumber): void
+    {
+        // 同一訂單重試時金額幣別必相同；前一次嘗試的 DECLINED 紀錄不得被當成本次確定被拒（否則可能重複扣款）。
+        $notes = [];
+        $record = [
+            'transactionId' => '85267545',
+            'status' => 'DECLINED',
+            'type' => 'purchase',
+            'amount' => '21',
+            'currency' => 'USD',
+        ];
+        if (null !== $invoiceNumber) {
+            $record['invoiceNumber'] = $invoiceNumber;
+        }
+        $processor = new YSHelcimJsProcessor(
+            $this->settings,
+            $this->runtime(static fn (): \WP_Error => new \WP_Error('ys_helcim_api_error', 'Transaction Declined: SUSPECTED FRAUD', [
+                'kind' => 'provider',
+                'http_code' => 500,
+                'indeterminate' => false,
+                'mutation_disposition' => 'definitive_decline',
+                'provider_errors' => 'Transaction Declined: SUSPECTED FRAUD',
+                'definitive_decline' => true,
+                'declined_transaction' => $record,
+            ])),
+            null,
+            static function (int $orderId, string $title, string $message) use (&$notes): void {
+                $notes[] = [$orderId, $title, $message];
+            }
+        );
+        $this->postVerifiedConfirm('earlier-attempt-card-token');
+
+        $response = $this->invoke($processor);
+
+        self::assertNotSame(402, $response->statusCode);
+        self::assertFalse($response->payload['retry_allowed']);
+        $attempts = $this->repository->findPurchasesByIdentity(20);
+        self::assertCount(1, $attempts);
+        self::assertNotSame('declined', $attempts[0]['remote_status']);
+        self::assertSame([], $notes);
+    }
+
+    public function testAMismatchedDeclineRecordNeverReachesTheOrderNoteEvenWhenAWebhookWonTheRace(): void
+    {
+        // 紀錄金額不符 → Adapter 不承認；webhook 已先把作業寫成 declined → CAS 失敗後收斂成 declined。
+        // 這時不得把「不吻合紀錄」的原因與交易編號寫進訂單備註。
+        $notes = [];
+        $repository = $this->repository;
+        $processor = new YSHelcimJsProcessor(
+            $this->settings,
+            $this->runtime(static function (string $endpoint, array $payload) use ($repository): \WP_Error {
+                unset($endpoint);
+                $operationUuid = $payload['invoice']['invoiceNumber'];
+                $repository->transitionRemote($operationUuid, 'processing', 'declined', ['error_code' => 'provider_declined']);
+                return new \WP_Error('ys_helcim_api_error', 'Transaction Declined: SUSPECTED FRAUD', [
+                    'kind' => 'provider',
+                    'http_code' => 500,
+                    'indeterminate' => false,
+                    'mutation_disposition' => 'definitive_decline',
+                    'provider_errors' => 'Transaction Declined: SUSPECTED FRAUD',
+                    'definitive_decline' => true,
+                    'declined_transaction' => [
+                        'transactionId' => '85267599',
+                        'status' => 'DECLINED',
+                        'type' => 'purchase',
+                        'amount' => '99',
+                        'currency' => 'USD',
+                        'invoiceNumber' => $operationUuid,
+                    ],
+                ]);
+            }),
+            null,
+            static function (int $orderId, string $title, string $message) use (&$notes): void {
+                $notes[] = [$orderId, $title, $message];
+            }
+        );
+        $this->postVerifiedConfirm('raced-card-token');
+
+        $response = $this->invoke($processor);
+
+        self::assertSame(402, $response->statusCode);
+        self::assertSame('declined', $this->repository->findPurchasesByIdentity(20)[0]['remote_status']);
+        self::assertSame([], $notes);
+        self::assertStringNotContainsString('85267599', (string) json_encode($response->payload));
+    }
+
+    public function testDeclineRecordForADifferentAmountStaysUnprovenWithoutANote(): void
+    {
+        $notes = [];
+        $processor = new YSHelcimJsProcessor(
+            $this->settings,
+            $this->runtime(static fn (): \WP_Error => new \WP_Error('ys_helcim_api_error', 'Transaction Declined: DECLINED - Do Not Honor', [
+                'kind' => 'provider',
+                'http_code' => 500,
+                'indeterminate' => false,
+                'mutation_disposition' => 'definitive_decline',
+                'provider_errors' => 'Transaction Declined: DECLINED - Do Not Honor',
+                'definitive_decline' => true,
+                'declined_transaction' => [
+                    'transactionId' => '85267545',
+                    'status' => 'DECLINED',
+                    'type' => 'purchase',
+                    'amount' => '99',
+                    'currency' => 'USD',
+                ],
+            ])),
+            null,
+            static function (int $orderId, string $title, string $message) use (&$notes): void {
+                $notes[] = [$orderId, $title, $message];
+            }
+        );
+        $this->postVerifiedConfirm('mismatched-decline-token');
+
+        $response = $this->invoke($processor);
+
+        self::assertSame('pending', $response->payload['status']);
+        self::assertFalse($response->payload['retry_allowed']);
+        self::assertSame([], $notes);
+        self::assertSame('indeterminate', $this->repository->findPurchasesByIdentity(20)[0]['remote_status']);
     }
 
     public function testAuthenticationRejectionStaysUnpaidAndAllowsFreshPaymentAttempt(): void
@@ -305,7 +511,7 @@ final class ProcessorCoordinatorTest extends TestCase
     {
         $record = OrderTransaction::allRecords()[20];
         $record['status'] = Status::TRANSACTION_SUCCEEDED;
-        $record['vendor_charge_id'] = '51177123';
+        $record['vendor_charge_id'] = '81177123';
         OrderTransaction::seed($record);
         $order = Order::query()->where('id', 10)->first();
         self::assertInstanceOf(Order::class, $order);
@@ -489,7 +695,7 @@ final class ProcessorCoordinatorTest extends TestCase
         return [
             'status' => 'APPROVED',
             'type' => 'purchase',
-            'transactionId' => '51177123',
+            'transactionId' => '81177123',
             'amount' => '21.00',
             'currency' => 'USD',
         ];

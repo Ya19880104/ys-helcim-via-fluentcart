@@ -108,6 +108,7 @@ final class YSHelcimRefundOptionsQuery {
 					"/* ys_helcim_refund_options_operations */
 					SELECT operations.operation_uuid, operations.order_id, operations.operation_type,
 						operations.active_scope_key, operations.remote_status, operations.local_status,
+						operations.gateway, operations.payment_mode, operations.vendor_transaction_id,
 						MAX(CASE WHEN effects.status IN ('failed', 'indeterminate') THEN 1 ELSE 0 END) AS manual_reconciliation_required,
 						MAX(CASE WHEN effects.effect_type = 'stock_restore' AND effects.status IN ('failed', 'indeterminate')
 							THEN 'stock_reconciliation_required' ELSE '' END) AS effect_status
@@ -115,7 +116,8 @@ final class YSHelcimRefundOptionsQuery {
 					LEFT JOIN `{$this->outbox_table}` AS effects ON effects.operation_uuid = operations.operation_uuid
 					WHERE operations.order_id = %d AND operations.operation_type IN ('refund', 'reverse')
 					GROUP BY operations.id, operations.operation_uuid, operations.order_id, operations.operation_type,
-						operations.active_scope_key, operations.remote_status, operations.local_status
+						operations.active_scope_key, operations.remote_status, operations.local_status,
+						operations.gateway, operations.payment_mode, operations.vendor_transaction_id
 					ORDER BY operations.id ASC",
 					$order_id
 				),

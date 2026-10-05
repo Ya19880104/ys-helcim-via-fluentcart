@@ -142,19 +142,23 @@ final class RefundResolutionRestControllerTest extends TestCase
         self::assertSame(200, $response->get_status());
         self::assertSame([[
             'uuid' => self::OPERATION_UUID,
-            'candidate' => '51177094',
+            'candidate' => '81177094',
             'actor' => 7,
         ]], $calls);
         self::assertSame([
             'status' => 'confirmation_required',
             'operation_uuid' => self::OPERATION_UUID,
-            'candidate_transaction_id' => '51177094',
-            'source_transaction_id' => '51177061',
+            'candidate_transaction_id' => '81177094',
+            'source_transaction_id' => '81177061',
+            'candidate_type' => 'refund',
+            'candidate_amount_cents' => 2100,
+            'candidate_currency' => 'USD',
+            'invoice_number' => '3b0c6f2e-8d41-4a7e-9c55-1f2a3b4c5d6e',
             'action' => 'resolve_positive',
             'parent_attestation_required' => false,
             'challenge' => str_repeat('a5', 32),
             'challenge_expires_at' => '2026-07-21 01:05:00',
-            'confirmation_phrase' => 'RESOLVE ' . self::OPERATION_UUID . ' WITH HELCIM 51177094',
+            'confirmation_phrase' => 'RESOLVE ' . self::OPERATION_UUID . ' WITH HELCIM 81177094',
         ], $response->get_data());
         self::assertStringNotContainsString('must-not-leak', json_encode($response->get_data(), JSON_THROW_ON_ERROR));
         self::assertArrayNotHasKey('proof_digest', $response->get_data());
@@ -178,26 +182,26 @@ final class RefundResolutionRestControllerTest extends TestCase
     public static function invalidInspectRequestProvider(): iterable
     {
         yield 'not a request' => [null];
-        yield 'missing route uuid' => [new RefundResolutionRestRequest(body: ['candidate_transaction_id' => '51177094'])];
+        yield 'missing route uuid' => [new RefundResolutionRestRequest(body: ['candidate_transaction_id' => '81177094'])];
         yield 'uppercase uuid' => [new RefundResolutionRestRequest(
-            body: ['candidate_transaction_id' => '51177094'],
+            body: ['candidate_transaction_id' => '81177094'],
             route: ['operation_uuid' => 'AAAAAAAA-2222-4333-8444-555555555555']
         )];
         yield 'unknown route input' => [new RefundResolutionRestRequest(
-            body: ['candidate_transaction_id' => '51177094'],
+            body: ['candidate_transaction_id' => '81177094'],
             route: ['operation_uuid' => self::OPERATION_UUID, 'unlock' => true]
         )];
         yield 'missing body input' => [new RefundResolutionRestRequest(route: ['operation_uuid' => self::OPERATION_UUID])];
         yield 'unknown body input' => [new RefundResolutionRestRequest(
-            body: ['candidate_transaction_id' => '51177094', 'api_token' => 'secret'],
+            body: ['candidate_transaction_id' => '81177094', 'api_token' => 'secret'],
             route: ['operation_uuid' => self::OPERATION_UUID]
         )];
         yield 'integer candidate' => [new RefundResolutionRestRequest(
-            body: ['candidate_transaction_id' => 51177094],
+            body: ['candidate_transaction_id' => 81177094],
             route: ['operation_uuid' => self::OPERATION_UUID]
         )];
         yield 'candidate with leading zero' => [new RefundResolutionRestRequest(
-            body: ['candidate_transaction_id' => '051177094'],
+            body: ['candidate_transaction_id' => '081177094'],
             route: ['operation_uuid' => self::OPERATION_UUID]
         )];
         yield 'candidate beyond platform integer' => [new RefundResolutionRestRequest(
@@ -280,13 +284,25 @@ final class RefundResolutionRestControllerTest extends TestCase
         yield 'exception' => [new \RuntimeException('secret exception')];
         yield 'not array' => ['not-an-array'];
         yield 'wrong operation' => [self::validInspectResult(['operation_uuid' => '22222222-2222-4333-8444-555555555555'])];
-        yield 'wrong candidate' => [self::validInspectResult(['candidate_transaction_id' => '51177095'])];
-        yield 'candidate equals source' => [self::validInspectResult(['source_transaction_id' => '51177094'])];
+        yield 'wrong candidate' => [self::validInspectResult(['candidate_transaction_id' => '81177095'])];
+        yield 'candidate equals source' => [self::validInspectResult(['source_transaction_id' => '81177094'])];
         yield 'invalid action' => [self::validInspectResult(['action' => 'unlock_negative'])];
         yield 'invalid challenge' => [self::validInspectResult(['challenge' => str_repeat('A5', 32)])];
         yield 'invalid expiry' => [self::validInspectResult(['challenge_expires_at' => 'next Tuesday'])];
         yield 'inconsistent phrase' => [self::validInspectResult(['confirmation_phrase' => 'RESOLVE SOMETHING ELSE'])];
         yield 'missing proof digest' => [array_diff_key(self::validInspectResult(), ['proof_digest' => true])];
+        // 給操作者核對的 Helcim 讀回欄位：缺少或形狀不對就整筆不回，畫面不會顯示猜測的值。
+        yield 'missing candidate type' => [array_diff_key(self::validInspectResult(), ['candidate_type' => true])];
+        yield 'invalid candidate type' => [self::validInspectResult(['candidate_type' => 'purchase'])];
+        yield 'missing candidate amount' => [array_diff_key(self::validInspectResult(), ['candidate_amount_cents' => true])];
+        yield 'string candidate amount' => [self::validInspectResult(['candidate_amount_cents' => '2100'])];
+        yield 'zero candidate amount' => [self::validInspectResult(['candidate_amount_cents' => 0])];
+        yield 'unsupported candidate currency' => [self::validInspectResult(['candidate_currency' => 'EUR'])];
+        yield 'missing invoice number' => [array_diff_key(self::validInspectResult(), ['invoice_number' => true])];
+        yield 'empty invoice number' => [self::validInspectResult(['invoice_number' => ''])];
+        yield 'untrimmed invoice number' => [self::validInspectResult(['invoice_number' => ' 3b0c6f2e '])];
+        yield 'control-character invoice number' =>[self::validInspectResult(['invoice_number' => "a\nb"])];
+        yield 'non-string invoice number' => [self::validInspectResult(['invoice_number' => 1001])];
     }
 
     public function testCommitPassesOnlyExactCanonicalConfirmationToServiceAndReturnsSafeAppliedState(): void
@@ -343,7 +359,7 @@ final class RefundResolutionRestControllerTest extends TestCase
     {
         $inspectResult = self::validInspectResult([
             'parent_attestation_required' => true,
-            'confirmation_phrase' => 'ATTEST AND RESOLVE ' . self::OPERATION_UUID . ' WITH HELCIM 51177094',
+            'confirmation_phrase' => 'ATTEST AND RESOLVE ' . self::OPERATION_UUID . ' WITH HELCIM 81177094',
         ]);
         $commitCalls = [];
         $controller = $this->controller(
@@ -472,7 +488,7 @@ final class RefundResolutionRestControllerTest extends TestCase
             route: ['operation_uuid' => self::OPERATION_UUID]
         )];
         yield 'integer candidate' => [new RefundResolutionRestRequest(
-            body: array_replace($valid, ['candidate_transaction_id' => 51177094]),
+            body: array_replace($valid, ['candidate_transaction_id' => 81177094]),
             route: ['operation_uuid' => self::OPERATION_UUID]
         )];
         yield 'short challenge' => [new RefundResolutionRestRequest(
@@ -558,14 +574,18 @@ final class RefundResolutionRestControllerTest extends TestCase
         return array_replace([
             'status' => 'confirmation_required',
             'operation_uuid' => self::OPERATION_UUID,
-            'candidate_transaction_id' => '51177094',
-            'source_transaction_id' => '51177061',
+            'candidate_transaction_id' => '81177094',
+            'source_transaction_id' => '81177061',
+            'candidate_type' => 'refund',
+            'candidate_amount_cents' => 2100,
+            'candidate_currency' => 'USD',
+            'invoice_number' => '3b0c6f2e-8d41-4a7e-9c55-1f2a3b4c5d6e',
             'action' => 'resolve_positive',
             'proof_digest' => str_repeat('d', 64),
             'parent_attestation_required' => false,
             'challenge' => str_repeat('a5', 32),
             'challenge_expires_at' => '2026-07-21 01:05:00',
-            'confirmation_phrase' => 'RESOLVE ' . self::OPERATION_UUID . ' WITH HELCIM 51177094',
+            'confirmation_phrase' => 'RESOLVE ' . self::OPERATION_UUID . ' WITH HELCIM 81177094',
         ], $changes);
     }
 
@@ -573,9 +593,9 @@ final class RefundResolutionRestControllerTest extends TestCase
     private static function validCommitBody(): array
     {
         return [
-            'candidate_transaction_id' => '51177094',
+            'candidate_transaction_id' => '81177094',
             'challenge' => str_repeat('a5', 32),
-            'confirmation_phrase' => 'RESOLVE ' . self::OPERATION_UUID . ' WITH HELCIM 51177094',
+            'confirmation_phrase' => 'RESOLVE ' . self::OPERATION_UUID . ' WITH HELCIM 81177094',
             'parent_attestation' => false,
         ];
     }
@@ -583,7 +603,7 @@ final class RefundResolutionRestControllerTest extends TestCase
     private function inspectRequest(): RefundResolutionRestRequest
     {
         return new RefundResolutionRestRequest(
-            body: ['candidate_transaction_id' => '51177094'],
+            body: ['candidate_transaction_id' => '81177094'],
             route: ['operation_uuid' => self::OPERATION_UUID]
         );
     }

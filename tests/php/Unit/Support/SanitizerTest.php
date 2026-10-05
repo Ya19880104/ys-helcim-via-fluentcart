@@ -56,4 +56,20 @@ final class SanitizerTest extends TestCase
         self::assertTrue($safe['values'][2]);
         self::assertNull($safe['values'][3]);
     }
+
+    public function testLogContextRedactsTheHelcimCustomerCodeFromDeclineRecords(): void
+    {
+        // HTTP 500 拒絕回應會以 ERROR 級整筆落 log，Helcim 紀錄帶 customerCode（例：CST0001）。
+        $safe = YSHelcimSanitizer::logContext([
+            'transactionId' => '85267545',
+            'status' => 'DECLINED',
+            'customerCode' => 'CST0001',
+            'nested' => ['CUSTOMERCODE' => 'CST1023'],
+        ]);
+
+        self::assertSame('[redacted]', $safe['customerCode']);
+        self::assertSame('[redacted]', $safe['nested']['CUSTOMERCODE']);
+        self::assertSame('85267545', $safe['transactionId']);
+        self::assertStringNotContainsString('CST102', (string) json_encode($safe));
+    }
 }

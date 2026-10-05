@@ -13,19 +13,25 @@ use YangSheep\Helcim\FluentCart\Tests\Doubles\RefundResolutionStoreDouble;
 final class RefundResolutionServiceTest extends TestCase
 {
     private const OPERATION_UUID = '11111111-2222-4333-8444-555555555555';
-    private const CANDIDATE_ID = '51177094';
-    private const SOURCE_ID = '51177061';
+    private const CANDIDATE_ID = '81177094';
+    private const SOURCE_ID = '81177061';
     private const NOW = 1784595600; // 2026-07-21 01:00:00 UTC.
+    // 來源 purchase 的 invoiceNumber；Helcim 的退款／作廢會繼承同一個值。
+    private const INVOICE = '3b0c6f2e-8d41-4a7e-9c55-1f2a3b4c5d6e';
+    private const OTHER_INVOICE = '7d9e1a20-5c3b-4f86-a1d4-6e7f8a9b0c1d';
 
     private RefundResolutionStoreDouble $store;
     /** @var array<int,array{gateway:string,mode:string}> */
     private array $credentialCalls;
     /** @var array<int,array{id:string,credential:string,gateway:string,mode:string}> */
     private array $providerCalls;
+    /** @var array<int,array{invoice:string,credential:string}> */
+    private array $familyCalls;
     /** @var string[] */
     private array $localCalls;
     /** @var array<string,array<string,mixed>|\WP_Error> */
     private array $providerRows;
+    private mixed $familyResult;
     private mixed $localResult;
 
     protected function setUp(): void
@@ -34,12 +40,14 @@ final class RefundResolutionServiceTest extends TestCase
         $this->store->operations[self::OPERATION_UUID] = $this->operation();
         $this->credentialCalls = [];
         $this->providerCalls = [];
+        $this->familyCalls = [];
         $this->localCalls = [];
         $this->localResult = ['local_status' => 'applied'];
         $this->providerRows = [
             self::CANDIDATE_ID => $this->candidate(),
             self::SOURCE_ID => $this->source(),
         ];
+        $this->familyResult = ['data' => [$this->source(), $this->candidate()]];
     }
 
     public function testInspectCreatesAHashOnlyFiveMinuteChallengeBoundToStoredIdentityAndProof(): void
@@ -51,7 +59,7 @@ final class RefundResolutionServiceTest extends TestCase
         self::assertSame(str_repeat('a5', 32), $result['challenge']);
         self::assertSame('2026-07-21 01:05:00', $result['challenge_expires_at']);
         self::assertSame(
-            'RESOLVE 11111111-2222-4333-8444-555555555555 WITH HELCIM 51177094',
+            'RESOLVE 11111111-2222-4333-8444-555555555555 WITH HELCIM 81177094',
             $result['confirmation_phrase']
         );
         self::assertFalse($result['parent_attestation_required']);
@@ -106,7 +114,7 @@ final class RefundResolutionServiceTest extends TestCase
         self::assertIsArray($result);
         self::assertTrue($result['parent_attestation_required']);
         self::assertSame(
-            'ATTEST AND RESOLVE 11111111-2222-4333-8444-555555555555 WITH HELCIM 51177094',
+            'ATTEST AND RESOLVE 11111111-2222-4333-8444-555555555555 WITH HELCIM 81177094',
             $result['confirmation_phrase']
         );
     }
@@ -179,7 +187,7 @@ final class RefundResolutionServiceTest extends TestCase
 
     public function testInspectRejectsMalformedInputAndInsufficientChallengeEntropy(): void
     {
-        $badCandidate = $this->service()->inspect(self::OPERATION_UUID, '051177094', 7);
+        $badCandidate = $this->service()->inspect(self::OPERATION_UUID, '081177094', 7);
         self::assertInstanceOf(\WP_Error::class, $badCandidate);
 
         $badActor = $this->service()->inspect(self::OPERATION_UUID, self::CANDIDATE_ID, 0);
@@ -346,6 +354,122 @@ final class RefundResolutionServiceTest extends TestCase
         self::assertCount(1, $this->store->commitCalls);
     }
 
+    public function testInspectListsTheSourceInvoiceFamilyAndReturnsEvidenceTheOperatorCanCheck(): void
+    {
+        $result = $this->service()->inspect(self::OPERATION_UUID, self::CANDIDATE_ID, 7);
+
+        self::assertIsArray($result);
+        self::assertSame([['invoice' => self::INVOICE, 'credential' => 'stored-token']], $this->familyCalls);
+        self::assertSame('refund', $result['candidate_type']);
+        self::assertSame(2100, $result['candidate_amount_cents']);
+        self::assertSame('USD', $result['candidate_currency']);
+        self::assertSame(self::INVOICE, $result['invoice_number']);
+    }
+
+    public function testInspectAcceptsAPlainListedFamilyAsWellAsTheDataEnvelope(): void
+    {
+        $this->familyResult = [$this->source(), $this->candidate()];
+
+        $result = $this->service()->inspect(self::OPERATION_UUID, self::CANDIDATE_ID, 7);
+
+        self::assertIsArray($result);
+        self::assertSame('confirmation_required', $result['status']);
+    }
+
+    /**
+     * 安全審查 F1：Helcim 讀回沒有 parent 欄位（正式站的實際形狀），候選是別張訂單（另一個 invoice）的同金額退款。
+     * 以前會要求 attestation 並簽發 challenge；現在在簽發前就拒絕。
+     */
+    public function testInspectRejectsAnotherOrdersRefundEvenWhenOnlyAttestationWouldBeRequired(): void
+    {
+        $this->providerRows[self::CANDIDATE_ID] = $this->candidate([
+            'invoiceNumber' => self::OTHER_INVOICE,
+        ]);
+        unset($this->providerRows[self::CANDIDATE_ID]['originalTransactionId']);
+        $this->familyResult = ['data' => [$this->source()]];
+
+        $result = $this->service()->inspect(self::OPERATION_UUID, self::CANDIDATE_ID, 7);
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_resolution_proof_mismatch', $result->get_error_code());
+        self::assertSame([], $this->store->challenges);
+    }
+
+    public function testInspectRefusesToResolveWhenTheSourceHasNoInvoiceNumberWithoutListingAnything(): void
+    {
+        $this->providerRows[self::SOURCE_ID] = $this->source(['invoiceNumber' => null]);
+
+        $result = $this->service()->inspect(self::OPERATION_UUID, self::CANDIDATE_ID, 7);
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_resolution_proof_mismatch', $result->get_error_code());
+        self::assertSame([], $this->familyCalls);
+        self::assertSame([], $this->store->challenges);
+    }
+
+    #[DataProvider('unavailableFamilyProvider')]
+    public function testInspectFailsClosedWhenTheInvoiceFamilyCannotBeListedCompletely(mixed $familyResult): void
+    {
+        $this->familyResult = $familyResult;
+
+        $result = $this->service()->inspect(self::OPERATION_UUID, self::CANDIDATE_ID, 7);
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_resolution_provider_unavailable', $result->get_error_code());
+        self::assertSame([], $this->store->challenges);
+    }
+
+    public static function unavailableFamilyProvider(): iterable
+    {
+        yield 'lister throws' => [new \RuntimeException('transport')];
+        yield 'lister returns WP_Error' => [new \WP_Error('transport', 'Unavailable.')];
+        yield 'lister returns a string' => ['not-json'];
+        yield 'data is not a list' => [['data' => ['purchase' => ['transactionId' => 81177061]]]];
+        yield 'data is a string' => [['data' => 'none']];
+        yield 'top level is an object' => [['transactionId' => 81177061]];
+        yield 'more records than can be checked' => [['data' => array_fill(0, 101, ['transactionId' => 1])]];
+    }
+
+    /** 安全審查 F2：Helcim 已作廢的退款（同 invoice、編號較大、同金額、已核准的作廢）不可當作 resolution 的證據。 */
+    public function testInspectRejectsARefundThatHelcimLaterVoided(): void
+    {
+        $this->familyResult = ['data' => [$this->source(), $this->candidate(), $this->voidOfTheCandidate()]];
+
+        $result = $this->service()->inspect(self::OPERATION_UUID, self::CANDIDATE_ID, 7);
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_resolution_proof_mismatch', $result->get_error_code());
+        self::assertSame([], $this->store->challenges);
+    }
+
+    public function testCommitReListsTheFamilyAndRejectsARefundVoidedAfterInspection(): void
+    {
+        $inspect = $this->service()->inspect(self::OPERATION_UUID, self::CANDIDATE_ID, 7);
+        self::assertIsArray($inspect);
+        $this->familyResult = ['data' => [$this->source(), $this->candidate(), $this->voidOfTheCandidate()]];
+
+        $result = $this->service()->commit($this->commitInput($inspect, false), 7);
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_resolution_proof_mismatch', $result->get_error_code());
+        self::assertCount(2, $this->familyCalls);
+        self::assertSame([], $this->store->commitCalls);
+        self::assertSame([], $this->localCalls);
+    }
+
+    /** @return array<string,mixed> */
+    private function voidOfTheCandidate(): array
+    {
+        return [
+            'transactionId' => 81177120,
+            'status' => 'APPROVED',
+            'type' => 'reverse',
+            'amount' => '21.00',
+            'currency' => 'USD',
+            'invoiceNumber' => self::INVOICE,
+        ];
+    }
+
     /** @param array<string,mixed> $changes */
     private function operation(array $changes = []): array
     {
@@ -372,12 +496,13 @@ final class RefundResolutionServiceTest extends TestCase
     private function candidate(array $changes = []): array
     {
         return array_merge([
-            'transactionId' => 51177094,
+            'transactionId' => 81177094,
             'status' => 'APPROVED',
             'type' => 'refund',
             'amount' => '21.00',
             'currency' => 'USD',
-            'originalTransactionId' => 51177061,
+            'originalTransactionId' => 81177061,
+            'invoiceNumber' => self::INVOICE,
         ], $changes);
     }
 
@@ -385,11 +510,12 @@ final class RefundResolutionServiceTest extends TestCase
     private function source(array $changes = []): array
     {
         return array_merge([
-            'transactionId' => 51177061,
+            'transactionId' => 81177061,
             'status' => 'APPROVED',
             'type' => 'purchase',
             'amount' => '50.00',
             'currency' => 'USD',
+            'invoiceNumber' => self::INVOICE,
         ], $changes);
     }
 
@@ -412,12 +538,20 @@ final class RefundResolutionServiceTest extends TestCase
                 ? ($this->localResult)()
                 : $this->localResult;
         };
+        $familyLister = function (string $invoice, string $credential): mixed {
+            $this->familyCalls[] = compact('invoice', 'credential');
+            if ($this->familyResult instanceof \Throwable) {
+                throw $this->familyResult;
+            }
+            return $this->familyResult;
+        };
 
         return new YSHelcimRefundResolutionService(
             $this->store,
             $credentialResolver,
             $providerReader,
             $localRecorder,
+            $familyLister,
             $randomFactory ?? static fn (): string => str_repeat("\xA5", 32),
             static fn (): int => $now
         );

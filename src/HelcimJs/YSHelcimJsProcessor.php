@@ -25,7 +25,9 @@ namespace YangSheep\Helcim\FluentCart\HelcimJs;
 use FluentCart\App\Helpers\Status;
 use FluentCart\App\Models\Order;
 use FluentCart\App\Models\OrderTransaction;
+use YangSheep\Helcim\FluentCart\Support\YSHelcimDeclineMessage;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimLogger;
+use YangSheep\Helcim\FluentCart\Support\YSHelcimOrderNote;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimTransactionId;
 
 if (!defined('ABSPATH')) {
@@ -65,22 +67,28 @@ class YSHelcimJsProcessor
     /** Transaction-bound server confirmation signature. */
     private YSHelcimPurchaseConfirmationToken $confirmationTokens;
 
+    /** @var callable(int, string, string): void FluentCart order activity writer. */
+    private $orderNoteWriter;
+
     /**
      * Constructor.
      *
      * @param YSHelcimJsSettings             $settings        The gateway settings object.
      * @param YSHelcimJsPurchaseRuntime|null       $purchaseRuntime    Injectable production runtime.
      * @param YSHelcimPurchaseConfirmationToken|null $confirmationTokens Injectable confirmation signer.
+     * @param callable|null                  $orderNoteWriter `(int order_id, string title, string message) -> void`.
      */
     public function __construct(
         YSHelcimJsSettings $settings,
         ?YSHelcimJsPurchaseRuntime $purchaseRuntime = null,
-        ?YSHelcimPurchaseConfirmationToken $confirmationTokens = null
+        ?YSHelcimPurchaseConfirmationToken $confirmationTokens = null,
+        ?callable $orderNoteWriter = null
     )
     {
         $this->settings = $settings;
         $this->purchaseRuntime = $purchaseRuntime ?? YSHelcimJsPurchaseRuntime::forSettings($settings);
         $this->confirmationTokens = $confirmationTokens ?? new YSHelcimPurchaseConfirmationToken();
+        $this->orderNoteWriter = $orderNoteWriter ?? YSHelcimOrderNote::writer();
     }
 
     /**
@@ -242,10 +250,22 @@ class YSHelcimJsProcessor
         }
 
         if ($status === 'declined') {
+            $reason = YSHelcimDeclineMessage::reason($result['decline_reason'] ?? null);
+            if ($reason !== null) {
+                YSHelcimOrderNote::write(
+                    $this->orderNoteWriter,
+                    (int) $transaction->order_id,
+                    YSHelcimOrderNote::declineTitle(),
+                    YSHelcimOrderNote::declineMessage(
+                        $reason,
+                        YSHelcimTransactionId::normalize($result['decline_transaction_id'] ?? null)
+                    )
+                );
+            }
             wp_send_json([
                 'status'        => 'failed',
                 'retry_allowed' => true,
-                'message'       => __('The payment was declined. Please use a different card.', 'ys-helcim-via-fluentcart'),
+                'message'       => YSHelcimDeclineMessage::shopperMessage(YSHelcimDeclineMessage::category($reason)),
             ], 402);
         }
 

@@ -85,7 +85,7 @@ final class InlinePurchaseRecoveryServiceTest extends TestCase
 
 	public function testExactApprovedLookupAppliesInlinePurchaseWithoutResendingPurchase(): void
 	{
-		$this->lookupResult = [$this->providerTransaction('APPROVED', '51178851')];
+		$this->lookupResult = [$this->providerTransaction('APPROVED', '81178851')];
 
 		$result = $this->service->recover(self::OPERATION_UUID);
 
@@ -94,14 +94,14 @@ final class InlinePurchaseRecoveryServiceTest extends TestCase
 		self::assertSame(1, $this->lookupCalls);
 		self::assertSame(0, $this->purchaseCalls);
 		self::assertSame(Status::TRANSACTION_SUCCEEDED, OrderTransaction::allRecords()[20]['status']);
-		self::assertSame('51178851', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+		self::assertSame('81178851', OrderTransaction::allRecords()[20]['vendor_charge_id']);
 		self::assertSame('paid', Order::allRecords()[10]['payment_status']);
 		self::assertNotNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
 	}
 
 	public function testExactInlineDeclineReleasesScopeImmediatelyWithoutMarkingPaid(): void
 	{
-		$this->lookupResult = [$this->providerTransaction('DECLINED', '51178852')];
+		$this->lookupResult = [$this->providerTransaction('DECLINED', '81178852')];
 
 		$result = $this->service->recover(self::OPERATION_UUID);
 
@@ -132,8 +132,8 @@ final class InlinePurchaseRecoveryServiceTest extends TestCase
 	public function testInlineAmbiguousLookupFailsClosedAndKeepsScopeLocked(): void
 	{
 		$this->lookupResult = [
-			$this->providerTransaction('APPROVED', '51178853'),
-			$this->providerTransaction('APPROVED', '51178854'),
+			$this->providerTransaction('APPROVED', '81178853'),
+			$this->providerTransaction('APPROVED', '81178854'),
 		];
 
 		$result = $this->service->recover(self::OPERATION_UUID);

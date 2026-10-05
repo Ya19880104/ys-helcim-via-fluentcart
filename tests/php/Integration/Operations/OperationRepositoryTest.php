@@ -113,7 +113,7 @@ final class OperationRepositoryTest extends TestCase
 				$winner['operation_uuid'],
 				'processing',
 				'succeeded',
-				['vendor_transaction_id' => '51178204']
+				['vendor_transaction_id' => '81178204']
 			));
 			self::assertTrue($this->repository->claimLocalApplying($winner['operation_uuid'], 'pending'));
 			self::assertTrue($this->repository->transitionLocal($winner['operation_uuid'], 'applying', 'applied'));
@@ -215,7 +215,7 @@ final class OperationRepositoryTest extends TestCase
                 $operation['operation_uuid'],
                 'processing',
                 'succeeded',
-                ['vendor_transaction_id' => '51177123']
+                ['vendor_transaction_id' => '81177123']
             )
         );
         self::assertTrue($this->repository->claimLocalApplying($operation['operation_uuid'], 'pending'));
@@ -271,7 +271,7 @@ final class OperationRepositoryTest extends TestCase
             $first['operation_uuid'],
             'processing',
             'succeeded',
-            ['vendor_transaction_id' => '51170005']
+            ['vendor_transaction_id' => '81170005']
         ));
         $this->database->update(
             'wp_ys_helcim_operations',
@@ -306,14 +306,14 @@ final class OperationRepositoryTest extends TestCase
             $first['operation_uuid'],
             'processing',
             'succeeded',
-            ['vendor_transaction_id' => '51177123']
+            ['vendor_transaction_id' => '81177123']
         ));
 
         $duplicate = $this->repository->transitionRemote(
             $second['operation_uuid'],
             'processing',
             'succeeded',
-            ['vendor_transaction_id' => '51177123']
+            ['vendor_transaction_id' => '81177123']
         );
 
         self::assertInstanceOf(\WP_Error::class, $duplicate);
@@ -338,7 +338,7 @@ final class OperationRepositoryTest extends TestCase
             $operation['operation_uuid'],
             'processing',
             'succeeded',
-            ['vendor_transaction_id' => '51177123']
+            ['vendor_transaction_id' => '81177123']
         );
 
         self::assertTrue($repository->claimLocalApplying($operation['operation_uuid'], 'pending'));
@@ -370,7 +370,7 @@ final class OperationRepositoryTest extends TestCase
             $operation['operation_uuid'],
             'processing',
             'succeeded',
-            ['vendor_transaction_id' => '51177123']
+            ['vendor_transaction_id' => '81177123']
         );
         $repository->claimLocalApplying($operation['operation_uuid'], 'pending');
 
@@ -402,7 +402,7 @@ final class OperationRepositoryTest extends TestCase
             $operation['operation_uuid'],
             'processing',
             'succeeded',
-            ['vendor_transaction_id' => '51177123']
+            ['vendor_transaction_id' => '81177123']
         );
 
         self::assertTrue($this->repository->recordLocalFailure(
@@ -741,7 +741,7 @@ final class OperationRepositoryTest extends TestCase
                 $operation['operation_uuid'],
                 'indeterminate',
                 'succeeded',
-                ['vendor_transaction_id' => '51177123']
+                ['vendor_transaction_id' => '81177123']
             )
         );
         $recovered = $this->repository->findByUuid($operation['operation_uuid']);
@@ -754,13 +754,13 @@ final class OperationRepositoryTest extends TestCase
         $operation = $this->operation(1, 'refund-order:10', 'refund');
         $created = $this->repository->create($operation);
         self::assertIsArray($created);
-        self::assertSame('51177061', $created['source_vendor_transaction_id']);
+        self::assertSame('81177061', $created['source_vendor_transaction_id']);
         $this->repository->claimRemoteProcessing($operation['operation_uuid']);
         $this->repository->transitionRemote(
             $operation['operation_uuid'],
             'processing',
             'succeeded',
-            ['vendor_transaction_id' => '51177123']
+            ['vendor_transaction_id' => '81177123']
         );
         self::assertTrue($this->repository->claimLocalApplying($operation['operation_uuid'], 'pending'));
 
@@ -1075,7 +1075,7 @@ final class OperationRepositoryTest extends TestCase
 			$succeeded['operation_uuid'],
 			'processing',
 			'succeeded',
-			['vendor_transaction_id' => '51178135']
+			['vendor_transaction_id' => '81178135']
 		));
 
 		$rows = $this->repository->findPurchasesNeedingAttention('ys_helcim_js', 10, 7);
@@ -1165,7 +1165,7 @@ final class OperationRepositoryTest extends TestCase
 			$operation['operation_uuid'],
 			'processing',
 			'succeeded',
-			['vendor_transaction_id' => '51178085']
+			['vendor_transaction_id' => '81178085']
 		));
 
 		$row = $this->repository->findByUuid($operation['operation_uuid']);
@@ -1191,7 +1191,7 @@ final class OperationRepositoryTest extends TestCase
 			$operation['operation_uuid'],
 			'processing',
 			'succeeded',
-			['vendor_transaction_id' => '51178086']
+			['vendor_transaction_id' => '81178086']
 		));
 		self::assertTrue($this->repository->claimLocalApplying($operation['operation_uuid'], 'pending'));
 
@@ -1300,7 +1300,7 @@ final class OperationRepositoryTest extends TestCase
 			$succeeded['operation_uuid'],
 			'processing',
 			'succeeded',
-			['vendor_transaction_id' => '51178127']
+			['vendor_transaction_id' => '81178127']
 		));
 
 		$rows = $this->repository->findHostedPurchasesNeedingAttention(10, 7);
@@ -1338,7 +1338,7 @@ final class OperationRepositoryTest extends TestCase
 				$operation['operation_uuid'],
 				'canceled',
 				'succeeded',
-				['vendor_transaction_id' => (string) (51178150 + $offset)]
+				['vendor_transaction_id' => (string) (81178150 + $offset)]
 			));
 			$this->database->update(
 				'wp_ys_helcim_operations',
@@ -1540,7 +1540,7 @@ final class OperationRepositoryTest extends TestCase
 			$operation['operation_uuid'],
 			'processing',
 			'succeeded',
-			['vendor_transaction_id' => '51178129']
+			['vendor_transaction_id' => '81178129']
 		));
 
 		self::assertFalse($this->repository->releaseCanceledScope($operation['operation_uuid']));
@@ -1550,7 +1550,7 @@ final class OperationRepositoryTest extends TestCase
 		);
 		$row = $this->repository->findByUuid($operation['operation_uuid']);
 		self::assertSame('succeeded', $row['remote_status']);
-		self::assertSame('51178129', $row['vendor_transaction_id']);
+		self::assertSame('81178129', $row['vendor_transaction_id']);
 		self::assertNotNull($row['active_scope_key']);
 	}
 
@@ -1602,6 +1602,148 @@ final class OperationRepositoryTest extends TestCase
 	}
 
     /** @return array<string, mixed> */
+    public function testProviderRecordedRefundCollidingOnTheSameHelcimIdIsAlreadyRecorded(): void
+    {
+        // 同一筆 Helcim 退款再送一次（webhook 重送、或與手動同步並發）：作業 UUID 由 Helcim 編號推導，撞 UNIQUE。
+        $first = $this->repository->createProviderRecordedRefund($this->providerRecordedRefund(31, '85267600'));
+        self::assertIsArray($first);
+        self::assertSame('pending', $first['local_status']);
+        self::assertNotNull($first['active_scope_key']);
+
+        $replay = $this->repository->createProviderRecordedRefund($this->providerRecordedRefund(31, '85267600'));
+
+        self::assertInstanceOf(\WP_Error::class, $replay);
+        self::assertSame('ys_helcim_provider_refund_already_recorded', $replay->get_error_code());
+        self::assertSame(['operation_uuid' => $first['operation_uuid']], $replay->get_error_data());
+        self::assertCount(1, $this->database->allRows());
+
+        // 同一個 Helcim 編號已被別的作業列（例如外掛自己的退款）佔用：同樣回報已記錄，並指出是哪一列。
+        $other = new FakeWpdb();
+        $repository = new YSHelcimOperationRepository($other, static fn (): string => '2026-07-21 00:00:00');
+        $other->insert('wp_ys_helcim_operations', [
+            'operation_uuid' => '00000000-0000-4000-8000-000000000077',
+            'idempotency_key' => 'ysh-refund-00000000000000000000000077',
+            'scope_key' => 'refund-order-scope-77',
+            'active_scope_key' => null,
+            'operation_type' => 'refund',
+            'gateway' => 'ys_helcim',
+            'order_id' => 10,
+            'transaction_id' => 20,
+            'remote_status' => 'succeeded',
+            'local_status' => 'applied',
+            'vendor_transaction_id' => '85267600',
+        ]);
+
+        $taken = $repository->createProviderRecordedRefund($this->providerRecordedRefund(32, '85267600'));
+
+        self::assertInstanceOf(\WP_Error::class, $taken);
+        self::assertSame('ys_helcim_provider_refund_already_recorded', $taken->get_error_code());
+        self::assertSame(['operation_uuid' => '00000000-0000-4000-8000-000000000077'], $taken->get_error_data());
+        self::assertCount(1, $other->allRows());
+    }
+
+    public function testProviderRecordedRefundWhileAnotherRefundHoldsTheOrderScopeIsScopeBusy(): void
+    {
+        // 外掛自己的退款正在進行（持有同一張訂單的 refund-order 範圍鎖）：Helcim 端的新紀錄不得插隊。
+        $inFlight = $this->repository->create($this->operation(41, 'refund-order:10', 'refund'));
+        self::assertIsArray($inFlight);
+
+        $result = $this->repository->createProviderRecordedRefund($this->providerRecordedRefund(42, '85267601'));
+
+        self::assertInstanceOf(\WP_Error::class, $result);
+        self::assertSame('ys_helcim_scope_busy', $result->get_error_code());
+        self::assertCount(1, $this->database->allRows());
+        self::assertSame($inFlight['operation_uuid'], $this->database->allRows()[0]['operation_uuid']);
+    }
+
+    public function testProviderRecordedRefundOtherwiseDuplicatedIsAnOperationConflict(): void
+    {
+        // 同一筆付款已經記過一次作廢（已套用、鎖已釋放），Helcim 又出現另一個編號的作廢：
+        // 撞 UNIQUE(parent_operation_uuid, operation_type)，但既不是同編號、也沒有進行中的鎖 → 衝突，交給人工。
+        $purchaseUuid = '00000000-0000-4000-8000-000000000099';
+        $firstVoid = $this->repository->createProviderRecordedRefund(
+            $this->providerRecordedRefund(51, '85267700', 'reverse', $purchaseUuid)
+        );
+        self::assertIsArray($firstVoid);
+        self::assertSame(1, $this->database->update(
+            'wp_ys_helcim_operations',
+            ['local_status' => 'applied', 'active_scope_key' => null],
+            ['operation_uuid' => $firstVoid['operation_uuid']]
+        ));
+        $before = $this->database->allRows();
+
+        $secondVoid = $this->repository->createProviderRecordedRefund(
+            $this->providerRecordedRefund(52, '85267701', 'reverse', $purchaseUuid)
+        );
+
+        self::assertInstanceOf(\WP_Error::class, $secondVoid);
+        self::assertSame('ys_helcim_operation_conflict', $secondVoid->get_error_code());
+        self::assertSame($before, $this->database->allRows());
+    }
+
+    public function testRefundsAwaitingLocalRecordingScanAcceptsUpToFiftyRowsAndRejectsOtherLimits(): void
+    {
+        // 管理員通知會先取 50 筆再過濾外部列：50 必須被接受，且結果依 updated_at 由舊到新。
+        for ($i = 1; $i <= 12; ++$i) {
+            $this->database->insert('wp_ys_helcim_operations', [
+                'operation_uuid' => sprintf('00000000-0000-4000-8000-%012d', 600 + $i),
+                'idempotency_key' => sprintf('ysh-refund-%026d', 600 + $i),
+                'operation_type' => 'refund',
+                'remote_status' => 'succeeded',
+                'local_status' => 'failed',
+                'order_id' => 600 + $i,
+                'updated_at' => sprintf('2026-07-20 00:%02d:00', 13 - $i),
+            ]);
+        }
+
+        $fifty = $this->repository->findRefundsAwaitingLocalRecording('2026-07-21 00:00:00', 50);
+        $ten = $this->repository->findRefundsAwaitingLocalRecording('2026-07-21 00:00:00', 10);
+
+        self::assertIsArray($fifty);
+        self::assertCount(12, $fifty);
+        self::assertSame(sprintf('00000000-0000-4000-8000-%012d', 612), $fifty[0]['operation_uuid']);
+        self::assertIsArray($ten);
+        self::assertCount(10, $ten);
+        foreach ([0, 51] as $invalid) {
+            $rejected = $this->repository->findRefundsAwaitingLocalRecording('2026-07-21 00:00:00', $invalid);
+            self::assertInstanceOf(\WP_Error::class, $rejected);
+            self::assertSame('ys_helcim_invalid_operation', $rejected->get_error_code());
+        }
+    }
+
+    /** @return array<string,mixed> */
+    private function providerRecordedRefund(
+        int $sequence,
+        string $providerId,
+        string $operationType = 'refund',
+        ?string $parentUuid = null
+    ): array {
+        $operationUuid = sprintf('00000000-0000-5000-8000-%012d', $sequence);
+        $transactionUuid = 'fc-transaction-123';
+        $payload = YSHelcimRefundPayload::normalize([]);
+        $localPayload = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+
+        return [
+            'operation_uuid' => $operationUuid,
+            'idempotency_key' => YSHelcimIdempotency::generate($operationType, $transactionUuid, 2100, 'test', $operationUuid),
+            'scope_key' => 'refund-order:10',
+            'operation_type' => $operationType,
+            'gateway' => 'ys_helcim',
+            'order_id' => 10,
+            'transaction_id' => 20,
+            'transaction_uuid' => $transactionUuid,
+            'parent_operation_uuid' => $parentUuid,
+            'amount' => 2100,
+            'currency' => 'USD',
+            'payment_mode' => 'test',
+            'request_fingerprint' => hash('sha256', 'provider-' . $providerId),
+            'vendor_transaction_id' => $providerId,
+            'source_vendor_transaction_id' => '81177061',
+            'local_payload' => $localPayload,
+            'local_payload_hash' => hash('sha256', $localPayload),
+        ];
+    }
+
     private function operation(int $sequence, string $scope, string $operationType = 'purchase'): array
     {
         $operationUuid = sprintf('00000000-0000-4000-8000-%012d', $sequence);
@@ -1627,7 +1769,7 @@ final class OperationRepositoryTest extends TestCase
             $payload = YSHelcimRefundPayload::normalize([]);
             $operation['local_payload'] = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
             $operation['local_payload_hash'] = YSHelcimRefundPayload::hash($payload);
-            $operation['source_vendor_transaction_id'] = '51177061';
+            $operation['source_vendor_transaction_id'] = '81177061';
         }
 
         return $operation;

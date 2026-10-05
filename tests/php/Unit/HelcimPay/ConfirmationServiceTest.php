@@ -80,7 +80,7 @@ final class ConfirmationServiceTest extends TestCase
 
         self::assertIsArray($result);
         self::assertSame('succeeded', $result['status']);
-        self::assertSame('51177991', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+        self::assertSame('81177991', OrderTransaction::allRecords()[20]['vendor_charge_id']);
         self::assertSame('paid', Order::allRecords()[10]['payment_status']);
         self::assertCount(1, StatusHelper::$syncs);
         $meta = OrderTransaction::allRecords()[20]['meta'];
@@ -335,7 +335,7 @@ final class ConfirmationServiceTest extends TestCase
         return [
             'status' => 'APPROVED',
             'type' => 'purchase',
-            'transactionId' => '51177991',
+            'transactionId' => '81177991',
             'amount' => '21.00',
             'currency' => 'USD',
             'invoiceNumber' => self::OPERATION_UUID,

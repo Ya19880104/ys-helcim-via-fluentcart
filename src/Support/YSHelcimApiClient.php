@@ -246,6 +246,10 @@ class YSHelcimApiClient {
 			}
 			if ( $is_definitive_decline ) {
 				$error_data['definitive_decline'] = true;
+				$declined_transaction             = self::declinedTransactionRecord( $decoded );
+				if ( null !== $declined_transaction ) {
+					$error_data['declined_transaction'] = $declined_transaction;
+				}
 			}
 			if ( $is_validation_rejection ) {
 				$error_data['provider_response'] = array(
@@ -268,7 +272,9 @@ class YSHelcimApiClient {
 
 	/**
 	 * Helcim documents bank declines as response=0, HTTP 500, and a
-	 * "Transaction Declined:" error. Every other 5xx remains indeterminate.
+	 * "Transaction Declined:" error. In production it answers the same decline
+	 * with the declined transaction record itself (status DECLINED, its own
+	 * transaction ID, no response field). Every other 5xx remains indeterminate.
 	 */
 	private static function isDefinitivePurchaseDecline(
 		string $endpoint_path,
@@ -279,16 +285,60 @@ class YSHelcimApiClient {
 		if (
 			'payment/purchase' !== $endpoint_path ||
 			500 !== $http_code ||
-			! array_key_exists( 'response', $decoded ) ||
-			! in_array( $decoded['response'], array( 0, '0' ), true ) ||
 			! is_string( $decoded['errors'] ?? null ) ||
 			! is_string( $safe_errors ) ||
-			strlen( $safe_errors ) > 500
+			strlen( $safe_errors ) > 500 ||
+			1 !== preg_match( '/\ATransaction Declined:[^\r\n]{1,478}\z/', $safe_errors )
 		) {
 			return false;
 		}
 
-		return 1 === preg_match( '/\ATransaction Declined:[^\r\n]{1,478}\z/', $safe_errors );
+		// 回覆帶了交易紀錄欄位（transactionId 或 status）時，只看 response 值不夠：
+		// 必須是一筆完整、自洽的 DECLINED purchase 紀錄；同時帶 response 時也不得與紀錄矛盾
+		// （response=0＋APPROVED 紀錄、或 response=1＋DECLINED 紀錄都維持結果不明）。
+		if ( array_key_exists( 'transactionId', $decoded ) || array_key_exists( 'status', $decoded ) ) {
+			return null !== self::declinedTransactionRecord( $decoded )
+				&& ( ! array_key_exists( 'response', $decoded ) || in_array( $decoded['response'], array( 0, '0' ), true ) );
+		}
+
+		return array_key_exists( 'response', $decoded )
+			&& in_array( $decoded['response'], array( 0, '0' ), true );
+	}
+
+	/**
+	 * The exact fields of a declined purchase record, or null when the body is
+	 * not one. Card data is never copied.
+	 *
+	 * @param array<string, mixed> $decoded Provider response body.
+	 * @return array<string, string>|null
+	 */
+	private static function declinedTransactionRecord( array $decoded ): ?array {
+		$transaction_id = YSHelcimTransactionId::normalize( $decoded['transactionId'] ?? null );
+		if (
+			null === $transaction_id ||
+			'DECLINED' !== strtoupper( trim( (string) ( $decoded['status'] ?? '' ) ) ) ||
+			'purchase' !== strtolower( trim( (string) ( $decoded['type'] ?? '' ) ) ) ||
+			! is_scalar( $decoded['amount'] ?? null ) ||
+			! is_string( $decoded['currency'] ?? null )
+		) {
+			return null;
+		}
+
+		$record = array(
+			'transactionId' => $transaction_id,
+			'status'        => 'DECLINED',
+			'type'          => 'purchase',
+			'amount'        => trim( (string) $decoded['amount'] ),
+			'currency'      => strtoupper( trim( $decoded['currency'] ) ),
+		);
+		foreach ( array( 'invoiceNumber', 'avsResponse', 'cvvResponse' ) as $key ) {
+			$value = $decoded[ $key ] ?? null;
+			if ( is_string( $value ) && 1 === preg_match( '/\A[A-Za-z0-9-]{1,64}\z/', $value ) ) {
+				$record[ $key ] = $value;
+			}
+		}
+
+		return $record;
 	}
 
 	/**

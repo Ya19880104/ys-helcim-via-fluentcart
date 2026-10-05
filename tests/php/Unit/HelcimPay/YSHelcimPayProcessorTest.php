@@ -485,7 +485,7 @@ final class YSHelcimPayProcessorTest extends TestCase
             $this->repository->transitionRemote(self::OPERATION_UUID, 'processing', 'indeterminate')
         );
 
-        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID, [['transactionId' => 51900001]], self::clockAtAge(4200));
+        $second = $this->scopeAwareProcessor(self::SECOND_OPERATION_UUID, [['transactionId' => 81900001]], self::clockAtAge(4200));
         $result = $second->initialize($this->paymentInstance());
 
         self::assertInstanceOf(\WP_Error::class, $result);
@@ -521,14 +521,14 @@ final class YSHelcimPayProcessorTest extends TestCase
                 self::OPERATION_UUID,
                 'canceled',
                 'succeeded',
-                ['vendor_transaction_id' => '51999001']
+                ['vendor_transaction_id' => '81999001']
             ),
             'canceled -> succeeded must be a legal transition for late proof'
         );
 
         $row = $this->repository->findByUuid(self::OPERATION_UUID);
         self::assertSame('succeeded', $row['remote_status']);
-        self::assertSame('51999001', (string) $row['vendor_transaction_id']);
+        self::assertSame('81999001', (string) $row['vendor_transaction_id']);
     }
 
     /**
@@ -579,7 +579,7 @@ final class YSHelcimPayProcessorTest extends TestCase
             self::assertSame('success', $response->payload['status']);
         }
 
-        self::assertSame('51177991', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+        self::assertSame('81177991', OrderTransaction::allRecords()[20]['vendor_charge_id']);
         self::assertSame('paid', Order::allRecords()[10]['payment_status']);
         $row = $this->repository->findByUuid(self::OPERATION_UUID);
         self::assertSame('succeeded', $row['remote_status']);
@@ -666,7 +666,7 @@ final class YSHelcimPayProcessorTest extends TestCase
                     self::OPERATION_UUID,
                     'processing',
                     'succeeded',
-                    ['vendor_transaction_id' => '51177991']
+                    ['vendor_transaction_id' => '81177991']
                 ));
                 self::assertTrue($this->repository->claimLocalApplying(self::OPERATION_UUID, 'pending'));
                 self::assertTrue($this->repository->transitionLocal(
@@ -677,7 +677,7 @@ final class YSHelcimPayProcessorTest extends TestCase
                 ));
                 $loaded->fill([
                     'status' => Status::TRANSACTION_SUCCEEDED,
-                    'vendor_charge_id' => '51177991',
+                    'vendor_charge_id' => '81177991',
                     'meta' => [],
                 ]);
                 self::assertTrue($loaded->save());
@@ -704,7 +704,7 @@ final class YSHelcimPayProcessorTest extends TestCase
 
         $transaction = OrderTransaction::allRecords()[20];
         self::assertSame(Status::TRANSACTION_SUCCEEDED, $transaction['status']);
-        self::assertSame('51177991', $transaction['vendor_charge_id']);
+        self::assertSame('81177991', $transaction['vendor_charge_id']);
         foreach ([
             'ys_helcim_checkout_token',
             'ys_helcim_secret_token_enc',
@@ -791,7 +791,7 @@ final class YSHelcimPayProcessorTest extends TestCase
                 self::OPERATION_UUID,
                 'canceled',
                 'succeeded',
-                ['vendor_transaction_id' => '51999002']
+                ['vendor_transaction_id' => '81999002']
             )
         );
         self::assertTrue(
@@ -963,7 +963,7 @@ final class YSHelcimPayProcessorTest extends TestCase
             self::assertSame('order-uuid-10', $response->payload['order']['uuid']);
         }
 
-        self::assertSame('51177991', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+        self::assertSame('81177991', OrderTransaction::allRecords()[20]['vendor_charge_id']);
         self::assertSame('paid', Order::allRecords()[10]['payment_status']);
         self::assertCount(1, StatusHelper::$syncs);
         $row = $this->repository->findByUuid(self::OPERATION_UUID);
@@ -1076,7 +1076,7 @@ final class YSHelcimPayProcessorTest extends TestCase
         return [
             'status' => 'APPROVED',
             'type' => 'purchase',
-            'transactionId' => '51177991',
+            'transactionId' => '81177991',
             'amount' => '21.00',
             'currency' => 'USD',
             'invoiceNumber' => $correlation,

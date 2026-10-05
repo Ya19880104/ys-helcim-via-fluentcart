@@ -19,7 +19,10 @@ use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationRepository;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationState;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimPurchaseOperation;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimApiClient;
+use YangSheep\Helcim\FluentCart\Support\YSHelcimDeclineMessage;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimLogger;
+use YangSheep\Helcim\FluentCart\Support\YSHelcimOrderNote;
+use YangSheep\Helcim\FluentCart\Support\YSHelcimTransactionId;
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
@@ -275,11 +278,30 @@ class YSHelcimPayProcessor {
 		}
 
 		if ( 'declined' === ( $result['status'] ?? null ) ) {
+			// The event data is hash-verified at this point; Helcim may include its decline text.
+			$reason = YSHelcimDeclineMessage::reason( $event_data['errors'] ?? null );
+			if ( null !== $reason ) {
+				$declined = OrderTransaction::query()
+					->where( 'uuid', $transaction_uuid )
+					->where( 'payment_method', self::GATEWAY_SLUG )
+					->first();
+				if ( $declined instanceof OrderTransaction ) {
+					YSHelcimOrderNote::write(
+						$this->order_note_writer,
+						(int) $declined->order_id,
+						YSHelcimOrderNote::declineTitle(),
+						YSHelcimOrderNote::declineMessage(
+							$reason,
+							YSHelcimTransactionId::normalize( $event_data['transactionId'] ?? null )
+						)
+					);
+				}
+			}
 			wp_send_json(
 				array(
 					'status'        => 'failed',
 					'error_code'    => 'provider_declined',
-					'message'       => __( 'The card was declined. No payment was recorded; you may check the details and try again.', 'ys-helcim-via-fluentcart' ),
+					'message'       => YSHelcimDeclineMessage::shopperMessage( YSHelcimDeclineMessage::category( $reason ) ),
 					'retry_allowed' => true,
 				),
 				422

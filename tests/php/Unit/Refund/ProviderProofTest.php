@@ -16,7 +16,7 @@ final class ProviderProofTest extends TestCase
             [
                 'status' => 'APPROVED',
                 'type' => 'refund',
-                'transactionId' => '51177123',
+                'transactionId' => '81177123',
                 'amount' => 21.00,
                 'currency' => 'USD',
             ],
@@ -26,7 +26,7 @@ final class ProviderProofTest extends TestCase
         );
 
         self::assertSame(YSHelcimRefundResult::SUCCEEDED, $result->status());
-        self::assertSame('51177123', $result->vendorTransactionId());
+        self::assertSame('81177123', $result->vendorTransactionId());
     }
 
     /**
@@ -66,7 +66,7 @@ final class ProviderProofTest extends TestCase
             [
                 'status' => 'DECLINED',
                 'type' => 'refund',
-                'transactionId' => '51177123',
+                'transactionId' => '81177123',
                 'amount' => 21.00,
                 'currency' => 'USD',
             ],
@@ -167,7 +167,7 @@ final class ProviderProofTest extends TestCase
             [
                 'status' => 'APPROVED',
                 'type' => 'refund',
-                'transactionId' => '51177123',
+                'transactionId' => '81177123',
                 'amount' => $amount,
                 'currency' => 'USD',
             ],
@@ -210,7 +210,7 @@ final class ProviderProofTest extends TestCase
         $base = [
             'status' => 'APPROVED',
             'type' => 'refund',
-            'transactionId' => '51177123',
+            'transactionId' => '81177123',
             'amount' => 21.00,
             'currency' => 'USD',
         ];
@@ -230,7 +230,7 @@ final class ProviderProofTest extends TestCase
         $complete = [
             'status' => 'DECLINED',
             'type' => 'refund',
-            'transactionId' => '51177123',
+            'transactionId' => '81177123',
             'amount' => 21.00,
             'currency' => 'USD',
         ];

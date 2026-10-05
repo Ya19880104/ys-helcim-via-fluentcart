@@ -28,6 +28,7 @@ use YangSheep\Helcim\FluentCart\Operations\YSHelcimStoragePreflight;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimTransactionId;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimLocalRefundRecorder;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimNativeRefundVeto;
+use YangSheep\Helcim\FluentCart\Refund\YSHelcimProviderRefundSync;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundContextLoader;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundEffectHandlers;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundEffectIntegrityVerifier;
@@ -45,6 +46,7 @@ use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundService;
 use YangSheep\Helcim\FluentCart\Settings\YSHelcimWebhookVerifierModeMigration;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimApiClient;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimLogger;
+use YangSheep\Helcim\FluentCart\Support\YSHelcimOrderNote;
 use YangSheep\Helcim\FluentCart\Webhook\YSHelcimWebhookHandler;
 use YangSheep\Helcim\FluentCart\Webhook\YSHelcimWebhookOperationBindingResolver;
 use YangSheep\Helcim\FluentCart\Webhook\YSHelcimWebhookPurchaseReconciler;
@@ -255,8 +257,11 @@ final class YSHelcimFctBootstrap {
 			// Register afterwards so its dashboard remains the canonical first entry.
 			add_action( 'admin_menu', array( $refund_admin, 'registerMenu' ), 99 );
 			add_action( 'admin_enqueue_scripts', array( $refund_admin, 'enqueueAssets' ), 10, 1 );
+			// FluentCart 訂單頁的退款彈窗：輸出在 Vue 根節點之外，訂單頁按 Refund 不必換頁。
+			add_action( 'admin_footer', array( $refund_admin, 'renderModal' ) );
 		}
 		add_action( 'admin_notices', array( $this, 'renderHostedPurchaseAttentionNotice' ) );
+		add_action( 'admin_notices', array( $this, 'renderProviderRefundAttentionNotice' ) );
 		add_action( 'admin_post_ys_helcim_retry_hosted_recovery', array( $this, 'handleHostedPurchaseManualRetry' ) );
 		add_action( self::OUTBOX_CRON_HOOK, array( $this, 'processRefundOutbox' ), 10, 1 );
 		add_filter( 'cron_schedules', array( $this, 'registerCronIntervals' ) );
@@ -879,6 +884,71 @@ final class YSHelcimFctBootstrap {
 		exit;
 	}
 
+	/**
+	 * 列出「Helcim 後台已退款／作廢、但 FluentCart 還沒記錄」超過 10 分鐘的外部紀錄。
+	 * 這些列持有退款鎖（同訂單不能再退），解法是修正帳務後在退款頁按「從 Helcim 同步退款」重跑記錄。
+	 */
+	public function renderProviderRefundAttentionNotice(): void {
+		if ( ! function_exists( 'current_user_can' ) || ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		$runtime = $this->refundRuntime();
+		if ( is_wp_error( $runtime ) ) {
+			return;
+		}
+		// SQL 先多取 50 筆再過濾：外掛自己卡住的退款列若較舊、排在前面，只取 10 筆會把外部列擠掉。畫面最多列 10 筆。
+		$rows = $runtime['operations']->findRefundsAwaitingLocalRecording( gmdate( 'Y-m-d H:i:s', time() - 600 ), 50 );
+		if ( is_wp_error( $rows ) || ! is_array( $rows ) ) {
+			return;
+		}
+		$rows = array_slice(
+			array_values(
+				array_filter(
+					$rows,
+					static fn ( mixed $row ): bool => is_array( $row ) && YSHelcimProviderRefundSync::isProviderRecordedOperation( $row )
+				)
+			),
+			0,
+			10
+		);
+		if ( array() === $rows ) {
+			return;
+		}
+
+		echo '<div class="notice notice-warning"><p><strong>'
+			. esc_html__( 'YS Helcim: refunds made in Helcim are not recorded in FluentCart yet', 'ys-helcim-via-fluentcart' )
+			. '</strong></p><p>'
+			. esc_html__( 'Helcim has already refunded or voided these payments, but FluentCart does not show it yet, so new refunds for these orders stay blocked. Do not refund these orders again. Fix the order accounting if needed, then open the order in Helcim Refunds and select “Sync refunds from Helcim” to finish recording.', 'ys-helcim-via-fluentcart' )
+			. '</p><ul>';
+		foreach ( $rows as $row ) {
+			$order_id    = (int) ( $row['order_id'] ?? 0 );
+			$provider_id = YSHelcimTransactionId::normalize( $row['vendor_transaction_id'] ?? null );
+			if ( $order_id <= 0 || null === $provider_id ) {
+				continue;
+			}
+			$amount   = number_format( max( 0, (int) ( $row['amount'] ?? 0 ) ) / 100, 2, '.', '' );
+			$currency = strtoupper( sanitize_key( (string) ( $row['currency'] ?? '' ) ) );
+			$local    = sanitize_key( (string) ( $row['local_status'] ?? '' ) );
+			$updated  = (string) ( $row['updated_at'] ?? '' );
+			$details  = 'reverse' === ( $row['operation_type'] ?? '' )
+				/* translators: 1: FluentCart order ID, 2: Helcim transaction ID, 3: amount, 4: currency code, 5: local recording state, 6: UTC update time. */
+				? sprintf( __( 'Order %1$d: Helcim void #%2$s (%3$s %4$s), FluentCart status: %5$s, updated %6$s UTC', 'ys-helcim-via-fluentcart' ), $order_id, $provider_id, $amount, $currency, $local, $updated )
+				/* translators: 1: FluentCart order ID, 2: Helcim transaction ID, 3: amount, 4: currency code, 5: local recording state, 6: UTC update time. */
+				: sprintf( __( 'Order %1$d: Helcim refund #%2$s (%3$s %4$s), FluentCart status: %5$s, updated %6$s UTC', 'ys-helcim-via-fluentcart' ), $order_id, $provider_id, $amount, $currency, $local, $updated );
+			$attention_code = sanitize_key( (string) ( $row['local_error_code'] ?? '' ) );
+			if ( '' !== $attention_code ) {
+				$details .= ' / ' . sprintf(
+					/* translators: %s: durable payment attention code. */
+					__( 'Attention code: %s', 'ys-helcim-via-fluentcart' ),
+					$attention_code
+				);
+			}
+			$url = admin_url( 'admin.php?page=' . YSHelcimRefundAdminPage::PAGE_SLUG . '&order_id=' . $order_id );
+			echo '<li><a href="' . esc_url( $url ) . '">' . esc_html( $details ) . '</a></li>';
+		}
+		echo '</ul></div>';
+	}
+
 	/** Show durable unresolved purchases without exposing credentials. */
 	public function renderHostedPurchaseAttentionNotice(): void {
 		if ( ! function_exists( 'current_user_can' ) || ! current_user_can( 'manage_options' ) ) {
@@ -1224,6 +1294,67 @@ final class YSHelcimFctBootstrap {
 				$promoted = $operations->promoteStaleRefundProcessingForOrder( (int) $matches[1] );
 				return is_wp_error( $promoted ) ? $promoted : (int) $expired + $promoted;
 			};
+			// Helcim 後台作廢／退款的同步（webhook 自動＋面板手動共用），本地寫入仍走既有 coordinator。
+			$provider_refund_sync = new YSHelcimProviderRefundSync(
+				$operations,
+				static function ( int $order_id, int $transaction_id ) use ( $wpdb ) {
+					$wpdb->last_error = '';
+					$transaction      = $wpdb->get_row(
+						$wpdb->prepare(
+							"SELECT * FROM {$wpdb->prefix}fct_order_transactions WHERE id = %d AND order_id = %d LIMIT 1",
+							$transaction_id,
+							$order_id
+						),
+						ARRAY_A
+					);
+					if ( '' !== (string) $wpdb->last_error ) {
+						return new \WP_Error( 'ys_helcim_refund_context_unavailable', 'Refund context unavailable.' );
+					}
+					$order = $wpdb->get_row(
+						$wpdb->prepare(
+							"SELECT id, currency, total_paid, total_refund FROM {$wpdb->prefix}fct_orders WHERE id = %d LIMIT 1",
+							$order_id
+						),
+						ARRAY_A
+					);
+					if ( '' !== (string) $wpdb->last_error ) {
+						return new \WP_Error( 'ys_helcim_refund_context_unavailable', 'Refund context unavailable.' );
+					}
+					$refunds = $wpdb->get_results(
+						$wpdb->prepare(
+							"SELECT id, status, total, vendor_charge_id, meta FROM {$wpdb->prefix}fct_order_transactions WHERE order_id = %d AND transaction_type = 'refund' ORDER BY id ASC",
+							$order_id
+						),
+						ARRAY_A
+					);
+					if ( '' !== (string) $wpdb->last_error || ! is_array( $refunds ) ) {
+						return new \WP_Error( 'ys_helcim_refund_context_unavailable', 'Refund context unavailable.' );
+					}
+
+					return is_array( $transaction ) && is_array( $order )
+						? array( 'transaction' => $transaction, 'order' => $order, 'refunds' => $refunds )
+						: null;
+				},
+				array( $coordinator, 'record' ),
+				array( $operations, 'recordLocalFailure' ),
+				$stale_scope_recoverer,
+				YSHelcimOrderNote::writer(),
+				array( $this, 'resolveRefundResolutionCredential' ),
+				static fn ( string $invoice_number, string $api_token ) => YSHelcimApiClient::request(
+					'card-transactions',
+					array(
+						'invoiceNumber' => $invoice_number,
+						'limit'         => 1000,
+						'page'          => 1,
+					),
+					$api_token,
+					null,
+					'GET'
+				),
+				null,
+				// 作業日誌上線前付款的訂單沒有 purchase 作業：數出 FluentCart 上的 Helcim 成功付款，面板才能說清楚原因。
+				array( $this, 'countLegacyHelcimCharges' )
+			);
 			$controller = new YSHelcimRefundRestController(
 				$request_builder,
 				array( $service, 'execute' ),
@@ -1239,15 +1370,18 @@ final class YSHelcimFctBootstrap {
 				array( $operations, 'recordLocalFailure' ),
 				array( $finalizer, 'inspect' ),
 				array( $options_loader, 'load' ),
-				$stale_scope_recoverer
+				$stale_scope_recoverer,
+				array( $provider_refund_sync, 'syncOrder' ),
+				static fn ( string $parent_uuid ): ?array => $operations->findChildByParent( $parent_uuid, 'reverse' )
 			);
 
 			$this->refund_runtime = array(
-				'controller'  => $controller,
-				'coordinator' => $coordinator,
-				'finalizer'   => $finalizer,
-				'operations'  => $operations,
-				'outbox'      => $outbox,
+				'controller'           => $controller,
+				'coordinator'          => $coordinator,
+				'finalizer'            => $finalizer,
+				'operations'           => $operations,
+				'outbox'               => $outbox,
+				'provider_refund_sync' => $provider_refund_sync,
 			);
 		} catch ( \Throwable $exception ) {
 			YSHelcimLogger::error( 'Refund runtime initialization failed', array( 'error' => $exception->getMessage() ) );
@@ -1279,7 +1413,20 @@ final class YSHelcimFctBootstrap {
 				$store,
 				array( $this, 'resolveRefundResolutionCredential' ),
 				array( $this, 'readRefundResolutionProviderTransaction' ),
-				array( $refund_runtime['coordinator'], 'record' )
+				array( $refund_runtime['coordinator'], 'record' ),
+				// 來源付款同一 invoice 的全部 Helcim 交易（與外部退款同步相同的唯讀清單），
+				// resolution 據此套用家族規則；列不出來時 resolution 一律拒絕。
+				static fn ( string $invoice_number, string $api_token ) => YSHelcimApiClient::request(
+					'card-transactions',
+					array(
+						'invoiceNumber' => $invoice_number,
+						'limit'         => 1000,
+						'page'          => 1,
+					),
+					$api_token,
+					null,
+					'GET'
+				)
 			);
 			$controller = new YSHelcimRefundResolutionRestController(
 				array( $service, 'inspect' ),
@@ -1353,6 +1500,11 @@ final class YSHelcimFctBootstrap {
 				}
 			);
 			$receipts = new YSHelcimWebhookReceiptRepository( $wpdb );
+			// 退款執行環境起不來時維持舊行為（refund／reverse 事件 ignored），purchase 路徑不受影響。
+			$refund_runtime    = $this->refundRuntime();
+			$refund_reconciler = is_array( $refund_runtime ) && ( $refund_runtime['provider_refund_sync'] ?? null ) instanceof YSHelcimProviderRefundSync
+				? array( $refund_runtime['provider_refund_sync'], 'reconcileWebhook' )
+				: null;
 			$handler  = new YSHelcimWebhookHandler(
 				array( $this, 'resolveWebhookCredentials' ),
 				array( YSHelcimWebhookVerifier::class, 'verify' ),
@@ -1373,7 +1525,8 @@ final class YSHelcimFctBootstrap {
 						gmdate( 'Y-m-d H:i:s', $completed_at ),
 						gmdate( 'Y-m-d H:i:s', $completed_at + self::WEBHOOK_RECEIPT_RETENTION_SECONDS )
 					);
-				}
+				},
+				$refund_reconciler
 			);
 			$this->webhook_runtime = array(
 				'controller'       => new YSHelcimWebhookRestController( $handler ),
@@ -1658,6 +1811,8 @@ final class YSHelcimFctBootstrap {
 			'pollAttempts'   => 120,
 			'canResolve'     => function_exists( 'current_user_can' ) && true === current_user_can( 'manage_options' ),
 			'autoStart'      => true,
+			// 只有 FluentCart 後台頁（spa）會輸出彈窗容器；JS 以此旗標決定開彈窗或退回換頁。
+			'modalEnabled'   => 'fluent-cart' === $page,
 		);
 
 		return array(
@@ -1707,6 +1862,39 @@ final class YSHelcimFctBootstrap {
 			? trim( $credential['api_token'] )
 			: '';
 		return '' === $api_token ? self::credentialUnavailable() : $api_token;
+	}
+
+	/**
+	 * 一張訂單在 FluentCart 有幾筆成功的 Helcim 付款（手動同步外部退款用）。
+	 *
+	 * 同步服務只在訂單沒有任何已套用的 purchase 作業時才呼叫：此時的 Helcim 付款早於作業日誌，
+	 * 在 Helcim 做的退款／作廢無法自動比對，面板改請店家先到 Helcim 核對。查詢失敗一律回 WP_Error。
+	 *
+	 * @return int|\WP_Error
+	 */
+	public function countLegacyHelcimCharges( int $order_id ) {
+		global $wpdb;
+		if ( $order_id <= 0 || ! is_object( $wpdb ) ) {
+			return new \WP_Error( 'ys_helcim_refund_context_unavailable', 'Refund context unavailable.' );
+		}
+
+		$wpdb->last_error = '';
+		try {
+			$count = $wpdb->get_var(
+				$wpdb->prepare(
+					"SELECT COUNT(*) FROM {$wpdb->prefix}fct_order_transactions WHERE order_id = %d AND payment_method IN ('ys_helcim', 'ys_helcim_js') AND transaction_type = 'charge' AND status = 'succeeded'",
+					$order_id
+				)
+			);
+		} catch ( \Throwable $exception ) {
+			unset( $exception );
+			$count = null;
+		}
+		if ( '' !== (string) $wpdb->last_error || null === $count || 1 !== preg_match( '/\A[0-9]+\z/', (string) $count ) ) {
+			return new \WP_Error( 'ys_helcim_refund_context_unavailable', 'Refund context unavailable.' );
+		}
+
+		return (int) $count;
 	}
 
 	/** Read one exact Helcim transaction for positive refund resolution. */

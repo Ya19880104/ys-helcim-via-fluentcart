@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace YangSheep\Helcim\FluentCart\Tests\Unit\Refund;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationRepository;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundPayload;
@@ -33,14 +34,14 @@ final class RefundServiceTest extends TestCase
         $service = $this->service(
             static function (...$args) use (&$calls): array {
                 $calls[] = $args;
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             }
         );
 
         $result = $service->execute($this->request());
 
         self::assertSame(YSHelcimRefundResult::SUCCEEDED, $result->status());
-        self::assertSame('51177123', $result->vendorTransactionId());
+        self::assertSame('81177123', $result->vendorTransactionId());
         self::assertSame($this->request()['operation_uuid'], $result->refundOperationUuid());
         self::assertSame($this->request()['operation_uuid'], $result->effectiveOperationUuid());
         self::assertSame('refund', $result->providerAction());
@@ -60,7 +61,7 @@ final class RefundServiceTest extends TestCase
         $service = $this->service(
             static function (...$args) use (&$calls): array {
                 $calls[] = $args;
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             }
         );
         $request = $this->request([
@@ -139,7 +140,7 @@ final class RefundServiceTest extends TestCase
             function () use (&$calls, $operationUuid): array {
                 ++$calls;
                 $this->database->failNextUpdateForOperationUuid = $operationUuid;
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             },
             static fn (): string => '00000000-0000-4000-8000-000000000099',
             static fn (): string => '2026-07-21 00:00:00',
@@ -191,11 +192,17 @@ final class RefundServiceTest extends TestCase
 
     public function testPartialOpenBatchCandidateNeverInvokesReverse(): void
     {
+        // 部分金額：先證明來源交易與「批次仍開著」，才回報「未結算只能全額取消」；絕不送 reverse。
+        $responses = [
+            self::openBatchRefundError(),
+            self::sourceTransaction(),
+            ['id' => 4209764, 'closed' => false],
+        ];
         $calls = [];
         $service = $this->service(
-            static function (...$args) use (&$calls): \WP_Error {
+            static function (...$args) use (&$responses, &$calls): array|\WP_Error {
                 $calls[] = $args;
-                return self::openBatchRefundError();
+                return array_shift($responses);
             }
         );
         $request = $this->request([
@@ -206,8 +213,72 @@ final class RefundServiceTest extends TestCase
         $result = $service->execute($request);
 
         self::assertSame(YSHelcimRefundResult::FAILED, $result->status());
-        self::assertCount(1, $calls);
-        self::assertSame('failed', $this->repository->findByUuid($request['operation_uuid'])['remote_status']);
+        self::assertSame('open_batch_partial_refund_unsupported', $result->errorCode());
+        self::assertSame(
+            ['payment/refund', 'card-transactions/81177061', 'card-batches/4209764'],
+            array_map(static fn (array $call): string => $call[0], $calls)
+        );
+        $row = $this->repository->findByUuid($request['operation_uuid']);
+        self::assertSame('failed', $row['remote_status']);
+        self::assertSame('open_batch_partial_refund_unsupported', $row['remote_error_code']);
+        self::assertNull($this->repository->findChildByParent($request['operation_uuid'], 'reverse'));
+    }
+
+    /** @return array<string, array{int, int}> */
+    public static function settledRejectionAmounts(): array
+    {
+        return [
+            'full amount' => [2100, 2100],
+            'partial amount' => [1000, 2100],
+        ];
+    }
+
+    #[DataProvider('settledRejectionAmounts')]
+    public function testARejectedRefundOnASettledBatchSaysSoInsteadOfAskingForTheFullAmount(int $amount, int $remaining): void
+    {
+        // 已結算卻被 Helcim 拒退（常見原因：已在 Helcim 後台退款／作廢）：不可再叫店家「輸入全額取消」。
+        $responses = [
+            self::openBatchRefundError(),
+            self::sourceTransaction(),
+            ['id' => 4209764, 'closed' => true],
+        ];
+        $calls = [];
+        $service = $this->service(
+            static function (...$args) use (&$responses, &$calls): array|\WP_Error {
+                $calls[] = $args;
+                return array_shift($responses);
+            }
+        );
+        $request = $this->request(['amount' => $amount, 'remaining_refundable' => $remaining]);
+
+        $result = $service->execute($request);
+
+        self::assertSame(YSHelcimRefundResult::FAILED, $result->status());
+        self::assertSame('batch_closed_refund_rejected', $result->errorCode());
+        self::assertCount(3, $calls);
+        self::assertSame('batch_closed_refund_rejected', $this->repository->findByUuid($request['operation_uuid'])['remote_error_code']);
+        self::assertNull($this->repository->findChildByParent($request['operation_uuid'], 'reverse'));
+    }
+
+    public function testAPartialRefundWhoseBatchCannotBeProvenStaysUnproven(): void
+    {
+        $responses = [
+            self::openBatchRefundError(),
+            new \WP_Error('ys_helcim_api_error', 'Timed out.', ['kind' => 'transport', 'indeterminate' => true]),
+        ];
+        $calls = [];
+        $service = $this->service(
+            static function (...$args) use (&$responses, &$calls): array|\WP_Error {
+                $calls[] = $args;
+                return array_shift($responses);
+            }
+        );
+        $request = $this->request(['amount' => 1000, 'remaining_refundable' => 2100]);
+
+        $result = $service->execute($request);
+
+        self::assertSame('open_batch_unproven', $result->errorCode());
+        self::assertCount(2, $calls);
     }
 
     public function testFullReverseRequiresExactOriginalTransactionAndOpenBatchProof(): void
@@ -215,7 +286,7 @@ final class RefundServiceTest extends TestCase
         $responses = [
             self::openBatchRefundStringError(),
             [
-                'transactionId' => 51177061,
+                'transactionId' => 81177061,
                 'cardBatchId' => 4209764,
                 'status' => 'APPROVED',
                 'type' => 'purchase',
@@ -223,7 +294,7 @@ final class RefundServiceTest extends TestCase
                 'currency' => 'USD',
             ],
             ['id' => 4209764, 'closed' => false],
-            self::approved('reverse', '51177124', 21.00),
+            self::approved('reverse', '81177124', 21.00),
         ];
         $calls = [];
         $service = $this->service(
@@ -236,16 +307,16 @@ final class RefundServiceTest extends TestCase
         $result = $service->execute($this->request());
 
         self::assertSame(YSHelcimRefundResult::SUCCEEDED, $result->status());
-        self::assertSame('51177124', $result->vendorTransactionId());
+        self::assertSame('81177124', $result->vendorTransactionId());
         self::assertSame($this->request()['operation_uuid'], $result->refundOperationUuid());
         self::assertSame('00000000-0000-4000-8000-000000000099', $result->effectiveOperationUuid());
         self::assertSame('reverse', $result->providerAction());
         self::assertSame(
-            ['payment/refund', 'card-transactions/51177061', 'card-batches/4209764', 'payment/reverse'],
+            ['payment/refund', 'card-transactions/81177061', 'card-batches/4209764', 'payment/reverse'],
             array_column($calls, 0)
         );
         self::assertSame(['POST', 'GET', 'GET', 'POST'], array_column($calls, 4));
-        self::assertSame('51177061', (string) $calls[3][1]['cardTransactionId']);
+        self::assertSame('81177061', (string) $calls[3][1]['cardTransactionId']);
         self::assertNotSame($calls[0][3], $calls[3][3]);
         self::assertSame(36, strlen((string) $calls[3][3]));
 
@@ -263,7 +334,7 @@ final class RefundServiceTest extends TestCase
         $responses = [
             self::openBatchRefundError(),
             [
-                'transactionId' => 51177061,
+                'transactionId' => 81177061,
                 'cardBatchId' => 4209764,
                 'status' => 'APPROVED',
                 'type' => 'purchase',
@@ -271,7 +342,7 @@ final class RefundServiceTest extends TestCase
                 'currency' => 'USD',
             ],
             ['id' => 4209764, 'closed' => false],
-            self::approved('reverse', '51177124', 21.00),
+            self::approved('reverse', '81177124', 21.00),
         ];
         $calls = [];
         $service = $this->service(
@@ -292,13 +363,13 @@ final class RefundServiceTest extends TestCase
 
         foreach ([$first, $second, $third] as $result) {
             self::assertSame(YSHelcimRefundResult::SUCCEEDED, $result->status());
-            self::assertSame('51177124', $result->vendorTransactionId());
+            self::assertSame('81177124', $result->vendorTransactionId());
             self::assertSame('reverse', $result->providerAction());
             self::assertSame('00000000-0000-4000-8000-000000000099', $result->effectiveOperationUuid());
         }
         self::assertCount(4, $calls);
         self::assertSame(
-            ['payment/refund', 'card-transactions/51177061', 'card-batches/4209764', 'payment/reverse'],
+            ['payment/refund', 'card-transactions/81177061', 'card-batches/4209764', 'payment/reverse'],
             array_column($calls, 0)
         );
         self::assertSame([], $responses);
@@ -334,7 +405,7 @@ final class RefundServiceTest extends TestCase
         $service = $this->service(
             static function (...$args) use (&$calls): array {
                 $calls[] = $args;
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             }
         );
         $request = $this->request();
@@ -342,8 +413,8 @@ final class RefundServiceTest extends TestCase
         $first = $service->execute($request);
         $second = $service->execute($request);
 
-        self::assertSame('51177123', $first->vendorTransactionId());
-        self::assertSame('51177123', $second->vendorTransactionId());
+        self::assertSame('81177123', $first->vendorTransactionId());
+        self::assertSame('81177123', $second->vendorTransactionId());
         self::assertCount(1, $calls);
         self::assertSame($calls[0][3], $this->repository->findByUuid($request['operation_uuid'])['idempotency_key']);
     }
@@ -354,7 +425,7 @@ final class RefundServiceTest extends TestCase
         $service = $this->service(
             static function (...$args) use (&$calls): array {
                 $calls[] = $args;
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             }
         );
         $request = $this->request();
@@ -370,7 +441,7 @@ final class RefundServiceTest extends TestCase
         $result = $service->execute($replay);
 
         self::assertSame(YSHelcimRefundResult::SUCCEEDED, $result->status());
-        self::assertSame('51177123', $result->vendorTransactionId());
+        self::assertSame('81177123', $result->vendorTransactionId());
         self::assertCount(1, $calls);
     }
 
@@ -403,7 +474,7 @@ final class RefundServiceTest extends TestCase
         $service = $this->service(
             static function (...$args) use (&$calls): array {
                 $calls[] = $args;
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             }
         );
         $request = $this->request();
@@ -424,7 +495,7 @@ final class RefundServiceTest extends TestCase
         $service = $this->service(
             static function (...$args) use (&$calls): array {
                 $calls[] = $args;
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             }
         );
         $request = $this->request([
@@ -462,7 +533,7 @@ final class RefundServiceTest extends TestCase
             'operation_uuid' => '00000000-0000-4000-8000-000000000002',
             'transaction_id' => 21,
             'transaction_uuid' => 'fc-transaction-456',
-            'vendor_transaction_id' => '51177062',
+            'vendor_transaction_id' => '81177062',
         ]));
 
         self::assertInstanceOf(\WP_Error::class, $second);
@@ -505,7 +576,7 @@ final class RefundServiceTest extends TestCase
             self::openBatchRefundError(),
             self::sourceTransaction(),
             ['id' => 4209764, 'closed' => false],
-            self::approved('reverse', '51177124', 21.00),
+            self::approved('reverse', '81177124', 21.00),
         ];
         $calls = [];
         $childUuid = '00000000-0000-4000-8000-000000000099';
@@ -530,7 +601,7 @@ final class RefundServiceTest extends TestCase
 
         self::assertSame(YSHelcimRefundResult::SUCCEEDED, $second->status());
         self::assertSame($childUuid, $second->effectiveOperationUuid());
-        self::assertSame(['payment/refund', 'card-transactions/51177061', 'card-batches/4209764', 'payment/reverse'], array_column($calls, 0));
+        self::assertSame(['payment/refund', 'card-transactions/81177061', 'card-batches/4209764', 'payment/reverse'], array_column($calls, 0));
         self::assertSame($storedKey, $calls[3][3]);
         self::assertSame('127.0.0.1', $calls[3][1]['ipAddress']);
     }
@@ -541,7 +612,7 @@ final class RefundServiceTest extends TestCase
             self::openBatchRefundError(),
             self::sourceTransaction(),
             ['id' => 4209764, 'closed' => false],
-            self::approved('reverse', '51177124', 21.00),
+            self::approved('reverse', '81177124', 21.00),
         ];
         $calls = [];
         $childUuid = '00000000-0000-4000-8000-000000000099';
@@ -578,7 +649,7 @@ final class RefundServiceTest extends TestCase
         self::assertSame(YSHelcimRefundResult::SUCCEEDED, $result->status());
         self::assertSame($childUuid, $result->effectiveOperationUuid());
         self::assertSame(
-            ['payment/refund', 'card-transactions/51177061', 'card-batches/4209764', 'payment/reverse'],
+            ['payment/refund', 'card-transactions/81177061', 'card-batches/4209764', 'payment/reverse'],
             array_column($calls, 0)
         );
     }
@@ -593,7 +664,7 @@ final class RefundServiceTest extends TestCase
         $service = $this->service(
             static function (...$args) use (&$calls): array {
                 $calls[] = $args;
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             }
         );
 
@@ -648,7 +719,7 @@ final class RefundServiceTest extends TestCase
         $result = $service->execute($this->request());
 
         self::assertSame(YSHelcimRefundResult::FAILED, $result->status());
-        self::assertSame(['payment/refund', 'card-transactions/51177061'], array_column($calls, 0));
+        self::assertSame(['payment/refund', 'card-transactions/81177061'], array_column($calls, 0));
     }
 
     public function testReverseApprovalProofMismatchIsIndeterminate(): void
@@ -706,7 +777,7 @@ final class RefundServiceTest extends TestCase
             static function (...$args) use (&$calls, &$service, &$concurrent, $request): array {
                 $calls[] = $args;
                 $concurrent = $service->execute($request);
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             }
         );
 
@@ -735,7 +806,7 @@ final class RefundServiceTest extends TestCase
                 $providerCalls[] = $args;
                 return self::approved(
                     'refund',
-                    (string) (51177123 + count($providerCalls) - 1),
+                    (string) (81177123 + count($providerCalls) - 1),
                     10.00
                 );
             },
@@ -800,7 +871,7 @@ final class RefundServiceTest extends TestCase
         $service = $this->service(
             static function (...$args) use (&$providerCalls): array {
                 $providerCalls[] = $args;
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             },
             static fn (): array => $freshContext
         );
@@ -832,7 +903,7 @@ final class RefundServiceTest extends TestCase
         $service = $this->service(
             static function (...$args) use (&$providerCalls): array {
                 $providerCalls[] = $args;
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             },
             function (array $claimedRequest, array $row) use ($loaderResult, &$freshnessStates) {
                 $operation = $this->repository->findByUuid($claimedRequest['operation_uuid']);
@@ -873,7 +944,7 @@ final class RefundServiceTest extends TestCase
             $this->repository,
             static function (...$args) use (&$providerCalls): array {
                 $providerCalls[] = $args;
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             },
             static fn (): string => '00000000-0000-4000-8000-000000000099',
             static fn (): string => '2026-07-21 00:00:00',
@@ -914,7 +985,7 @@ final class RefundServiceTest extends TestCase
             $this->repository,
             static function (...$args) use (&$providerCalls): array {
                 $providerCalls[] = $args;
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             },
             static fn (): string => '00000000-0000-4000-8000-000000000099',
             static fn (): string => '2026-07-21 00:00:00',
@@ -945,7 +1016,7 @@ final class RefundServiceTest extends TestCase
         $service = $this->service(
             static function (...$args) use (&$calls): array {
                 $calls[] = $args;
-                return self::approved('refund', '51177123', 21.00);
+                return self::approved('refund', '81177123', 21.00);
             }
         );
 
@@ -963,7 +1034,7 @@ final class RefundServiceTest extends TestCase
         $service = $this->service(
             static function (...$args) use (&$calls): array {
                 $calls[] = $args;
-                return self::approved('refund', '51177123', 10.00);
+                return self::approved('refund', '81177123', 10.00);
             }
         );
 
@@ -983,7 +1054,7 @@ final class RefundServiceTest extends TestCase
     public static function unsafeReverseEvidence(): array
     {
         $validTransaction = [
-            'transactionId' => 51177061,
+            'transactionId' => 81177061,
             'cardBatchId' => 4209764,
             'status' => 'APPROVED',
             'type' => 'purchase',
@@ -996,7 +1067,7 @@ final class RefundServiceTest extends TestCase
                 new \WP_Error('ys_helcim_api_error', 'timeout', ['kind' => 'transport', 'indeterminate' => true]),
                 null,
             ],
-            'wrong transaction id' => [array_merge($validTransaction, ['transactionId' => 51177062]), null],
+            'wrong transaction id' => [array_merge($validTransaction, ['transactionId' => 81177062]), null],
             'wrong original amount' => [array_merge($validTransaction, ['amount' => 20.00]), null],
             'wrong original currency' => [array_merge($validTransaction, ['currency' => 'CAD']), null],
             'missing batch id' => [array_diff_key($validTransaction, ['cardBatchId' => true]), null],
@@ -1058,7 +1129,7 @@ final class RefundServiceTest extends TestCase
             'boolean transaction id' => ['transaction_id', true],
             'stale refundable arithmetic' => ['remaining_refundable', 2000],
             'mode mismatch' => ['current_mode', 'live'],
-            'invalid source id' => ['vendor_transaction_id', '51177061x'],
+            'invalid source id' => ['vendor_transaction_id', '81177061x'],
 			'source id above platform integer' => ['vendor_transaction_id', (string) PHP_INT_MAX . '0'],
             'invalid ip' => ['ip_address', 'not-an-ip'],
         ];
@@ -1118,7 +1189,7 @@ final class RefundServiceTest extends TestCase
                 'order_id' => 10,
                 'transaction_id' => 20,
                 'transaction_uuid' => 'fc-transaction-123',
-                'vendor_transaction_id' => '51177061',
+                'vendor_transaction_id' => '81177061',
                 'amount' => 2100,
                 'transaction_total' => 2100,
                 'refunded_total' => 0,
@@ -1150,7 +1221,7 @@ final class RefundServiceTest extends TestCase
     private static function sourceTransaction(): array
     {
         return [
-            'transactionId' => 51177061,
+            'transactionId' => 81177061,
             'cardBatchId' => 4209764,
             'status' => 'APPROVED',
             'type' => 'purchase',

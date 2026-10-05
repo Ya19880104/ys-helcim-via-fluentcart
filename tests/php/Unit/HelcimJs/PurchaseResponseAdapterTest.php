@@ -26,7 +26,7 @@ final class PurchaseResponseAdapterTest extends TestCase
         $result = YSHelcimJsPurchaseResponseAdapter::toCoordinatorOutcome([
             'status' => 'APPROVED',
             'type' => 'purchase',
-            'transactionId' => 51177123,
+            'transactionId' => 81177123,
             'amount' => '21.00',
             'currency' => 'USD',
             'cardToken' => 'must-not-survive',
@@ -38,7 +38,7 @@ final class PurchaseResponseAdapterTest extends TestCase
             'transaction' => [
                 'status' => 'APPROVED',
                 'type' => 'purchase',
-                'transactionId' => '51177123',
+                'transactionId' => '81177123',
                 'amount' => '21.00',
                 'currency' => 'USD',
             ],
@@ -51,7 +51,7 @@ final class PurchaseResponseAdapterTest extends TestCase
         $result = YSHelcimJsPurchaseResponseAdapter::toCoordinatorOutcome([
             'status' => 'DECLINED',
             'type' => 'purchase',
-            'transactionId' => 51177124,
+            'transactionId' => 81177124,
             'amount' => '21.00',
             'currency' => 'USD',
             'errors' => 'Do not persist this detail',

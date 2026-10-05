@@ -11,6 +11,7 @@ use PHPUnit\Framework\TestCase;
 use YangSheep\Helcim\FluentCart\HelcimJs\YSHelcimJsSettings;
 use YangSheep\Helcim\FluentCart\HelcimPay\YSHelcimPaySettings;
 use YangSheep\Helcim\FluentCart\Operations\YSHelcimOperationSchema;
+use YangSheep\Helcim\FluentCart\Refund\YSHelcimProviderRefundSync;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundResolutionSchema;
 use YangSheep\Helcim\FluentCart\Tests\Doubles\FakeWpdb;
 use YangSheep\Helcim\FluentCart\YSHelcimFctBootstrap;
@@ -195,6 +196,15 @@ final class BootstrapSchemaGateTest extends TestCase
         self::assertCount(1, $refundAdminMenuHooks);
         self::assertSame(99, $refundAdminMenuHooks[0]['priority']);
 
+        // 訂單頁退款彈窗掛在 admin_footer（Vue 根節點之外）。
+        $refundModalHooks = array_values(array_filter(
+            \YSHelcimWpDouble::$actions,
+            static fn (array $action): bool => $action['hook'] === 'admin_footer'
+                && is_array($action['callback'])
+                && ($action['callback'][1] ?? '') === 'renderModal'
+        ));
+        self::assertCount(1, $refundModalHooks);
+
         $filters = array_column(\YSHelcimWpDouble::$filters, 'hook');
         self::assertContains('cron_schedules', $filters);
         $cartLocks = array_values(array_filter(
@@ -358,6 +368,186 @@ final class BootstrapSchemaGateTest extends TestCase
         self::assertIsCallable($reader->getValue($runtime['controller']));
     }
 
+    public function testRefundRuntimeInjectsTheLegacyHelcimChargeCounterIntoProviderRefundSync(): void
+    {
+        global $wpdb;
+        $wpdb = new FakeWpdb();
+        \YSHelcimWpDouble::reset();
+        $bootstrap = YSHelcimFctBootstrap::init();
+        (new \ReflectionProperty($bootstrap, 'refund_runtime'))->setValue($bootstrap, null);
+
+        $runtime = (new \ReflectionMethod($bootstrap, 'refundRuntime'))->invoke($bootstrap);
+
+        self::assertIsArray($runtime);
+        $sync = $runtime['provider_refund_sync'];
+        self::assertSame(
+            [$bootstrap, 'countLegacyHelcimCharges'],
+            (new \ReflectionProperty($sync, 'legacy_charge_counter'))->getValue($sync)
+        );
+
+        // 執行期：作業日誌裡沒有這張訂單的 purchase，但 FluentCart 有 Helcim 成功付款 → 面板要說明是舊付款。
+        $journal = $wpdb;
+        $wpdb = self::legacyChargeDatabase('2');
+        try {
+            $summary = $sync->syncOrder(47);
+        } finally {
+            $wpdb = $journal;
+        }
+
+        self::assertIsArray($summary);
+        self::assertSame('legacy_payment', $summary['status']);
+        self::assertSame(2, $summary['legacy_payments']);
+        self::assertSame(0, $summary['helcim_payments']);
+    }
+
+    public function testLegacyHelcimChargeCounterCountsOnlySucceededHelcimChargesAndFailsClosed(): void
+    {
+        global $wpdb;
+        $previous = $wpdb;
+        $bootstrap = YSHelcimFctBootstrap::init();
+        $database = self::legacyChargeDatabase('3');
+        $wpdb = $database;
+        try {
+            self::assertSame(3, $bootstrap->countLegacyHelcimCharges(47));
+            self::assertCount(1, $database->prepared);
+            $sql = $database->prepared[0]['query'];
+            self::assertStringContainsString('SELECT COUNT(*) FROM wp_fct_order_transactions', $sql);
+            self::assertStringContainsString('order_id = %d', $sql);
+            self::assertStringContainsString("payment_method IN ('ys_helcim', 'ys_helcim_js')", $sql);
+            self::assertStringContainsString("transaction_type = 'charge'", $sql);
+            self::assertStringContainsString("status = 'succeeded'", $sql);
+            self::assertSame([47], $database->prepared[0]['args']);
+
+            $database->result = '0';
+            self::assertSame(0, $bootstrap->countLegacyHelcimCharges(46));
+
+            // 查詢失敗、讀不到值、非數字、訂單編號無效：一律 WP_Error，不可當成 0 筆。
+            $database->result = '1';
+            $database->failWith = 'Table does not exist';
+            self::assertInstanceOf(\WP_Error::class, $bootstrap->countLegacyHelcimCharges(47));
+            $database->failWith = '';
+            $database->result = null;
+            self::assertInstanceOf(\WP_Error::class, $bootstrap->countLegacyHelcimCharges(47));
+            $database->result = 'not-a-number';
+            self::assertInstanceOf(\WP_Error::class, $bootstrap->countLegacyHelcimCharges(47));
+            $database->throws = true;
+            self::assertInstanceOf(\WP_Error::class, $bootstrap->countLegacyHelcimCharges(47));
+            $database->throws = false;
+            $queries = count($database->prepared);
+            self::assertInstanceOf(\WP_Error::class, $bootstrap->countLegacyHelcimCharges(0));
+            self::assertCount($queries, $database->prepared);
+        } finally {
+            $wpdb = $previous;
+        }
+    }
+
+    public function testProviderRefundAttentionNoticeLooksPastStuckPluginRefundsAndListsAtMostTen(): void
+    {
+        // 外掛自己卡住的退款列較舊、排在前面：SQL 多取 50 筆再過濾，外部列才不會被擠掉；畫面最多列 10 筆。
+        $rows = [];
+        for ($i = 1; $i <= 12; ++$i) {
+            $rows[] = [
+                'operation_uuid' => sprintf('00000000-0000-4000-8000-%012d', 700 + $i),
+                'operation_type' => 'refund',
+                'gateway' => 'ys_helcim',
+                'payment_mode' => 'test',
+                'order_id' => 700 + $i,
+                'vendor_transaction_id' => (string) (85100000 + $i),
+                'amount' => 100,
+                'currency' => 'USD',
+                'local_status' => 'failed',
+                'updated_at' => '2026-09-01 00:00:00',
+            ];
+        }
+        for ($i = 1; $i <= 11; ++$i) {
+            $providerId = (string) (85200000 + $i);
+            $rows[] = [
+                'operation_uuid' => YSHelcimProviderRefundSync::operationUuidFor('ys_helcim', 'test', $providerId),
+                'operation_type' => 'reverse',
+                'gateway' => 'ys_helcim',
+                'payment_mode' => 'test',
+                'order_id' => 800 + $i,
+                'vendor_transaction_id' => $providerId,
+                'amount' => 123,
+                'currency' => 'USD',
+                'local_status' => 'pending',
+                'updated_at' => '2026-09-02 00:00:00',
+            ];
+        }
+        $operations = new class($rows) {
+            /** @var int[] */
+            public array $limits = [];
+
+            /** @param array<int,array<string,mixed>> $rows */
+            public function __construct(private array $rows)
+            {
+            }
+
+            /** @return array<int,array<string,mixed>> */
+            public function findRefundsAwaitingLocalRecording(string $updatedBefore, int $limit): array
+            {
+                unset($updatedBefore);
+                $this->limits[] = $limit;
+                return array_slice($this->rows, 0, $limit);
+            }
+        };
+        require_once dirname(__DIR__, 2) . '/Doubles/InlineWordPress.php';
+        $bootstrap = YSHelcimFctBootstrap::init();
+        $this->setRefundRuntime($bootstrap, ['operations' => $operations]);
+        ob_start();
+        try {
+            $bootstrap->renderProviderRefundAttentionNotice();
+        } finally {
+            $html = (string) ob_get_clean();
+            (new \ReflectionProperty($bootstrap, 'refund_runtime'))->setValue($bootstrap, null);
+        }
+
+        self::assertSame([50], $operations->limits);
+        self::assertSame(10, substr_count($html, '<li>'));
+        self::assertStringContainsString('Order 801: Helcim void #85200001 (1.23 USD), FluentCart status: pending', $html);
+        self::assertStringContainsString('Order 810: Helcim void #85200010', $html);
+        self::assertStringNotContainsString('#85200011', $html);
+        self::assertStringNotContainsString('8510000', $html, 'Rows started by the plugin itself are never listed as Helcim-side refunds.');
+    }
+
+    private static function legacyChargeDatabase(?string $result): object
+    {
+        return new class ($result) {
+            public string $prefix = 'wp_';
+
+            public string $last_error = '';
+
+            public string $failWith = '';
+
+            public bool $throws = false;
+
+            /** @var array<int,array{query:string,args:array<int,mixed>}> */
+            public array $prepared = [];
+
+            public function __construct(public ?string $result)
+            {
+            }
+
+            /** @return array{query:string,args:array<int,mixed>} */
+            public function prepare(string $query, mixed ...$args): array
+            {
+                $this->prepared[] = ['query' => $query, 'args' => $args];
+                return ['query' => $query, 'args' => $args];
+            }
+
+            /** @param array{query:string,args:array<int,mixed>} $prepared */
+            public function get_var(array $prepared): ?string
+            {
+                unset($prepared);
+                if ($this->throws) {
+                    throw new \RuntimeException('connection lost');
+                }
+                $this->last_error = $this->failWith;
+                return $this->result;
+            }
+        };
+    }
+
     public function testRefundResolutionRuntimeWiresThePositiveOnlyControllerAndLocalCoordinator(): void
     {
         global $wpdb;
@@ -383,11 +573,56 @@ final class BootstrapSchemaGateTest extends TestCase
         );
     }
 
+    // 安全審查 F2：resolution 的同 invoice 家族清單走唯讀 GET card-transactions?invoiceNumber=，
+    // 與外部退款同步相同；沒有 idempotency key，也不是任何寫入端點。
+    public function testRefundResolutionListsTheSourceInvoiceFamilyWithAReadOnlyGet(): void
+    {
+        global $wpdb;
+        $wpdb = new FakeWpdb();
+        \YSHelcimWpDouble::reset();
+        $bootstrap = YSHelcimFctBootstrap::init();
+        $runtime = (new \ReflectionMethod($bootstrap, 'refundResolutionRuntime'))->invoke($bootstrap);
+        self::assertIsArray($runtime);
+
+        $lister = (new \ReflectionProperty($runtime['service'], 'family_lister'))->getValue($runtime['service']);
+        $lister('3b0c6f2e-8d41-4a7e-9c55-1f2a3b4c5d6e', 'stored-token');
+
+        self::assertCount(1, \YSHelcimWpDouble::$requests);
+        $request = \YSHelcimWpDouble::$requests[0];
+        self::assertSame('GET', $request['args']['method']);
+        self::assertStringStartsWith('https://api.helcim.com/v2/card-transactions?', $request['url']);
+        parse_str((string) parse_url($request['url'], PHP_URL_QUERY), $query);
+        self::assertSame(
+            ['invoiceNumber' => '3b0c6f2e-8d41-4a7e-9c55-1f2a3b4c5d6e', 'limit' => '1000', 'page' => '1'],
+            $query
+        );
+        self::assertSame('stored-token', $request['args']['headers']['api-token']);
+        self::assertArrayNotHasKey('idempotency-key', $request['args']['headers']);
+        self::assertArrayNotHasKey('body', $request['args']);
+    }
+
     public function testAdminAdapterUsesTheExactFluentCartNativeRefundButtonLabel(): void
     {
         $config = YSHelcimFctBootstrap::init()->refundAdminConfig('assets');
 
         self::assertSame('Refund', $config['browser_config']['labels']['nativeRefund']);
+    }
+
+    public function testRefundModalFlagIsEnabledOnlyOnTheFluentCartAdminPage(): void
+    {
+        $previous = $_GET;
+        try {
+            $_GET['page'] = 'fluent-cart';
+            self::assertTrue(YSHelcimFctBootstrap::init()->refundAdminConfig('assets')['browser_config']['modalEnabled']);
+
+            $_GET['page'] = 'ys-helcim-refunds';
+            self::assertFalse(YSHelcimFctBootstrap::init()->refundAdminConfig('assets')['browser_config']['modalEnabled']);
+
+            unset($_GET['page']);
+            self::assertFalse(YSHelcimFctBootstrap::init()->refundAdminConfig('assets')['browser_config']['modalEnabled']);
+        } finally {
+            $_GET = $previous;
+        }
     }
 
     public function testRefundMenuKeepsFluentCartDashboardFirstAndRegistersAWorkingCanonicalPage(): void
@@ -1065,7 +1300,7 @@ final class BootstrapSchemaGateTest extends TestCase
 					'remote_status' => 'succeeded',
 					'local_status' => 'applied',
 					'local_error_code' => 'provider_id_mismatch',
-					'local_error_message' => 'A different provider transaction is already bound. Observed provider transaction ID: 51177998.',
+					'local_error_message' => 'A different provider transaction is already bound. Observed provider transaction ID: 81177998.',
 					'recovery_attempt_count' => 0,
 					'next_recovery_at' => null,
 					'updated_at' => '2026-07-21 00:00:00',
@@ -1089,7 +1324,7 @@ final class BootstrapSchemaGateTest extends TestCase
 		self::assertStringContainsString($operationUuid, $html);
 		self::assertStringContainsString('succeeded:applied', $html);
 		self::assertStringContainsString('provider_id_mismatch', $html);
-		self::assertStringContainsString('51177998', $html);
+		self::assertStringContainsString('81177998', $html);
 		self::assertStringNotContainsString('These payments remain locked', $html);
 		self::assertStringContainsString('Manual financial review is required', $html);
 		self::assertStringNotContainsString('Check Helcim once', $html);
@@ -1301,7 +1536,7 @@ final class BootstrapSchemaGateTest extends TestCase
 					'gateway' => 'ys_helcim',
 					'remote_status' => 'succeeded',
 					'local_status' => 'pending',
-					'vendor_transaction_id' => '51178919',
+					'vendor_transaction_id' => '81178919',
 					'active_scope_key' => null,
 				];
 			}

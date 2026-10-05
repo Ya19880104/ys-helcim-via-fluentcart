@@ -84,7 +84,7 @@ final class PurchaseRuntimeTest extends TestCase
 
         $storedTransaction = OrderTransaction::allRecords()[20];
         self::assertSame(Status::TRANSACTION_SUCCEEDED, $storedTransaction['status']);
-        self::assertSame('51177123', $storedTransaction['vendor_charge_id']);
+        self::assertSame('81177123', $storedTransaction['vendor_charge_id']);
         self::assertArrayNotHasKey('card_token', $storedTransaction['meta']);
         self::assertStringNotContainsString(
             'ephemeral-card-token',
@@ -204,7 +204,7 @@ final class PurchaseRuntimeTest extends TestCase
 
         self::assertSame('succeeded', $repaired['status'], json_encode($repaired, JSON_THROW_ON_ERROR));
         self::assertSame(1, $apiCalls);
-        self::assertSame('51177123', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+        self::assertSame('81177123', OrderTransaction::allRecords()[20]['vendor_charge_id']);
     }
 
     public function testTransactionSaveWithoutOrderPaidProofRetriesDurableBinderWithoutRecharging(): void
@@ -264,7 +264,7 @@ final class PurchaseRuntimeTest extends TestCase
 
         $first = $runtime->executeInline($this->transaction(), 'card-token');
         self::assertSame('attention_required', $first['status']);
-        self::assertSame('51177123', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+        self::assertSame('81177123', OrderTransaction::allRecords()[20]['vendor_charge_id']);
 
         // FluentCart 1.5.2 resets the existing transaction to pending on a
         // checkout retry, but preserves vendor_charge_id in its fill payload.
@@ -285,7 +285,7 @@ final class PurchaseRuntimeTest extends TestCase
     {
         $record = OrderTransaction::allRecords()[20];
         $record['status'] = Status::TRANSACTION_SUCCEEDED;
-        $record['vendor_charge_id'] = '51177123';
+        $record['vendor_charge_id'] = '81177123';
         OrderTransaction::seed($record);
         $order = Order::query()->where('id', 10)->first();
         self::assertInstanceOf(Order::class, $order);
@@ -299,7 +299,7 @@ final class PurchaseRuntimeTest extends TestCase
         $result = $runtime->executeInline($this->transaction(), '');
 
         self::assertSame('succeeded', $result['status']);
-        self::assertSame('51177123', $result['provider_transaction_id']);
+        self::assertSame('81177123', $result['provider_transaction_id']);
         self::assertSame(0, $apiCalls);
         self::assertCount(0, $this->database->allRows());
 
@@ -326,7 +326,7 @@ final class PurchaseRuntimeTest extends TestCase
             'transaction' => [
                 'status' => 'APPROVED',
                 'type' => 'purchase',
-                'transactionId' => '51177123',
+                'transactionId' => '81177123',
                 'amount' => '21.00',
                 'currency' => 'USD',
             ],
@@ -339,7 +339,7 @@ final class PurchaseRuntimeTest extends TestCase
 
         self::assertSame('succeeded', $result['status']);
         self::assertSame(1, $apiCalls, 'Reconciliation must never invoke payment/purchase.');
-        self::assertSame('51177123', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+        self::assertSame('81177123', OrderTransaction::allRecords()[20]['vendor_charge_id']);
     }
 
     public function testReconcileRejectsWrongCorrelationWithoutBinding(): void
@@ -352,7 +352,7 @@ final class PurchaseRuntimeTest extends TestCase
             'transaction' => [
                 'status' => 'APPROVED',
                 'type' => 'purchase',
-                'transactionId' => '51177123',
+                'transactionId' => '81177123',
                 'amount' => '21.00',
                 'currency' => 'USD',
             ],
@@ -417,7 +417,7 @@ final class PurchaseRuntimeTest extends TestCase
             'transaction' => [
                 'status' => 'APPROVED',
                 'type' => 'purchase',
-                'transactionId' => '51177123',
+                'transactionId' => '81177123',
                 'amount' => '21.00',
                 'currency' => 'USD',
             ],
@@ -440,7 +440,7 @@ final class PurchaseRuntimeTest extends TestCase
         $record = OrderTransaction::allRecords()[20];
         $record['payment_method'] = 'ys_helcim';
         $record['status'] = Status::TRANSACTION_SUCCEEDED;
-        $record['vendor_charge_id'] = '51177123';
+        $record['vendor_charge_id'] = '81177123';
         $record['meta'] = [
             'existing' => 'kept',
             'ys_helcim_checkout_token' => 'one-time-checkout-token',
@@ -474,7 +474,7 @@ final class PurchaseRuntimeTest extends TestCase
             self::OPERATION_UUID,
             'processing',
             'succeeded',
-            ['vendor_transaction_id' => '51177123']
+            ['vendor_transaction_id' => '81177123']
         ));
 
         $runtime = new YSHelcimJsPurchaseRuntime(
@@ -498,7 +498,7 @@ final class PurchaseRuntimeTest extends TestCase
             'transaction' => [
                 'status' => 'APPROVED',
                 'type' => 'purchase',
-                'transactionId' => '51177123',
+                'transactionId' => '81177123',
                 'amount' => '21.00',
                 'currency' => 'USD',
             ],
@@ -587,7 +587,7 @@ final class PurchaseRuntimeTest extends TestCase
         return [
             'status' => 'APPROVED',
             'type' => 'purchase',
-            'transactionId' => '51177123',
+            'transactionId' => '81177123',
             'amount' => '21.00',
             'currency' => 'USD',
             'cardToken' => 'provider-returned-token',

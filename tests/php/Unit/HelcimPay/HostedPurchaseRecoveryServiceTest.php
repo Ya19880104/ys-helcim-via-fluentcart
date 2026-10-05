@@ -106,13 +106,13 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
     public function testExactLateApprovalBindsAReleasedCanceledCheckoutEndToEnd(): void
     {
         $this->releaseSeededOperation();
-        $this->lookupResult = [$this->providerTransaction('APPROVED', '51178851')];
+        $this->lookupResult = [$this->providerTransaction('APPROVED', '81178851')];
 
         $result = $this->service->recover(self::OPERATION_UUID);
 
         self::assertIsArray($result);
         self::assertSame('succeeded', $result['status'], var_export($result, true));
-        self::assertSame('51178851', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+        self::assertSame('81178851', OrderTransaction::allRecords()[20]['vendor_charge_id']);
         self::assertSame('paid', Order::allRecords()[10]['payment_status']);
         $row = $this->repository->findByUuid(self::OPERATION_UUID);
         self::assertSame('succeeded', $row['remote_status']);
@@ -139,7 +139,7 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
     public function testLateDeclineChangesNothingOnAReleasedCheckout(): void
     {
         $this->releaseSeededOperation();
-        $this->lookupResult = [$this->providerTransaction('DECLINED', '51178852')];
+        $this->lookupResult = [$this->providerTransaction('DECLINED', '81178852')];
 
         $result = $this->service->recover(self::OPERATION_UUID);
 
@@ -150,7 +150,7 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
 
     public function testExactApprovedLookupReconcilesThroughTheDurableRuntime(): void
     {
-        $this->lookupResult = [$this->providerTransaction('APPROVED', '51178841')];
+        $this->lookupResult = [$this->providerTransaction('APPROVED', '81178841')];
 
         $result = $this->service->recover(self::OPERATION_UUID);
 
@@ -158,7 +158,7 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
         self::assertSame('succeeded', $result['status'], var_export($result, true));
         self::assertSame(1, $this->lookupCalls);
         self::assertSame(Status::TRANSACTION_SUCCEEDED, OrderTransaction::allRecords()[20]['status']);
-        self::assertSame('51178841', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+        self::assertSame('81178841', OrderTransaction::allRecords()[20]['vendor_charge_id']);
         self::assertSame('paid', Order::allRecords()[10]['payment_status']);
         self::assertSame('succeeded', $this->repository->findByUuid(self::OPERATION_UUID)['remote_status']);
         self::assertNotNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
@@ -168,19 +168,19 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
 	public function testExactApprovedLookupCanRecoverBeforeCheckoutTokenExpiry(): void
 	{
 		$this->setOperationCreatedAt('2026-07-21 05:54:00');
-		$this->lookupResult = [$this->providerTransaction('APPROVED', '51178846')];
+		$this->lookupResult = [$this->providerTransaction('APPROVED', '81178846')];
 
 		$result = $this->service->recover(self::OPERATION_UUID);
 
 		self::assertIsArray($result);
 		self::assertSame('succeeded', $result['status']);
-		self::assertSame('51178846', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+		self::assertSame('81178846', OrderTransaction::allRecords()[20]['vendor_charge_id']);
 		self::assertSame('paid', Order::allRecords()[10]['payment_status']);
 	}
 
     public function testExactDeclinedLookupReleasesScopeWithoutMarkingPaid(): void
     {
-        $this->lookupResult = [$this->providerTransaction('DECLINED', '51178842')];
+        $this->lookupResult = [$this->providerTransaction('DECLINED', '81178842')];
 
         $result = $this->service->recover(self::OPERATION_UUID);
 
@@ -197,7 +197,7 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
 	public function testExactDeclineBeforeCheckoutTokenExpiryDoesNotReleaseScope(): void
 	{
 		$this->setOperationCreatedAt('2026-07-21 05:54:00');
-		$this->lookupResult = [$this->providerTransaction('DECLINED', '51178847')];
+		$this->lookupResult = [$this->providerTransaction('DECLINED', '81178847')];
 
 		$result = $this->service->recover(self::OPERATION_UUID);
 
@@ -280,7 +280,7 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
 
     public function testTransactionAppearingWhileClosingIsReconciledInsteadOfClosed(): void
     {
-        $this->lookupQueue = [[], [$this->providerTransaction('APPROVED', '51178853')]];
+        $this->lookupQueue = [[], [$this->providerTransaction('APPROVED', '81178853')]];
 
         $closing = $this->service->recover(self::OPERATION_UUID);
 
@@ -289,7 +289,7 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
         self::assertSame('provider_transaction_present', $closing['reason']);
         self::assertSame('processing', $this->repository->findByUuid(self::OPERATION_UUID)['remote_status']);
 
-        $this->lookupResult = [$this->providerTransaction('APPROVED', '51178853')];
+        $this->lookupResult = [$this->providerTransaction('APPROVED', '81178853')];
         $approved = $this->service->recover(self::OPERATION_UUID);
 
         self::assertSame('succeeded', $approved['status']);
@@ -315,7 +315,7 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
 
     public function testUndocumentedCollectionEnvelopeIsRejectedFailClosed(): void
     {
-        $this->lookupResult = ['data' => [$this->providerTransaction('APPROVED', '51178845')]];
+        $this->lookupResult = ['data' => [$this->providerTransaction('APPROVED', '81178845')]];
 
         $result = $this->service->recover(self::OPERATION_UUID);
 
@@ -332,17 +332,17 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
 		self::assertSame('canceled', $empty['status']);
 		$this->assertTerminalMetaPurged();
 
-		$this->lookupResult = [$this->providerTransaction('APPROVED', '51178848')];
+		$this->lookupResult = [$this->providerTransaction('APPROVED', '81178848')];
 		$approved = $this->service->recover(self::OPERATION_UUID);
 		self::assertIsArray($approved);
 		self::assertSame('succeeded', $approved['status']);
-		self::assertSame('51178848', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+		self::assertSame('81178848', OrderTransaction::allRecords()[20]['vendor_charge_id']);
 		self::assertSame('paid', Order::allRecords()[10]['payment_status']);
 
 		$duplicate = $this->service->recover(self::OPERATION_UUID);
 		self::assertIsArray($duplicate);
 		self::assertSame('succeeded', $duplicate['status']);
-		self::assertSame('51178848', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+		self::assertSame('81178848', OrderTransaction::allRecords()[20]['vendor_charge_id']);
 	}
 
 	public function testPersistedRemoteSuccessResumesLocalBindingWithoutProviderLookup(): void
@@ -351,7 +351,7 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
 			self::OPERATION_UUID,
 			'processing',
 			'succeeded',
-			['vendor_transaction_id' => '51178849']
+			['vendor_transaction_id' => '81178849']
 		));
 
 		$result = $this->service->recover(self::OPERATION_UUID);
@@ -359,7 +359,7 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
 		self::assertIsArray($result);
 		self::assertSame('succeeded', $result['status']);
 		self::assertSame(0, $this->lookupCalls);
-		self::assertSame('51178849', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+		self::assertSame('81178849', OrderTransaction::allRecords()[20]['vendor_charge_id']);
 		self::assertSame('paid', Order::allRecords()[10]['payment_status']);
 		self::assertNotNull($this->repository->findByUuid(self::OPERATION_UUID)['active_scope_key']);
 	}
@@ -376,7 +376,7 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
 			self::OPERATION_UUID,
 			'canceled',
 			'succeeded',
-			['vendor_transaction_id' => '51178853']
+			['vendor_transaction_id' => '81178853']
 		));
 		$this->database->update(
 			'wp_ys_helcim_operations',
@@ -393,7 +393,7 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
 		self::assertIsArray($result);
 		self::assertSame('succeeded', $result['status']);
 		self::assertSame(0, $this->lookupCalls, 'durable success never queries or mutates Helcim again');
-		self::assertSame('51178853', OrderTransaction::allRecords()[20]['vendor_charge_id']);
+		self::assertSame('81178853', OrderTransaction::allRecords()[20]['vendor_charge_id']);
 		self::assertSame('paid', Order::allRecords()[10]['payment_status']);
 		$row = $this->repository->findByUuid(self::OPERATION_UUID);
 		self::assertSame('succeeded', $row['remote_status']);
@@ -404,8 +404,8 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
     public function testMalformedOrAmbiguousLookupNeverReleasesTheScope(): void
     {
         $this->lookupResult = [
-            $this->providerTransaction('APPROVED', '51178843'),
-            $this->providerTransaction('APPROVED', '51178844'),
+            $this->providerTransaction('APPROVED', '81178843'),
+            $this->providerTransaction('APPROVED', '81178844'),
         ];
 
         $result = $this->service->recover(self::OPERATION_UUID);
@@ -419,7 +419,7 @@ final class HostedPurchaseRecoveryServiceTest extends TestCase
 
 	public function testDeclineWithoutAnExactProviderTransactionIdNeverReleasesTheScope(): void
 	{
-		$decline = $this->providerTransaction('DECLINED', '51178850');
+		$decline = $this->providerTransaction('DECLINED', '81178850');
 		unset($decline['transactionId']);
 		$this->lookupResult = [$decline];
 

@@ -81,7 +81,7 @@ final class RefundResolutionRepositoryTest extends TestCase
         self::assertFalse($result['replayed']);
         self::assertSame('succeeded', $this->db->operations[self::OPERATION_UUID]['remote_status']);
         self::assertSame('pending', $this->db->operations[self::OPERATION_UUID]['local_status']);
-        self::assertSame('51177094', $this->db->operations[self::OPERATION_UUID]['vendor_transaction_id']);
+        self::assertSame('81177094', $this->db->operations[self::OPERATION_UUID]['vendor_transaction_id']);
         self::assertSame(self::scope(10), $this->db->operations[self::OPERATION_UUID]['active_scope_key']);
         self::assertNull($this->db->operations[self::OPERATION_UUID]['remote_error_code']);
         self::assertNull($this->db->operations[self::OPERATION_UUID]['encrypted_material']);
@@ -235,7 +235,7 @@ final class RefundResolutionRepositoryTest extends TestCase
             'active_scope_key' => null,
             'remote_status' => 'succeeded',
             'local_status' => 'applied',
-            'vendor_transaction_id' => '51177094',
+            'vendor_transaction_id' => '81177094',
         ]);
 
         $result = $this->repository->commitResolution($this->resolution());
@@ -255,7 +255,7 @@ final class RefundResolutionRepositoryTest extends TestCase
             'order_id' => 99,
             'uuid' => self::OTHER_UUID,
             'transaction_type' => 'refund',
-            'vendor_charge_id' => '51177094',
+            'vendor_charge_id' => '81177094',
             'payment_method' => 'ys_helcim',
             'payment_mode' => 'test',
         ];
@@ -399,7 +399,7 @@ final class RefundResolutionRepositoryTest extends TestCase
             'active_scope_key' => null,
             'remote_status' => 'succeeded',
             'local_status' => 'applied',
-            'vendor_transaction_id' => '51177094',
+            'vendor_transaction_id' => '81177094',
         ]);
 
         $result = $this->repository->commitResolution($this->resolution());
@@ -416,7 +416,7 @@ final class RefundResolutionRepositoryTest extends TestCase
             'order_id' => 99,
             'uuid' => self::OTHER_UUID,
             'transaction_type' => 'refund',
-            'vendor_charge_id' => '51177094',
+            'vendor_charge_id' => '81177094',
             'payment_method' => 'ys_helcim',
             'payment_mode' => 'live',
         ];
@@ -436,7 +436,7 @@ final class RefundResolutionRepositoryTest extends TestCase
             'order_id' => 10,
             'uuid' => self::OPERATION_UUID,
             'transaction_type' => 'refund',
-            'vendor_charge_id' => '51177094',
+            'vendor_charge_id' => '81177094',
             'payment_method' => 'ys_helcim_js',
             'payment_mode' => 'test',
         ];
@@ -471,7 +471,7 @@ final class RefundResolutionRepositoryTest extends TestCase
         yield 'actor changed' => [['actor_user_id' => 8], [], []];
         yield 'phrase changed' => [['phrase_hash' => str_repeat('d', 64)], [], []];
         yield 'proof changed' => [['proof_digest' => str_repeat('d', 64)], [], []];
-        yield 'source changed' => [['source_transaction_id' => '51177060'], [], []];
+        yield 'source changed' => [['source_transaction_id' => '81177060'], [], []];
         yield 'action changed' => [['action' => 'negative_unlock'], [], []];
         yield 'state updated at changed' => [['state_updated_at' => '2026-07-21 00:59:59'], [], []];
         yield 'remote state changed' => [[], ['remote_status' => 'processing'], []];
@@ -479,7 +479,7 @@ final class RefundResolutionRepositoryTest extends TestCase
         yield 'scope unlocked' => [[], ['active_scope_key' => null], []];
         yield 'raw scope rejected' => [[], ['scope_key' => 'refund-order:10', 'active_scope_key' => 'refund-order:10'], []];
         yield 'scope changed' => [[], ['active_scope_key' => self::scope(11)], []];
-        yield 'vendor id already set' => [[], ['vendor_transaction_id' => '51177094'], []];
+        yield 'vendor id already set' => [[], ['vendor_transaction_id' => '81177094'], []];
         yield 'requested mode changed' => [[], [], ['payment_mode' => 'live']];
         yield 'requested gateway changed' => [[], [], ['gateway' => 'ys_helcim']];
         yield 'requested local status changed' => [[], [], ['local_status' => 'failed']];
@@ -510,7 +510,7 @@ final class RefundResolutionRepositoryTest extends TestCase
         $binding = [
             'challenge_hash' => self::CHALLENGE_HASH,
             'operation_uuid' => self::OPERATION_UUID,
-            'candidate_transaction_id' => '51177094',
+            'candidate_transaction_id' => '81177094',
             'actor_user_id' => 7,
             'phrase_hash' => self::PHRASE_HASH,
             'parent_attested' => false,
@@ -522,7 +522,7 @@ final class RefundResolutionRepositoryTest extends TestCase
         foreach ([
             ['actor_user_id' => 8],
             ['phrase_hash' => str_repeat('d', 64)],
-            ['candidate_transaction_id' => '51177095'],
+            ['candidate_transaction_id' => '81177095'],
             ['challenge_hash' => str_repeat('d', 64)],
             ['parent_attested' => true],
         ] as $change) {
@@ -537,7 +537,7 @@ final class RefundResolutionRepositoryTest extends TestCase
         $binding = [
             'challenge_hash' => self::CHALLENGE_HASH,
             'operation_uuid' => self::OPERATION_UUID,
-            'candidate_transaction_id' => '51177094',
+            'candidate_transaction_id' => '81177094',
             'actor_user_id' => 7,
             'phrase_hash' => self::PHRASE_HASH,
             'parent_attested' => false,
@@ -566,7 +566,7 @@ final class RefundResolutionRepositoryTest extends TestCase
                 $db->operations[self::OPERATION_UUID]['operation_type'] = 'reverse';
             },
             static function (RefundResolutionWpdb $db): void {
-                $db->operations[self::OPERATION_UUID]['source_vendor_transaction_id'] = '51177060';
+                $db->operations[self::OPERATION_UUID]['source_vendor_transaction_id'] = '81177060';
             },
             static function (RefundResolutionWpdb $db): void {
                 $db->operations[self::OPERATION_UUID]['scope_key'] = 'other-scope';
@@ -617,7 +617,7 @@ final class RefundResolutionRepositoryTest extends TestCase
             'transaction_id' => 20,
             'amount' => 2100,
             'currency' => 'USD',
-            'source_vendor_transaction_id' => '51177061',
+            'source_vendor_transaction_id' => '81177061',
             'vendor_transaction_id' => null,
             'remote_status' => 'indeterminate',
             'local_status' => 'pending',
@@ -639,8 +639,8 @@ final class RefundResolutionRepositoryTest extends TestCase
             'operation_uuid' => self::OPERATION_UUID,
             'gateway' => 'ys_helcim_js',
             'payment_mode' => 'test',
-            'candidate_transaction_id' => '51177094',
-            'source_transaction_id' => '51177061',
+            'candidate_transaction_id' => '81177094',
+            'source_transaction_id' => '81177061',
             'action' => 'resolve_positive',
             'proof_digest' => self::PROOF_DIGEST,
             'state_updated_at' => '2026-07-21 01:00:00',
@@ -663,8 +663,8 @@ final class RefundResolutionRepositoryTest extends TestCase
             'operation_type' => 'refund',
             'local_status' => 'pending',
             'active_scope_key' => self::scope(10),
-            'candidate_transaction_id' => '51177094',
-            'source_transaction_id' => '51177061',
+            'candidate_transaction_id' => '81177094',
+            'source_transaction_id' => '81177061',
             'action' => 'resolve_positive',
             'proof_digest' => self::PROOF_DIGEST,
             'state_updated_at' => '2026-07-21 01:00:00',

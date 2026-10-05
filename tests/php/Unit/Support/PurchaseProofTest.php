@@ -35,7 +35,7 @@ final class PurchaseProofTest extends TestCase
     {
         self::assertSame(
             'transaction_id_mismatch',
-            YSHelcimPurchaseProof::failureReason(self::validResponse(), 1050, 'USD', '51177062')
+            YSHelcimPurchaseProof::failureReason(self::validResponse(), 1050, 'USD', '81177062')
         );
     }
 
@@ -58,7 +58,7 @@ final class PurchaseProofTest extends TestCase
         yield 'missing' => [null];
         yield 'zero' => [0];
         yield 'negative' => [-1];
-        yield 'mixed' => ['tx-51177061'];
+        yield 'mixed' => ['tx-81177061'];
         yield 'scientific' => ['1e3'];
         yield 'above platform max' => [(string) PHP_INT_MAX . '0'];
     }
@@ -68,7 +68,7 @@ final class PurchaseProofTest extends TestCase
         return [
             'status' => 'APPROVED',
             'type' => 'purchase',
-            'transactionId' => '51177061',
+            'transactionId' => '81177061',
             'amount' => '10.50',
             'currency' => 'USD',
         ];

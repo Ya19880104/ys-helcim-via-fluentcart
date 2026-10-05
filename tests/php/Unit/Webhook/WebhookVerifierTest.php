@@ -11,7 +11,7 @@ final class WebhookVerifierTest extends TestCase
 {
     public function testOfficialSignatureFormulaAcceptsCaseInsensitiveArrayHeadersAndMultipleCandidates(): void
     {
-        $body = '{"type":"cardTransaction","id":51177061}';
+        $body = '{"type":"cardTransaction","id":81177061}';
         $timestamp = (string) time();
         $token = base64_encode('fixed-verifier-key');
         $signature = base64_encode(hash_hmac(
@@ -73,7 +73,7 @@ final class WebhookVerifierTest extends TestCase
     /** @return array{array<string,string>,string,string} */
     private function vector(): array
     {
-        $body = '{"type":"cardTransaction","id":"51177061"}';
+        $body = '{"type":"cardTransaction","id":"81177061"}';
         $timestamp = (string) time();
         $key = 'fixed-verifier-key';
         $signature = base64_encode(hash_hmac(

@@ -18,6 +18,7 @@ use FluentCart\App\Modules\PaymentMethods\Core\AbstractPaymentGateway;
 use FluentCart\App\Services\Payments\PaymentInstance;
 use YangSheep\Helcim\FluentCart\Checkout\YSHelcimPaymentStatusService;
 use YangSheep\Helcim\FluentCart\Settings\YSHelcimSecretStorage;
+use YangSheep\Helcim\FluentCart\Support\YSHelcimDeclineMessage;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimLogger;
 use YangSheep\Helcim\FluentCart\Webhook\YSHelcimWebhookDeliveryUrl;
 use YangSheep\Helcim\FluentCart\YSHelcimFctBootstrap;
@@ -350,6 +351,15 @@ class YSHelcimPayGateway extends AbstractPaymentGateway {
 					'declined_verifying' => __( 'The payment was declined. Its final result is being verified. Do not retry this payment yet.', 'ys-helcim-via-fluentcart' ),
 					'still_confirming' => __( 'We are still confirming your payment. Please do not pay again. You will receive an email receipt once it is confirmed, or you can contact the store.', 'ys-helcim-via-fluentcart' ),
 					'canceled'       => __( 'The payment was canceled or failed. Please try again.', 'ys-helcim-via-fluentcart' ),
+					'decline_store'        => YSHelcimDeclineMessage::shopperMessage( 'store' ),
+					'decline_cvv'          => YSHelcimDeclineMessage::shopperMessage( 'cvv' ),
+					'decline_expired'      => YSHelcimDeclineMessage::shopperMessage( 'expired' ),
+					'decline_invalid_card' => YSHelcimDeclineMessage::shopperMessage( 'invalid_card' ),
+					'decline_funds'        => YSHelcimDeclineMessage::shopperMessage( 'funds' ),
+					'decline_address'      => YSHelcimDeclineMessage::shopperMessage( 'address' ),
+					'decline_retry'        => YSHelcimDeclineMessage::shopperMessage( 'retry' ),
+					'decline_issuer'       => YSHelcimDeclineMessage::shopperMessage( 'issuer' ),
+					'decline_generic'      => YSHelcimDeclineMessage::shopperMessage( YSHelcimDeclineMessage::GENERIC ),
 				),
 			),
 		);

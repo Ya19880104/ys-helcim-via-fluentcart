@@ -141,7 +141,7 @@ final class YSHelcimRefundService {
 				)
 			);
 			if ( is_wp_error( $existing ) ) {
-				return $existing;
+				return $this->explainScopeBusy( $existing, $identity['order_id'] );
 			}
 		} elseif ( ! $this->rowMatchesRequest( $existing, $identity, 'refund', $fingerprint ) ) {
 			return self::operationConflict();
@@ -302,23 +302,8 @@ final class YSHelcimRefundService {
 
 	/** @return YSHelcimRefundResult|\WP_Error */
 	private function attemptVerifiedReverse( array $refund_row, array $request, string $refund_uuid ) {
-		$is_full_unrefunded_charge = 0 === $request['refunded_total']
-			&& $request['amount'] === $request['transaction_total']
-			&& $request['remaining_refundable'] === $request['transaction_total'];
-
-		if ( ! $is_full_unrefunded_charge ) {
-			return $this->persistResult(
-				$refund_row,
-				new YSHelcimRefundResult(
-					YSHelcimRefundResult::FAILED,
-					null,
-					'open_batch_partial_refund_unsupported',
-					'An open-batch payment can only be reversed in full.'
-				),
-				$refund_uuid
-			);
-		}
-
+		// 先證明來源交易與批次狀態，才決定怎麼回報：Helcim 拒退只代表字串符合，
+		// 不代表付款一定還沒結算（例如這筆已在 Helcim 後台被退款／作廢過）。
 		$source_id = $request['vendor_transaction_id'];
 		$source    = $this->readProvider(
 			'card-transactions/' . rawurlencode( $source_id ),
@@ -339,9 +324,39 @@ final class YSHelcimRefundService {
 			! is_array( $batch ) ||
 			$batch_id !== self::positiveIntegerString( $batch['id'] ?? null ) ||
 			! array_key_exists( 'closed', $batch ) ||
-			false !== $batch['closed']
+			! is_bool( $batch['closed'] )
 		) {
 			return $this->failUnprovenReverse( $refund_row, $refund_uuid );
+		}
+		if ( true === $batch['closed'] ) {
+			return $this->persistResult(
+				$refund_row,
+				new YSHelcimRefundResult(
+					YSHelcimRefundResult::FAILED,
+					null,
+					'batch_closed_refund_rejected',
+					'Helcim rejected the refund although the payment has already settled; no reversal was sent.'
+				),
+				$refund_uuid
+			);
+		}
+
+		// 已證明批次仍開著，才適用「未結算只能全額作廢」的規則與文案。
+		$is_full_unrefunded_charge = 0 === $request['refunded_total']
+			&& $request['amount'] === $request['transaction_total']
+			&& $request['remaining_refundable'] === $request['transaction_total'];
+
+		if ( ! $is_full_unrefunded_charge ) {
+			return $this->persistResult(
+				$refund_row,
+				new YSHelcimRefundResult(
+					YSHelcimRefundResult::FAILED,
+					null,
+					'open_batch_partial_refund_unsupported',
+					'An open-batch payment can only be reversed in full.'
+				),
+				$refund_uuid
+			);
 		}
 
 		$child_uuid = strtolower( trim( (string) ( $this->uuid_factory )() ) );
@@ -407,6 +422,26 @@ final class YSHelcimRefundService {
 			&& $request['transaction_total'] === YSHelcimProviderProof::amountToCents( $source['amount'] ?? null )
 			&& $request['currency'] === strtoupper( trim( (string) ( $source['currency'] ?? '' ) ) )
 			&& null !== self::positiveIntegerString( $source['cardBatchId'] ?? null );
+	}
+
+	/**
+	 * 退款鎖若被「Helcim 後台已退款／作廢、FluentCart 還沒記錄」的外部列佔住，
+	 * 回報具體原因與解法，而不是泛用的「另一筆作業進行中」。
+	 */
+	private function explainScopeBusy( \WP_Error $error, int $order_id ): \WP_Error {
+		if ( 'ys_helcim_scope_busy' !== $error->get_error_code() ) {
+			return $error;
+		}
+		$active = $this->operations->findActiveByScope( 'refund-order:' . $order_id );
+		if ( ! is_array( $active ) || ! YSHelcimProviderRefundSync::isProviderRecordedOperation( $active ) ) {
+			return $error;
+		}
+
+		return new \WP_Error(
+			'ys_helcim_provider_refund_pending',
+			__( 'A refund or void made directly in Helcim for this order is not recorded in FluentCart yet. Use “Sync refunds from Helcim” to finish recording it before refunding again.', 'ys-helcim-via-fluentcart' ),
+			array( 'status' => 409 )
+		);
 	}
 
 	/** @return YSHelcimRefundResult */

@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] - 2026-10-05
+
+### Changed
+
+- **Refund** on a FluentCart order page now opens the Helcim refund panel in a dialog on that page instead of leaving it. The dialog has the same form, checks and actions as the **Helcim Refunds** page, including **Sync refunds from Helcim**, and the refund itself still goes to Helcim first, exactly as before. FluentCart's own refund dialog stays disabled for Helcim payments.
+- The dialog closes with its close button, a click outside it, or Escape. It stays open while a refund, void, sync or reconciliation is still being processed and says so. When something was refunded, voided or synced, closing it reloads the order page so the payment status is current.
+- Ctrl-click, Cmd-click, Shift-click or middle-click on **Helcim remote-first refund** still opens the full **Helcim Refunds** page in a new tab. That page and its menu entry under FluentCart remain available, for example to look up an order by its number.
+- The Traditional Chinese (zh_TW) translation now covers the text that was still in English: the Helcim refund panel and dialog, **Resolve an indeterminate Helcim refund**, checkout and payment messages, payment settings, and error messages.
+
+### Fixed
+
+- Administrators now see **Resolve an indeterminate Helcim refund** in the Helcim refund panel, on the **Helcim Refunds** page and in the order-page dialog, when Helcim's result for a refund is unknown. Since 1.1.0 this section stayed hidden on live sites because the panel did not recognize the administrator setting the way WordPress delivers it to the page. Inspecting and committing the Helcim evidence works as before, the server still requires an administrator with FluentCart refund permission, and other refund staff still do not see the section.
+- **Resolve an indeterminate Helcim refund** accepts only a Helcim refund or void on the same Helcim invoice as the order's original payment. Helcim's transaction records do not name the transaction they refund, so the administrator's attestation used to be the only link between the two, and a same-amount refund of another order could be recorded on this one. The server now requires both Helcim records to carry the same invoice number, and the panel shows the candidate's type, amount and Helcim invoice number before you attest. A payment whose Helcim record has no invoice number cannot be resolved this way; compare it with Helcim instead.
+- The resolution also reads every Helcim transaction on that invoice and applies the rules **Sync refunds from Helcim** already uses: a refund that Helcim later voided, or a void while the invoice also lists a refund, is rejected, and so is any candidate when Helcim's list cannot be read completely.
+- **Sync refunds from Helcim** is unavailable while a refund, void, reconciliation or resolution is still being processed, and a refund cannot be submitted while a sync runs. After a refund or void completes, a sync no longer re-enables **Submit Helcim refund**; reload the order to start another refund. Before, a sync that finished after the refund could re-enable the button, prefill the remaining amount and replace the result message, which invited a second refund.
+- Status messages now appear in the order-page refund dialog: the refund result, error messages, the reminder that a request is still being processed, and why a refund is blocked. FluentCart removes WordPress notices when its pages load, and that also removed the dialog's message area. The **Helcim Refunds** page was not affected.
+
+## [1.1.2] - 2026-10-04
+
+### Fixed
+
+- Inline card declines are recognized immediately. A production decline (`Transaction Declined: SUSPECTED FRAUD`) arrived as HTTP 500 carrying the declined transaction record itself (status `DECLINED`, its own transaction ID and the error text) instead of the documented `response: 0` body, so the synchronous purchase recorded the attempt as indeterminate and the shopper waited on "still being verified" until the webhook arrived. Both shapes are now definitive declines; the record shape only when its status, type, transaction ID, amount and currency match the exact charge, and any mismatch stays indeterminate.
+- Inline decline detection is stricter. A Helcim response that contradicts itself (a decline code next to an approved transaction record, or a success code next to a declined one), or a declined transaction record that does not carry this payment attempt's invoice number, is no longer accepted as a decline. The attempt stays unconfirmed until Helcim's own records settle it, so a declined earlier attempt on the same order can never be mistaken for the current one.
+- Opening an order from the FluentCart Orders list now hands its Refund button over to the Helcim refund workflow. FluentCart 1.6 switches to the order without reloading the page, so the takeover did not run: the native refund dialog stayed available, and submitting it ended with "Refund amount exceeds the maximum refundable amount for this transaction." Opening or reloading the order page directly was not affected.
+- The native Refund button is now really hidden while the Helcim refund action replaces it; FluentCart's button styling kept both buttons visible.
+- Clicking Refund while the plugin is still checking whether the order was paid through Helcim now says so and asks you to try again in a moment, instead of showing "Request failed."
+- Refunds that Helcim rejects are explained precisely, each with its own error code, and only after the original payment and its settlement batch have been checked with Helcim. Before the payment settles, a partial refund explains that only the full amount can be cancelled. If the plugin cannot confirm that the payment is still unsettled, no void is sent and you are asked to try again in a few minutes. If the payment has already settled, the panel says that no money moved and points to **Sync refunds from Helcim** in case the payment was already refunded or voided in Helcim.
+- **Reconcile** keeps the plain-language explanation when it reads back a refund that failed.
+- The decline reason written to the order activity log is cleaned first: markup is removed, long card-like numbers are masked, and the text is shortened.
+- The Helcim Refunds panel always shows the order you loaded last; a slower, earlier lookup can no longer replace it.
+
+### Changed
+
+- Card declines explain what to do next. Helcim's decline text is mapped to one actionable category (security code, expired card, invalid card number, insufficient funds, billing address, temporary processing problem, bank decline, store-side problem, or a generic decline) and every message states that no payment was taken. Fraud, lost/stolen and similar reasons are shown only as a bank decline. This applies to server-side inline purchase declines, Helcim.js verification declines, and HelcimPay.js window declines after the server has proven them; a Helcim.js configuration error still shows Helcim's own text.
+- An inline or hash-verified hosted decline writes Helcim's decline reason and declined transaction ID to the order activity log ("Helcim declined a payment attempt") so the store can see why a customer was declined.
+- The Helcim Refunds panel explains unsettled payments in plain language: a full refund before Helcim settles the batch is reported as a cancelled (voided) payment with no processing fee, a partial refund before settlement explains that only the full amount can be cancelled until the payment settles, and a completed refund states the usual 5–10 business days to reach the card.
+
+### Added
+
+- Refunds and voids made directly in the Helcim dashboard are now recorded in FluentCart from Helcim's own transaction records: automatically when the signed Helcim webhook arrives, or on demand with **Sync refunds from Helcim** in the Helcim Refunds panel for the order shown. Each Helcim transaction is recorded once. The refund reason the customer can see only names the Helcim transaction; the amount, the Helcim user and the time go to the order activity log.
+- A Helcim record is written only when it matches the original payment's order, account, remaining refundable amount, and FluentCart's refund accounting. A void when Helcim also lists a refund for the same payment (for example a refund that was voided right after it was made), a refund that was later voided, or anything else that does not line up is reported for review in the panel and the error log instead of changing the order; a Helcim transaction list too long to check completely is retried later.
+- If Helcim has completed a refund or void that FluentCart could not finish recording, new refunds for that order stay blocked, the Helcim Refunds panel explains why, and an administrator notice lists the order with the next step: correct the order accounting if needed, then select **Sync refunds from Helcim**.
+- For orders paid before the plugin kept its payment journal, **Sync refunds from Helcim** explains that refunds or voids made in Helcim cannot be synced automatically and asks you to compare the order with Helcim before refunding.
+
 ## [1.1.1] - 2026-09-16
 
 ### Fixed
