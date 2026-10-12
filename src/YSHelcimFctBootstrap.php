@@ -43,6 +43,7 @@ use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundResolutionSchema;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundResolutionService;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundRestController;
 use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundService;
+use YangSheep\Helcim\FluentCart\Refund\YSHelcimRefundTransactionStatus;
 use YangSheep\Helcim\FluentCart\Settings\YSHelcimWebhookVerifierModeMigration;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimApiClient;
 use YangSheep\Helcim\FluentCart\Support\YSHelcimLogger;
@@ -1355,6 +1356,11 @@ final class YSHelcimFctBootstrap {
 				// 作業日誌上線前付款的訂單沒有 purchase 作業：數出 FluentCart 上的 Helcim 成功付款，面板才能說清楚原因。
 				array( $this, 'countLegacyHelcimCharges' )
 			);
+			$transaction_status = new YSHelcimRefundTransactionStatus(
+				\Closure::fromCallable( array( $context_loader, 'load' ) ),
+				\Closure::fromCallable( array( $this, 'resolveRefundCredential' ) ),
+				static fn ( string $endpoint, string $token ) => YSHelcimApiClient::request( $endpoint, array(), $token, null, 'GET' )
+			);
 			$controller = new YSHelcimRefundRestController(
 				$request_builder,
 				array( $service, 'execute' ),
@@ -1372,7 +1378,8 @@ final class YSHelcimFctBootstrap {
 				array( $options_loader, 'load' ),
 				$stale_scope_recoverer,
 				array( $provider_refund_sync, 'syncOrder' ),
-				static fn ( string $parent_uuid ): ?array => $operations->findChildByParent( $parent_uuid, 'reverse' )
+				static fn ( string $parent_uuid ): ?array => $operations->findChildByParent( $parent_uuid, 'reverse' ),
+				\Closure::fromCallable( array( $transaction_status, 'load' ) )
 			);
 
 			$this->refund_runtime = array(
@@ -1804,7 +1811,7 @@ final class YSHelcimFctBootstrap {
 			'initialOrderId' => $order_id,
 			'labels'         => array(
 				'nativeRefund' => __( 'Refund', 'fluent-cart' ),
-				'helcimRefund' => __( 'Helcim remote-first refund', 'ys-helcim-via-fluentcart' ),
+				'helcimRefund' => __( 'Refund', 'ys-helcim-via-fluentcart' ),
 				'blocked'      => __( 'This Helcim refund requires reconciliation before another refund.', 'ys-helcim-via-fluentcart' ),
 			),
 			'pollIntervalMs' => 1500,

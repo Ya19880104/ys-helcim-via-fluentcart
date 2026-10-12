@@ -14,6 +14,50 @@ use YangSheep\Helcim\FluentCart\Tests\Doubles\RefundRestResponse;
 
 final class RefundRestControllerTest extends TestCase
 {
+    public function testTransactionLookupUsesProtectedGetRouteAndOnlyRouteIdentifiers(): void
+    {
+        $routes = [];
+        $received = [];
+        $controller = $this->controller(
+            routeRegistrar: static function ($namespace, $route, $args) use (&$routes): bool {
+                $routes[$route] = $args;
+                return true;
+            },
+            staleScopeExpirer: static function (): never { self::fail('Lookup must not expire or recover operations.'); },
+            transactionStatusLoader: static function ($order, $transaction) use (&$received): array {
+                $received[] = [$order, $transaction];
+                return ['order_id' => $order, 'transaction_id' => $transaction];
+            }
+        );
+        $controller->registerRoutes();
+        $route = $routes[YSHelcimRefundRestController::TRANSACTION_STATUS_ROUTE];
+        self::assertSame('GET', $route['methods']);
+        self::assertSame([$controller, 'permissionsCheck'], $route['permission_callback']);
+        $result = $controller->transactionStatus(new RefundRestRequest(
+            ['order_id' => 99, 'transaction_id' => 99, 'api_token' => 'untrusted', 'provider_id' => '99'],
+            ['order_id' => '42', 'transaction_id' => '60']
+        ));
+        self::assertSame([[42, 60]], $received);
+        self::assertSame(200, $result->get_status());
+        self::assertSame(['order_id' => 42, 'transaction_id' => 60], $result->get_data());
+    }
+
+    public function testTransactionLookupDoesNotExposeErrorTextAndRejectsInvalidRoute(): void
+    {
+        $calls = 0;
+        $controller = $this->controller(transactionStatusLoader: static function () use (&$calls): \WP_Error {
+            ++$calls;
+            return new \WP_Error('ys_helcim_transaction_credential', 'private-token', ['status' => 503]);
+        });
+        $bad = $controller->transactionStatus(new RefundRestRequest([], ['order_id' => '42', 'transaction_id' => '1e2']));
+        self::assertSame(422, $bad->get_status());
+        self::assertSame(0, $calls);
+        $result = $controller->transactionStatus(new RefundRestRequest([], ['order_id' => '42', 'transaction_id' => '60']));
+        self::assertSame(503, $result->get_status());
+        self::assertStringContainsString('could not authenticate', $result->get_data()['message']);
+        self::assertStringNotContainsString('private-token', json_encode($result->get_data()));
+    }
+
     private const ROOT_UUID = '00000000-0000-4000-8000-000000000001';
     private const CHILD_UUID = '00000000-0000-4000-8000-000000000002';
 
@@ -1004,7 +1048,8 @@ final class RefundRestControllerTest extends TestCase
         ?callable $optionsLoader = null,
         ?callable $staleScopeExpirer = null,
         ?callable $providerRefundSync = null,
-        ?callable $childOperationReader = null
+        ?callable $childOperationReader = null,
+        ?\Closure $transactionStatusLoader = null
     ): YSHelcimRefundRestController {
         return new YSHelcimRefundRestController(
             $this->requestBuilder(),
@@ -1027,7 +1072,8 @@ final class RefundRestControllerTest extends TestCase
             $optionsLoader,
             $staleScopeExpirer,
             $providerRefundSync,
-            $childOperationReader
+            $childOperationReader,
+            $transactionStatusLoader
         );
     }
 

@@ -27,7 +27,7 @@ function flushPromises() {
 
 function createCheckout(fetchHandler) {
   const dom = new JSDOM(
-    '<!doctype html><div class="fluent-cart-checkout_embed_payment_container_ys_helcim"></div>',
+    '<!doctype html><div class="fluent-cart-checkout_embed_payment_container_ys_helcim" aria-hidden="true"></div>',
     { runScripts: 'outside-only', url: 'https://shop.test/checkout' },
   );
   const { window } = dom;
@@ -95,6 +95,110 @@ function providerMessage(window, status, origin = 'https://secure.helcim.app') {
 }
 
 describe('HelcimPay hosted checkout runtime security boundaries', () => {
+  const securityError = 'HelcimPay.js transaction aborted - "Could not validate ReCaptcha"';
+
+  it('recovers a security-check failure through the server-bound session and confirms a later payment once', async () => {
+    const ajaxBodies = [];
+    const openedTokens = [];
+    let orderCalls = 0;
+    let redirects = 0;
+    const window = createCheckout((url, options = {}) => {
+      if (String(url).includes('/payment-info')) {
+        return Promise.resolve(jsonResponse({ payment_args: { button_text: 'Pay by card' } }));
+      }
+      ajaxBodies.push(new URLSearchParams(options.body));
+      return Promise.resolve(jsonResponse({ status: 'success', redirect_url: '/receipt' }));
+    });
+    window.appendHelcimPayIframe = (token) => openedTokens.push(token);
+    window.removeHelcimPayIframe = () => {};
+    window.CheckoutHelper = { handleCheckoutRedirect() { redirects += 1; } };
+    const checkoutDetail = detail(() => {
+      orderCalls += 1;
+      // The server revalidates the order and rotates its confirm token on resume.
+      return Promise.resolve({ payment_data: { ...paymentData, confirm_token: 'confirm-' + orderCalls } });
+    });
+    try {
+      await render(window, checkoutDetail);
+      await begin(window);
+      const aborted = providerMessage(window, 'ABORTED');
+      aborted.data.eventMessage = securityError;
+      window.dispatchEvent(aborted);
+      window.dispatchEvent(providerMessage(window, 'HIDE'));
+      await flushPromises();
+      let button = window.document.querySelector('.ys-helcim-pay-button');
+      expect(button.disabled).toBe(false);
+      expect(button.textContent).toBe('Reopen payment window');
+      expect(button.closest('[aria-hidden="true"]')).toBe(null);
+      expect(window.document.activeElement).toBe(button);
+      expect(window.document.querySelector('.ys-helcim-error').textContent).toMatch(/security check.*Reopen/);
+      expect(ajaxBodies).toHaveLength(0);
+
+      // FluentCart can replace the payment fragment between attempts.
+      await render(window, checkoutDetail);
+      button = window.document.querySelector('.ys-helcim-pay-button');
+      expect(button.textContent).toBe('Reopen payment window');
+      expect(button.closest('[aria-hidden="true"]')).toBe(null);
+      expect(window.document.querySelector('.ys-helcim-error').style.display).toBe('block');
+      button.click();
+      button.click();
+      await flushPromises();
+      expect(orderCalls).toBe(2);
+      expect(openedTokens).toEqual([paymentData.checkout_token, paymentData.checkout_token]);
+      expect(button.textContent).toBe('Pay by card');
+      expect(button.disabled).toBe(true);
+      expect(ajaxBodies).toHaveLength(0);
+
+      window.dispatchEvent(providerMessage(window, 'SUCCESS'));
+      window.dispatchEvent(providerMessage(window, 'SUCCESS'));
+      await flushPromises();
+      await flushPromises();
+      expect(ajaxBodies).toHaveLength(1);
+      expect(ajaxBodies[0].get('confirm_token')).toBe('confirm-2');
+      expect(ajaxBodies[0].get('operation_uuid')).toBe(paymentData.operation_uuid);
+      expect(redirects).toBe(1);
+    } finally {
+      window.close();
+    }
+  });
+
+  it.each(['wrong-origin', 'wrong-session'])('ignores a security-check error from %s', async (source) => {
+    const window = createCheckout(() => Promise.resolve(jsonResponse({ payment_args: {} })));
+    window.appendHelcimPayIframe = () => {};
+    window.removeHelcimPayIframe = () => {};
+    try {
+      await render(window, detail(() => Promise.resolve({ payment_data: paymentData })));
+      await begin(window);
+      const aborted = providerMessage(window, 'ABORTED', source === 'wrong-origin' ? 'https://evil.example' : undefined);
+      aborted.data.eventMessage = securityError;
+      if (source === 'wrong-session') aborted.data.eventName += '-other';
+      window.dispatchEvent(aborted);
+      expect(window.document.querySelector('.ys-helcim-pay-button').disabled).toBe(true);
+      expect(window.document.querySelector('.ys-helcim-error').textContent).toBe('');
+    } finally {
+      window.close();
+    }
+  });
+
+  it.each([
+    'HelcimPay.js transaction aborted - "Could not validate ReCaptcha"; transaction outcome unknown',
+    'HelcimPay.js transaction aborted - "Network error"',
+  ])('keeps other unsigned errors locked: %s', async (message) => {
+    const window = createCheckout(() => Promise.resolve(jsonResponse({ payment_args: {} })));
+    window.appendHelcimPayIframe = () => {};
+    window.removeHelcimPayIframe = () => {};
+    try {
+      await render(window, detail(() => Promise.resolve({ payment_data: paymentData })));
+      await begin(window);
+      const aborted = providerMessage(window, 'ABORTED');
+      aborted.data.eventMessage = message;
+      window.dispatchEvent(aborted);
+      expect(window.document.querySelector('.ys-helcim-pay-button').disabled).toBe(true);
+      expect(window.document.querySelector('.ys-helcim-error').textContent).not.toMatch(/Reopen/);
+    } finally {
+      window.close();
+    }
+  });
+
   it('does not create an order when the hosted SDK is unavailable', async () => {
     let orderCalls = 0;
     const window = createCheckout(() => Promise.resolve(jsonResponse({ payment_args: {} })));

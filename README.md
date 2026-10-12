@@ -2,9 +2,9 @@
 
 Helcim payment integration for FluentCart with durable payment operations, remote-first refunds, and signed webhook recovery.
 
-> **Stable release — 1.1.3**
+> **Stable release — 1.1.4**
 >
-> This is the dual-gateway v1.1.3 maintenance release: the hosted HelcimPay.js modal and the Helcim.js inline form are both registered only when their current-mode credentials and the shared durable recovery runtime are available. Every deployment must still pass the environment, browser, provider, and runtime verification gates below.
+> This release simplifies the order's refund dialog, adds a read-only Helcim transaction status lookup and reloads the order automatically after a successful refund. The hosted HelcimPay.js modal and the Helcim.js inline form are both registered only when their current-mode credentials and the shared durable recovery runtime are available. Every deployment must still pass the environment, browser, provider, and runtime verification gates below.
 
 ## Payment methods
 
@@ -149,7 +149,18 @@ Do not tell a shopper to submit again while an operation is indeterminate. Resol
 
 FluentCart 1.5.2's native refund service records a local refund before calling the gateway and can leave a false local refund when the provider fails. This plugin therefore vetoes the native Helcim refund path and provides a dedicated **FluentCart → Helcim Refunds** workflow.
 
-On a FluentCart order page, **Refund** opens the same Helcim refund panel in a dialog without leaving the order; closing the dialog after a refund, void or sync reloads the order so its payment status is current. The **Helcim Refunds** page remains available for looking up any order by its number, and Ctrl-click or middle-click on the order page's Helcim refund action opens it in a new tab.
+On a FluentCart order page, **Refund** opens the Helcim refund panel in a dialog without leaving the order. The **Helcim Refunds** page remains available for looking up an order by its number.
+
+The dialog works like this:
+
+1. Opening the dialog selects a single payment automatically and reads its original transaction and settlement batch from Helcim. For multiple payments, select the payment to check.
+2. Review the payment status, original amount, batch state and **Order refund limit**, then enter the amount and an optional reason. The limit comes from locally recorded refunds; an approved original payment is not proof that no separate refund exists at Helcim.
+3. Select **Refund payment**, or **Cancel full payment** for an open batch. Success is shown only after Helcim succeeds and FluentCart applies the refund; the order then refreshes automatically after two seconds.
+4. Lookup failures offer **Check again**, which only reads status. Refund failures explain the result in the dialog. An unknown provider outcome stays locked and must be reconciled before another refund.
+
+**Item and stock options** and **Advanced recovery and details** keep less common actions out of the main form. Opening or rechecking the payment does not run **Sync refunds from Helcim**. After a sync that recorded something, closing the dialog reloads the order.
+
+The order status is not changed by a refund: FluentCart has no order status for one, and its own refunds also change only the payment status. To move refunded orders to another status automatically, use an order-status plugin that listens to `fluent_cart/order_fully_refunded` and `fluent_cart/order_partially_refunded` — this plugin fires both after every refund it records.
 
 The replacement flow is remote-first:
 

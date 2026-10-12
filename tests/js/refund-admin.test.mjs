@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { JSDOM } from 'jsdom';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+
+const testWindows = [];
+afterEach(() => { testWindows.splice(0).forEach((dom) => dom.window.close()); });
 
 const scriptPath = fileURLToPath(
   new URL('../../assets/js/ys-helcim-refund-admin.js', import.meta.url),
@@ -14,6 +17,29 @@ const adminPagePath = fileURLToPath(
 );
 
 const localizedMessages = Object.freeze({
+  checkingPayment: "Checking this transaction with Helcim…",
+  paymentStatusInvalid: "The transaction status could not be verified. Check again before refunding.",
+  paymentCheckRequired: "Check the selected Helcim payment before submitting this amount.",
+  paymentTransaction: "Helcim transaction",
+  paymentState: "Payment status",
+  paymentAmount: "Original payment",
+  paymentBatch: "Settlement batch",
+  paymentLocalRemaining: "Order refund limit",
+  paymentApproved: "Approved",
+  paymentDeclined: "Declined",
+  paymentVoidedStatus: "Voided",
+  paymentRefundedStatus: "Refunded",
+  paymentUnknown: "Not confirmed",
+  paymentBatchClosed: "Closed — settlement started",
+  paymentBatchOpen: "Open — not settled",
+  paymentReady: "Payment checked with Helcim. Enter the amount to refund.",
+  paymentFullVoid: "This payment has not settled. Only the full payment can be cancelled now.",
+  paymentUnavailable: "This payment is not ready for a refund. Review its status before continuing.",
+  refundPaymentButton: "Refund payment",
+  voidPaymentButton: "Cancel full payment",
+  refundRefreshing: "Refund successful. The order has been updated and will refresh automatically.",
+  voidRefreshing: "Payment cancelled. The order has been updated and will refresh automatically.",
+
   restSameOrigin: 'The REST endpoint must use the same origin as WordPress.',
   requestFailed: 'Request failed.',
   invalidRefundOptions: 'Invalid refund options.',
@@ -49,6 +75,7 @@ const localizedMessages = Object.freeze({
   refundCompleted: 'Helcim refunded the payment and FluentCart recorded the refund. The money usually reaches the card within 5 to 10 business days.',
   paymentVoided: 'The payment had not settled yet, so Helcim cancelled (voided) it instead of refunding it, and FluentCart recorded the refund. No processing fee applies, and the pending charge disappears from the card within 1 to 2 days.',
   refundNotCompleted: 'The refund was not completed. Review the result before trying again.',
+  refundDeclined: 'Helcim declined this refund or cancellation. No refund was recorded. Check the transaction in Helcim before trying again.',
   openBatchPartialRefund: 'This payment has not settled yet, so Helcim can only cancel the full amount. No money was moved. Enter the full amount to cancel the payment now, or make this partial refund after the payment settles (Helcim settles once a day).',
   openBatchUnproven: 'Helcim did not accept the refund, and the plugin could not confirm that the payment is still unsettled, so nothing was sent. Wait a few minutes and try again.',
   operationStatusUnreadable: 'Operation status could not be read.',
@@ -82,6 +109,7 @@ function loadApi(
     url,
     runScripts: 'outside-only',
   });
+  testWindows.push(dom);
   dom.window.ysHelcimRefundAdminConfig = { autoStart: false };
   dom.window.eval(readFileSync(scriptPath, 'utf8'));
 
@@ -401,6 +429,7 @@ function localizedConfig(overrides = {}) {
 // setTimeout 替身記下腳本要求的等待毫秒數，實際以 0 ms 執行，輪詢不必真的等 1.5 秒。
 function bootLocalizedPage(html, url, config, respond) {
   const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
+  testWindows.push(dom);
   const requests = [];
   const delays = [];
   dom.window.fetch = async (requestUrl, options) => {
@@ -3480,7 +3509,7 @@ describe('Helcim refund admin browser application', () => {
     );
     // FluentCart 深色模式把 h1–h6、p、code 改成淺色字：彈窗的白底／淺黃底上要明確指定深色字，避開 p.description。
     expect(source).toMatch(
-      /\.ys-helcim-refund-modal h2,\s*\.ys-helcim-refund-modal p:not\(\.description\),\s*\.ys-helcim-refund-modal code\s*\{\s*color:\s*#1d2327;\s*\}/,
+      /\.ys-helcim-refund-modal h2,\s*\.ys-helcim-refund-modal h3,\s*\.ys-helcim-refund-modal p:not\(\.description\),\s*\.ys-helcim-refund-modal code\s*\{\s*color:\s*#1d2327;\s*\}/,
     );
     // 不可對 FluentCart／Element Plus 的 .el-* 彈層或下拉選單下任何樣式。
     expect(source).not.toMatch(/\.el-/);
@@ -3612,7 +3641,7 @@ describe('Helcim refund admin browser application', () => {
     const operation = doc.querySelector('#ys-helcim-refund-operation');
     expect(modal.contains(status)).toBe(true);
     expect(modal.contains(operation)).toBe(true);
-    expect(status.textContent).toBe(localizedMessages.refundCompleted);
+    expect(status.textContent).toBe(localizedMessages.refundRefreshing);
     expect(operation.hidden).toBe(false);
     expect(operation.textContent).toContain('succeeded');
     expect(operation.textContent).toContain('applied');
@@ -3686,8 +3715,8 @@ describe('Helcim refund admin browser application', () => {
 
     releaseRefund(jsonResponse(appliedRefund(operationUuid)));
     await pendingRefund;
-    expect(status.textContent).toBe(localizedMessages.refundCompleted);
-    // 關閉時才重載：成功當下不可重載，店家要先看到彈窗裡的結果。
+    expect(status.textContent).toBe(localizedMessages.refundRefreshing);
+    // 成功訊息顯示兩秒後自動重載，提早關閉則立即重載：成功當下不可重載，店家要先看到彈窗裡的結果。
     expect(reloads).toEqual([]);
     leftClick(dom, close);
     expectModalOpen(dom, false);
@@ -3740,7 +3769,7 @@ describe('Helcim refund admin browser application', () => {
 
     releaseRefund(jsonResponse(appliedRefund(operationUuid)));
     await pendingRefund;
-    expect(status.textContent).toBe(localizedMessages.refundCompleted);
+    expect(status.textContent).toBe(localizedMessages.refundRefreshing);
     expect(doc.activeElement).toBe(doc.body);
 
     // Tab 從 <body> 拉回對話框的第一個控制項。
@@ -3864,7 +3893,7 @@ describe('Helcim refund admin browser application', () => {
     // 結果回來後仍是 #42 的結果，整個過程沒有任何 #43 的 refund-options GET。
     releaseRefund(jsonResponse(appliedRefund(operationUuid)));
     await pendingRefund;
-    expect(status.textContent).toBe(localizedMessages.refundCompleted);
+    expect(status.textContent).toBe(localizedMessages.refundRefreshing);
     expect(summary.textContent).toBe('Order #42 · USD');
     expect(requests.map((request) => [request.options.method, request.url])).toEqual(requestsBeforeReopen);
   });
@@ -3952,7 +3981,7 @@ describe('Helcim refund admin browser application', () => {
 
     releaseOperation(jsonResponse(appliedRefund(operationUuid)));
     await pendingReconcile;
-    expect(doc.querySelector('#ys-helcim-refund-status').textContent).toBe(localizedMessages.refundCompleted);
+    expect(doc.querySelector('#ys-helcim-refund-status').textContent).toBe(localizedMessages.refundRefreshing);
     expect(reloads).toEqual([]);
     leftClick(dom, close);
     expectModalOpen(dom, false);
@@ -4193,10 +4222,10 @@ describe('Helcim refund admin browser application', () => {
     await pendingRefund;
     expect(doc.querySelector('#ys-helcim-refund-status')).toBe(status);
     expect(status.className).toContain('notice-success');
-    expect(status.textContent).toBe(localizedMessages.refundCompleted);
+    expect(status.textContent).toBe(localizedMessages.refundRefreshing);
   });
 
-  it('reloads the order page on close only when a refund, void or sync changed it during that opening', async () => {
+  it('reloads the order page on close when a refund, void or sync changed it during that opening', async () => {
     const { dom, api } = loadApi(
       spaModalHtml(),
       'https://shop.test/wp-admin/admin.php?page=fluent-cart#/orders/42/view',
@@ -4244,8 +4273,8 @@ describe('Helcim refund admin browser application', () => {
       new dom.window.Event('submit', { bubbles: true, cancelable: true }),
     );
     await controller.whenIdle();
-    expect(doc.querySelector('#ys-helcim-refund-status').textContent).toBe(localizedMessages.paymentVoided);
-    // 關閉時才重載：作廢成功當下不可重載。
+    expect(doc.querySelector('#ys-helcim-refund-status').textContent).toBe(localizedMessages.voidRefreshing);
+    // 成功訊息顯示兩秒後自動重載，提早關閉則立即重載：作廢成功當下不可重載。
     expect(reloads).toEqual([]);
     leftClick(dom, close);
     expect(reloads).toHaveLength(1);
@@ -4661,7 +4690,7 @@ describe('Helcim refund admin browser application', () => {
     typeInto(dom, doc.querySelector('#ys-helcim-refund-resolution-typed-phrase'), phrase);
     expect(commit.disabled).toBe(false);
     leftClick(dom, commit);
-    await waitFor(dom, () => status.textContent === localizedMessages.refundCompleted, 400);
+    await waitFor(dom, () => status.textContent === localizedMessages.refundRefreshing, 400);
     const commitRequest = requests.find((request) => request.url.endsWith('/commit'));
     expect(commitRequest.options.method).toBe('POST');
     expect(commitRequest.options.headers).toEqual({ 'Content-Type': 'application/json', 'X-WP-Nonce': 'rest-nonce' });
@@ -4949,5 +4978,222 @@ describe('Helcim refund admin browser application', () => {
     // 關閉後不再攔焦點。
     edit.focus();
     expect(doc.activeElement).toBe(edit);
+  });
+});
+
+describe('refund dialog payment lookup', () => {
+  function currentModalHtml() {
+    return spaModalHtml().replace('<select id="ys-helcim-refund-transaction"></select>', `
+      <div id="ys-helcim-refund-transaction-choice"><select id="ys-helcim-refund-transaction"></select></div>
+      <section id="ys-helcim-refund-payment" hidden aria-busy="false">
+        <p id="ys-helcim-refund-payment-message"></p><dl id="ys-helcim-refund-payment-details"></dl>
+        <button id="ys-helcim-refund-payment-retry" type="button">Check again</button>
+      </section>`);
+  }
+  function payment(overrides = {}) {
+    return { order_id: 42, transaction_id: 7, provider_id: '800001', provider_status: 'APPROVED',
+      amount: 2100, currency: 'USD', local_remaining: 2100, batch_state: 'closed', refund_mode: 'refund', ...overrides };
+  }
+  async function setup(paymentResponse, postResponse, optionChanges = {}) {
+    const { dom, api } = loadApi(currentModalHtml(), 'https://shop.test/wp-admin/admin.php?page=fluent-cart#/orders/42/view');
+    const env = modalController(dom, api, async (url, options) => {
+      if (url.includes('/refund-options')) return jsonResponse(modalOrderOptions(42, optionChanges));
+      if (url.includes('/refund-transactions/')) return paymentResponse ? paymentResponse(url) : jsonResponse(payment());
+      if (options.method === 'POST') return postResponse ? postResponse(JSON.parse(options.body)) : jsonResponse(appliedRefund(JSON.parse(options.body).operation_uuid));
+      throw new Error('Unexpected request: ' + url);
+    });
+    await env.controller.start();
+    env.controller.openModal(42);
+    return { ...env, dom, doc: dom.window.document };
+  }
+
+  it('opens inside the order, automatically reads the only payment, and sends no mutation', async () => {
+    const env = await setup();
+    await env.controller.whenIdle();
+    expect(env.navigations).toEqual([]);
+    expect(env.requests.every(({ options }) => options.method === 'GET')).toBe(true);
+    expect(env.requests.at(-1).url).toMatch(/\/orders\/42\/refund-transactions\/7$/);
+    expect(env.doc.querySelector('#ys-helcim-refund-transaction-choice').hidden).toBe(true);
+    expect(env.doc.querySelector('#ys-helcim-refund-payment-details').textContent).toContain('Approved');
+    expect(env.doc.querySelector('#ys-helcim-refund-payment-details').textContent).toContain('USD 21.00');
+    expect(env.doc.querySelector('#ys-helcim-refund-submit').disabled).toBe(false);
+  });
+
+  it('blocks submit during lookup and lets a read-only retry recover from an error', async () => {
+    let release;
+    let count = 0;
+    const env = await setup(() => {
+      count += 1;
+      return count === 1 ? new Promise((resolve) => { release = resolve; }) : jsonResponse(payment());
+    });
+    await nextTask(env.dom);
+    expect(env.doc.querySelector('#ys-helcim-refund-submit').disabled).toBe(true);
+    await env.controller.submitRefund();
+    expect(env.requests.some(({ options }) => options.method === 'POST')).toBe(false);
+    release(jsonResponse({ message: 'Helcim lookup could not authenticate.' }, 503));
+    await env.controller.whenIdle();
+    expect(env.doc.querySelector('#ys-helcim-refund-payment-message').textContent).toContain('authenticate');
+    expect(env.doc.querySelector('#ys-helcim-refund-submit').disabled).toBe(true);
+    leftClick(env.dom, env.doc.querySelector('#ys-helcim-refund-payment-retry'));
+    await env.controller.whenIdle();
+    expect(env.doc.querySelector('#ys-helcim-refund-submit').disabled).toBe(false);
+    expect(env.requests.some(({ options }) => options.method === 'POST')).toBe(false);
+  });
+
+  it('requires full cancellation for an open batch before any request is sent', async () => {
+    const env = await setup(() => jsonResponse(payment({ batch_state: 'open', refund_mode: 'full_void' })));
+    await env.controller.whenIdle();
+    const amount = env.doc.querySelector('#ys-helcim-refund-amount');
+    expect(amount.readOnly).toBe(true);
+    expect(amount.value).toBe('21.00');
+    expect(env.doc.querySelector('#ys-helcim-refund-submit').textContent).toBe(localizedMessages.voidPaymentButton);
+    amount.value = '5.00';
+    await env.controller.submitRefund();
+    expect(env.requests.some(({ options }) => options.method === 'POST')).toBe(false);
+    expect(env.doc.querySelector('#ys-helcim-refund-status').textContent).toBe(localizedMessages.paymentCheckRequired);
+  });
+
+  it.each([
+    { order_id: 43 }, { transaction_id: 8 }, { currency: 'CAD' }, { amount: -1 },
+    { batch_state: 'open', refund_mode: 'refund' }, { provider_status: 'VOIDED', refund_mode: 'refund' },
+  ])('rejects mismatched or inconsistent lookup responses: %j', async (changes) => {
+    const env = await setup(() => jsonResponse(payment(changes)));
+    await env.controller.whenIdle();
+    expect(env.doc.querySelector('#ys-helcim-refund-submit').disabled).toBe(true);
+    expect(env.doc.querySelector('#ys-helcim-refund-payment-message').textContent).toBe(localizedMessages.paymentStatusInvalid);
+  });
+
+  it('does not enable a refund for a voided payment', async () => {
+    const env = await setup(() => jsonResponse(payment({ provider_status: 'VOIDED', batch_state: 'unknown', refund_mode: 'unavailable' })));
+    await env.controller.whenIdle();
+    expect(env.doc.querySelector('#ys-helcim-refund-payment-details').textContent).toContain('Voided');
+    expect(env.doc.querySelector('#ys-helcim-refund-submit').disabled).toBe(true);
+  });
+
+  it('ignores the late lookup for a previously selected payment', async () => {
+    let releaseFirst;
+    const env = await setup((url) => url.endsWith('/7')
+      ? new Promise((resolve) => { releaseFirst = resolve; })
+      : jsonResponse(payment({ transaction_id: 8, provider_id: '800002' })), undefined, {
+        transactions: [7, 8].map((id) => ({ id, gateway: 'ys_helcim', payment_mode: 'test', remaining_refundable: 2100 })),
+      });
+    await nextTask(env.dom);
+    const first = env.controller.whenIdle();
+    const select = env.doc.querySelector('#ys-helcim-refund-transaction');
+    expect(env.doc.querySelector('#ys-helcim-refund-transaction-choice').hidden).toBe(false);
+    select.value = '8';
+    select.dispatchEvent(new env.dom.window.Event('change'));
+    await env.controller.whenIdle();
+    releaseFirst(jsonResponse(payment()));
+    await first;
+    expect(select.value).toBe('8');
+    expect(env.doc.querySelector('#ys-helcim-refund-payment-details').textContent).toContain('800002');
+    expect(env.doc.querySelector('#ys-helcim-refund-submit').disabled).toBe(false);
+  });
+
+  it('automatically refreshes once only after remote and local success', async () => {
+    const env = await setup();
+    await env.controller.whenIdle();
+    const timers = [];
+    const original = env.dom.window.setTimeout.bind(env.dom.window);
+    env.dom.window.setTimeout = (fn, delay, ...args) => {
+      if (delay === 2000) { timers.push(fn); return 500; }
+      return original(fn, delay, ...args);
+    };
+    await env.controller.submitRefund();
+    expect(env.doc.querySelector('#ys-helcim-refund-status').textContent).toBe(localizedMessages.refundRefreshing);
+    expect(env.reloads).toHaveLength(0);
+    expect(timers).toHaveLength(1);
+    expect(env.doc.querySelector('#ys-helcim-refund-sync-button').disabled).toBe(true);
+    // The timer alone must reload: closing the dialog would also reload (the
+    // order changed), so asserting only after closeModal() proved nothing.
+    timers[0]();
+    expect(env.reloads).toHaveLength(1);
+    env.controller.closeModal();
+    expect(env.reloads).toHaveLength(1);
+    expect(env.requests.filter(({ options }) => options.method === 'POST')).toHaveLength(1);
+  });
+
+  it('reloads once when the dialog is closed before the refresh timer fires', async () => {
+    const env = await setup();
+    await env.controller.whenIdle();
+    const timers = [];
+    const original = env.dom.window.setTimeout.bind(env.dom.window);
+    env.dom.window.setTimeout = (fn, delay, ...args) => {
+      if (delay === 2000) { timers.push(fn); return 500; }
+      return original(fn, delay, ...args);
+    };
+    await env.controller.submitRefund();
+    expect(timers).toHaveLength(1);
+    env.controller.closeModal();
+    expect(env.reloads).toHaveLength(1);
+    // A timer that still fires after the close must not reload a second time.
+    timers[0]();
+    expect(env.reloads).toHaveLength(1);
+  });
+
+  it('re-enables submit, the payment choice and Check again after a sync that records nothing', async () => {
+    const { dom, api } = loadApi(currentModalHtml(), 'https://shop.test/wp-admin/admin.php?page=fluent-cart#/orders/42/view');
+    const env = modalController(dom, api, async (url, options) => {
+      if (url.includes('/refund-options')) return jsonResponse(modalOrderOptions(42));
+      if (url.includes('/refund-transactions/')) return jsonResponse(payment());
+      if (url.includes('/sync-provider-refunds')) {
+        return jsonResponse({ order_id: 42, status: 'nothing_new', helcim_payments: 1, recorded: [], review: [] });
+      }
+      throw new Error('Unexpected request: ' + url + ' ' + options.method);
+    });
+    await env.controller.start();
+    env.controller.openModal(42);
+    await env.controller.whenIdle();
+    const doc = dom.window.document;
+    expect(doc.querySelector('#ys-helcim-refund-submit').disabled).toBe(false);
+    leftClick(dom, doc.querySelector('#ys-helcim-refund-sync-button'));
+    await env.controller.whenIdle();
+    expect(env.requests.some(({ url }) => url.includes('/sync-provider-refunds'))).toBe(true);
+    expect(doc.querySelector('#ys-helcim-refund-status').textContent).toBe(localizedMessages.providerRefundsNothingNew);
+    expect(doc.querySelector('#ys-helcim-refund-submit').disabled).toBe(false);
+    expect(doc.querySelector('#ys-helcim-refund-transaction').disabled).toBe(false);
+    expect(doc.querySelector('#ys-helcim-refund-payment-retry').disabled).toBe(false);
+    expect(doc.querySelector('#ys-helcim-refund-sync-button').disabled).toBe(false);
+  });
+
+  it('explains a provider decline when the response has no public reason', async () => {
+    const env = await setup(undefined, (intent) => jsonResponse({
+      ...refundOperationRead(intent.operation_uuid, 'declined'), retry_allowed: true, error_code: 'provider_declined',
+    }));
+    await env.controller.whenIdle();
+    await env.controller.submitRefund();
+    expect(env.doc.querySelector('#ys-helcim-refund-status').textContent)
+      .toBe(localizedMessages.refundDeclined + ' (provider_declined)');
+    expect(env.reloads).toHaveLength(0);
+    expect(env.doc.querySelector('#ys-helcim-refund-form').hidden).toBe(false);
+    expect(env.requests.filter(({ options }) => options.method === 'POST')).toHaveLength(1);
+  });
+
+  it.each(['indeterminate', 'local_failure', 'declined'])('shows %s without a success refresh or duplicate submission', async (state) => {
+    const env = await setup(undefined, (intent) => jsonResponse(state === 'local_failure'
+      ? { ...appliedRefund(intent.operation_uuid), local_status: 'failed', manual_reconciliation_required: true }
+      : { ...refundOperationRead(intent.operation_uuid, state), retry_allowed: state === 'declined',
+        error_code: 'provider_declined', message: 'The issuer declined the refund.' }));
+    await env.controller.whenIdle();
+    const timers = [];
+    const original = env.dom.window.setTimeout.bind(env.dom.window);
+    env.dom.window.setTimeout = (fn, delay, ...args) => {
+      if (delay === 2000) { timers.push(fn); return 500; }
+      return original(fn, delay, ...args);
+    };
+    await env.controller.submitRefund();
+    expect(timers).toHaveLength(0);
+    expect(env.reloads).toHaveLength(0);
+    if (state === 'declined') {
+      expect(env.doc.querySelector('#ys-helcim-refund-form').hidden).toBe(false);
+      expect(env.doc.querySelector('#ys-helcim-refund-status').textContent).toContain('issuer declined');
+    } else {
+      expect(env.doc.querySelector('#ys-helcim-refund-form').hidden).toBe(true);
+      expect(env.doc.querySelector('#ys-helcim-refund-submit').disabled).toBe(true);
+      leftClick(env.dom, env.doc.querySelector('#ys-helcim-refund-payment-retry'));
+      await env.controller.submitRefund();
+      expect(env.requests.filter(({ options }) => options.method === 'POST')).toHaveLength(1);
+    }
   });
 });

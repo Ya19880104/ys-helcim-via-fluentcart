@@ -79,7 +79,33 @@
     // 上次明確載入訂單之後已有退款／作廢記入（含 resolution）：同步之後的重新載入不可再打開送出鈕，
     // 必須由操作者明確重新載入訂單（查詢表單、重開彈窗）才能再送。
     let refundAppliedSinceLoad = false;
+    let paymentStatus = null;
+    let paymentSequence = 0;
+    let refreshTimer = null;
     const messageKeys = new Set([
+      'checkingPayment',
+      'paymentStatusInvalid',
+      'paymentCheckRequired',
+      'paymentTransaction',
+      'paymentState',
+      'paymentAmount',
+      'paymentBatch',
+      'paymentLocalRemaining',
+      'paymentApproved',
+      'paymentDeclined',
+      'paymentVoidedStatus',
+      'paymentRefundedStatus',
+      'paymentUnknown',
+      'paymentBatchClosed',
+      'paymentBatchOpen',
+      'paymentReady',
+      'paymentFullVoid',
+      'paymentUnavailable',
+      'refundPaymentButton',
+      'voidPaymentButton',
+      'refundRefreshing',
+      'voidRefreshing',
+
       'restSameOrigin',
       'requestFailed',
       'invalidRefundOptions',
@@ -115,6 +141,7 @@
       'refundCompleted',
       'paymentVoided',
       'refundNotCompleted',
+      'refundDeclined',
       'openBatchPartialRefund',
       'openBatchUnproven',
       'operationStatusUnreadable',
@@ -201,11 +228,13 @@
       return trackBusy(async function (...args) {
         refundBusy += 1;
         refreshSyncButton();
+        refreshPaymentControls();
         try {
           return await task(...args);
         } finally {
           refundBusy -= 1;
           refreshSyncButton();
+          refreshPaymentControls();
         }
       });
     }
@@ -353,6 +382,9 @@
       // 伺服器輸出與重設時都不可帶 notice：FluentCart 掛載時會移除所有 .notice:not(.fluent-cart) 節點。
       status.className = 'ys-helcim-refund-status notice inline notice-' + (kind || 'info');
       status.textContent = message;
+      if (modalOpen && typeof status.scrollIntoView === 'function') {
+        status.scrollIntoView({ block: 'nearest' });
+      }
     }
 
     function resolutionElements() {
@@ -454,6 +486,10 @@
       }
       resolutionOperation = candidate;
       elements.section.hidden = false;
+      const advanced = runtimeDocument.querySelector('#ys-helcim-refund-advanced');
+      if (advanced) {
+        advanced.open = true;
+      }
       elements.inspect.disabled = false;
       const submit = runtimeDocument.querySelector('#ys-helcim-refund-submit');
       if (submit) {
@@ -692,6 +728,10 @@
         return;
       }
       if (optionsPayload.classification === 'blocked') {
+        const advanced = runtimeDocument.querySelector('#ys-helcim-refund-advanced');
+        if (advanced) {
+          advanced.open = true;
+        }
         // 被「Helcim 後台已退款、FluentCart 還沒記錄」擋住時，直接說原因並指向同步鈕。
         setStatus(
           message(optionsPayload.blocker === 'provider_refund_pending' ? 'providerRefundPending' : 'refundBlocked'),
@@ -723,8 +763,15 @@
           amount.max = centsToDecimal(remaining);
         }
       };
-      transactionSelect.onchange = syncSelectedAmount;
+      transactionSelect.onchange = function () {
+        syncSelectedAmount();
+        activeTask = loadPaymentStatus();
+      };
       syncSelectedAmount();
+      const choice = runtimeDocument.querySelector('#ys-helcim-refund-transaction-choice');
+      if (choice) {
+        choice.hidden = optionsPayload.transactions.length === 1;
+      }
 
       items.replaceChildren();
       optionsPayload.items.forEach((item) => {
@@ -742,6 +789,121 @@
       summary.textContent = message('orderSummary', [optionsPayload.orderId, optionsPayload.currency]);
       context.hidden = false;
       setStatus(message('refundOptionsLoaded'), 'success');
+    }
+
+    function paymentElements() {
+      return {
+        section: runtimeDocument.querySelector('#ys-helcim-refund-payment'),
+        text: runtimeDocument.querySelector('#ys-helcim-refund-payment-message'),
+        details: runtimeDocument.querySelector('#ys-helcim-refund-payment-details'),
+        retry: runtimeDocument.querySelector('#ys-helcim-refund-payment-retry'),
+        select: runtimeDocument.querySelector('#ys-helcim-refund-transaction'),
+        submit: runtimeDocument.querySelector('#ys-helcim-refund-submit'),
+        amount: runtimeDocument.querySelector('#ys-helcim-refund-amount'),
+      };
+    }
+
+    function refreshPaymentControls() {
+      const elements = paymentElements();
+      if (!elements.section) {
+        return;
+      }
+      if (elements.retry) {
+        elements.retry.disabled = refundBusy > 0 || syncBusy || currentOperationUuid !== null
+          || refundAppliedSinceLoad || elements.section.getAttribute('aria-busy') === 'true';
+      }
+      if (elements.select) {
+        elements.select.disabled = refundBusy > 0 || syncBusy || currentOperationUuid !== null || refundAppliedSinceLoad;
+      }
+    }
+
+    async function loadPaymentStatus() {
+      const elements = paymentElements();
+      // Older standalone markup remains usable; the current server always renders this section.
+      if (!elements.section || !currentOptions || !['helcim_only', 'mixed'].includes(currentOptions.classification)) {
+        return null;
+      }
+      const sequence = ++paymentSequence;
+      const optionsVersion = optionsSequence;
+      const orderId = currentOptions.orderId;
+      const localId = positiveInteger(elements.select.value);
+      paymentStatus = null;
+      elements.section.hidden = false;
+      elements.section.setAttribute('aria-busy', 'true');
+      elements.text.textContent = message('checkingPayment');
+      elements.details.replaceChildren();
+      const pageStatus = runtimeDocument.querySelector('#ys-helcim-refund-status');
+      if (pageStatus && !currentOperationUuid && !refundAppliedSinceLoad) {
+        pageStatus.hidden = true;
+      }
+      elements.submit.disabled = true;
+      elements.amount.readOnly = false;
+      refreshPaymentControls();
+      const isCurrent = () => sequence === paymentSequence && optionsVersion === optionsSequence
+        && requestedOrderId === orderId && positiveInteger(elements.select.value) === localId;
+      try {
+        const result = await requestJson(endpoint('orders/' + orderId + '/refund-transactions/' + localId), {
+          method: 'GET', credentials: 'same-origin', cache: 'no-store',
+          headers: { 'X-WP-Nonce': String(config.restNonce || '') },
+        });
+        if (!isCurrent()) {
+          return null;
+        }
+        if (!result || result.order_id !== orderId || result.transaction_id !== localId
+          || result.currency !== currentOptions.currency || transactionId(result.provider_id) === null
+          || !Number.isSafeInteger(result.amount) || result.amount <= 0
+          || !Number.isSafeInteger(result.local_remaining) || result.local_remaining < 0 || result.local_remaining > result.amount
+          || !['APPROVED', 'DECLINED', 'VOIDED', 'REFUNDED', 'REVERSED', 'UNKNOWN'].includes(result.provider_status)
+          || !['open', 'closed', 'unknown'].includes(result.batch_state)
+          || !['refund', 'full_void', 'unavailable'].includes(result.refund_mode)
+          || (result.refund_mode !== 'unavailable' && (result.provider_status !== 'APPROVED' || result.local_remaining <= 0))
+          || (result.refund_mode === 'refund' && result.batch_state !== 'closed')
+          || (result.refund_mode === 'full_void' && (result.batch_state !== 'open' || result.local_remaining !== result.amount))) {
+          throw new Error(message('paymentStatusInvalid'));
+        }
+        paymentStatus = result;
+        const statusKey = { APPROVED: 'paymentApproved', DECLINED: 'paymentDeclined', VOIDED: 'paymentVoidedStatus',
+          REVERSED: 'paymentVoidedStatus', REFUNDED: 'paymentRefundedStatus', UNKNOWN: 'paymentUnknown' }[result.provider_status];
+        const fields = [
+          [message('paymentTransaction'), result.provider_id],
+          [message('paymentState'), message(statusKey)],
+          [message('paymentAmount'), result.currency + ' ' + centsToDecimal(result.amount)],
+          [message('paymentBatch'), message(result.batch_state === 'closed' ? 'paymentBatchClosed' : result.batch_state === 'open' ? 'paymentBatchOpen' : 'paymentUnknown')],
+          [message('paymentLocalRemaining'), result.currency + ' ' + centsToDecimal(result.local_remaining)],
+        ];
+        fields.forEach(([name, value]) => {
+          const dt = runtimeDocument.createElement('dt');
+          const dd = runtimeDocument.createElement('dd');
+          dt.textContent = name;
+          dd.textContent = value;
+          elements.details.append(dt, dd);
+        });
+        const fullVoid = result.refund_mode === 'full_void';
+        elements.text.textContent = message(result.refund_mode === 'unavailable' ? 'paymentUnavailable' : fullVoid ? 'paymentFullVoid' : 'paymentReady');
+        elements.amount.max = centsToDecimal(Math.min(result.local_remaining, currentOptions.transactions.find((entry) => entry.id === localId).remaining));
+        if (fullVoid || decimalToCents(elements.amount.value) > result.local_remaining) {
+          elements.amount.value = elements.amount.max;
+        }
+        elements.amount.readOnly = fullVoid;
+        elements.submit.textContent = message(fullVoid ? 'voidPaymentButton' : 'refundPaymentButton');
+        elements.submit.disabled = result.refund_mode === 'unavailable' || refundAppliedSinceLoad || indeterminateTerminal || syncBusy || currentOperationUuid !== null;
+        const status = runtimeDocument.querySelector('#ys-helcim-refund-status');
+        if (status && !currentOperationUuid && !refundAppliedSinceLoad) {
+          status.hidden = true;
+        }
+        return result;
+      } catch (error) {
+        if (isCurrent()) {
+          elements.text.textContent = error && error.message ? error.message : message('paymentStatusInvalid');
+          elements.submit.disabled = true;
+        }
+        return null;
+      } finally {
+        if (isCurrent()) {
+          elements.section.setAttribute('aria-busy', 'false');
+          refreshPaymentControls();
+        }
+      }
     }
 
     function syncElements() {
@@ -764,7 +926,7 @@
     function refreshSyncButton() {
       const button = syncElements().button;
       if (button) {
-        button.disabled = syncOrderId === null || refundBusy > 0 || syncBusy;
+        button.disabled = syncOrderId === null || refundBusy > 0 || syncBusy || (modalOpen && refundAppliedSinceLoad);
       }
     }
 
@@ -825,14 +987,39 @@
         return await syncProviderRefundsBody(orderId, elements);
       } finally {
         syncBusy = false;
-        // 同步期間沒有重新載入（例如同步失敗）：送出鈕回到同步前的狀態；
-        // 有重新載入時，送出鈕已由那次載入依最新選項設定，這裡不再改動。
-        if (submit && submitWasEnabled && sequenceBefore === optionsSequence) {
-          submit.disabled = false;
+        if (submit) {
+          if (sequenceBefore === optionsSequence) {
+            // 同步期間沒有重新載入（例如同步失敗）：送出鈕回到同步前的狀態。
+            if (submitWasEnabled) {
+              submit.disabled = false;
+            }
+          } else {
+            // 同步期間重新載入過：那次載入是在 syncBusy 仍為 true 時設定送出鈕的，一律是停用，
+            // 這裡依目前載入的結果重算一次。
+            submit.disabled = !submitAllowedNow();
+          }
         }
+        // 交易選單與 Check again 也是在 syncBusy 為 true 時停用的。
+        refreshPaymentControls();
         refreshSyncButton();
         updateResolutionCommitReadiness();
       }
+    }
+
+    // 沒有任何流程進行中時送出鈕該有的狀態，判斷與 loadOptions／loadPaymentStatus 相同。
+    // 付款查詢還在跑時回 false，由那次查詢結束時自己設定。
+    function submitAllowedNow() {
+      if (refundBusy > 0 || syncBusy || currentOperationUuid !== null || refundAppliedSinceLoad || indeterminateTerminal) {
+        return false;
+      }
+      const elements = paymentElements();
+      if (!elements.section || !currentOptions || !['helcim_only', 'mixed'].includes(currentOptions.classification)) {
+        return true;
+      }
+      return paymentStatus !== null
+        && paymentStatus.refund_mode !== 'unavailable'
+        && elements.section.getAttribute('aria-busy') !== 'true'
+        && positiveInteger(elements.select.value) === paymentStatus.transaction_id;
     }
 
     async function syncProviderRefundsBody(orderId, elements) {
@@ -919,6 +1106,8 @@
 
     async function loadOptions(orderIdValue, keepRefundLatch) {
       const sequence = ++optionsSequence;
+      ++paymentSequence;
+      paymentStatus = null;
       showSync(null);
       const orderId = positiveInteger(orderIdValue);
       requestedOrderId = orderId;
@@ -960,6 +1149,7 @@
       currentOptions = optionsPayload;
       renderCanonicalOptions(optionsPayload);
       showSync(orderId);
+      await loadPaymentStatus();
       return optionsPayload;
     }
 
@@ -979,6 +1169,12 @@
       const amountCents = decimalToCents(amountInput.value);
       if (!transaction || amountCents === null || amountCents > transaction.remaining) {
         throw new Error(message('invalidRefundAmount'));
+      }
+      if (paymentElements().section && (!paymentStatus || paymentStatus.transaction_id !== transactionId
+        || paymentStatus.order_id !== currentOptions.orderId || paymentStatus.refund_mode === 'unavailable'
+        || amountCents > paymentStatus.local_remaining
+        || (paymentStatus.refund_mode === 'full_void' && amountCents !== paymentStatus.amount))) {
+        throw new Error(message('paymentCheckRequired'));
       }
 
       const itemIds = [];
@@ -1066,6 +1262,13 @@
         && ['declined', 'failed', 'canceled', 'expired'].includes(operation.remote_status);
     }
 
+    function hideModalRefundForm() {
+      const form = runtimeDocument.querySelector('#ys-helcim-refund-form');
+      if (modalOpen && form) {
+        form.hidden = true;
+      }
+    }
+
     function completeOperation(operation) {
       const submit = runtimeDocument.querySelector('#ys-helcim-refund-submit');
       const reconcile = runtimeDocument.querySelector('#ys-helcim-refund-reconcile');
@@ -1078,6 +1281,7 @@
       }
       if (operation && operation.remote_status === 'indeterminate') {
         indeterminateTerminal = true;
+        hideModalRefundForm();
         syncResolutionVisibility(operation);
         setStatus(
           message('providerOutcomeIndeterminate'),
@@ -1101,6 +1305,7 @@
           || (operation.remote_status === 'succeeded' && operation.local_status === 'failed')
         )
       ) {
+        hideModalRefundForm();
         setStatus(
           message('manualReconciliationRequired'),
           'error',
@@ -1116,6 +1321,18 @@
       }
       if (isApplied(operation)) {
         setStatus(message(operation.provider_action === 'reverse' ? 'paymentVoided' : 'refundCompleted'), 'success');
+        if (modalOpen && refreshTimer === null) {
+          const completedOrder = modalOrderId;
+          setStatus(message(operation.provider_action === 'reverse' ? 'voidRefreshing' : 'refundRefreshing'), 'success');
+          hideModalRefundForm();
+          refreshTimer = runtimeWindow.setTimeout(function () {
+            refreshTimer = null;
+            if (modalOpen && modalOrderId === completedOrder && modalChanged) {
+              modalChanged = false;
+              reload();
+            }
+          }, 2000);
+        }
         if (submit) {
           // The rendered refund options are now stale. Require an explicit
           // order reload before another intent can receive a fresh UUID.
@@ -1132,7 +1349,14 @@
         && operation.retry_allowed === true
         && (isProviderTerminal(operation) || operation.remote_status === 'not_started')
       ) {
-        setStatus(message(refundFailureKey(operation.error_code)), 'error');
+        const failureKey = refundFailureKey(operation.error_code);
+        const reason = failureKey === 'refundNotCompleted' && typeof operation.message === 'string' && operation.message.trim()
+          ? operation.message : message(failureKey === 'refundNotCompleted' && operation.error_code === 'provider_declined'
+            ? 'refundDeclined' : failureKey);
+        const code = failureKey === 'refundNotCompleted' && typeof operation.error_code === 'string' && /^[a-z0-9_-]{1,100}$/.test(operation.error_code)
+          ? ' (' + operation.error_code + ')' : '';
+        setStatus(reason + code, 'error');
+        currentOperationUuid = null;
         if (submit) {
           submit.disabled = indeterminateTerminal;
         }
@@ -1312,6 +1536,14 @@
         });
       }
       const syncButton = syncElements().button;
+      const paymentRetry = paymentElements().retry;
+      if (paymentRetry) {
+        paymentRetry.addEventListener('click', function () {
+          if (!paymentRetry.disabled) {
+            activeTask = loadPaymentStatus();
+          }
+        });
+      }
       if (syncButton) {
         syncButton.addEventListener('click', function (event) {
           event.preventDefault();
@@ -1361,12 +1593,13 @@
     // 對話框內可用 Tab 到達的控制項：排除停用、tabindex=-1、隱藏區塊內，以及彈窗內以 CSS 隱藏的訂單查詢表單。
     function modalFocusable(dialog) {
       return Array.from(dialog.querySelectorAll(
-        'a[href], button, input, select, textarea, [tabindex]',
+        'a[href], button, input, select, textarea, summary, [tabindex]',
       )).filter((node) => (
         !node.disabled
         && node.type !== 'hidden'
         && node.getAttribute('tabindex') !== '-1'
         && !node.closest('[hidden], #ys-helcim-refund-order-lookup')
+        && (!node.closest('details:not([open])') || node.tagName === 'SUMMARY')
       ));
     }
 
@@ -1396,6 +1629,16 @@
 
     // 清掉上一張訂單留在彈窗裡的畫面與狀態，避免新訂單載入前看到（或送出）舊資料。
     function resetModalPanel() {
+      ++paymentSequence;
+      paymentStatus = null;
+      if (refreshTimer !== null) {
+        runtimeWindow.clearTimeout(refreshTimer);
+        refreshTimer = null;
+      }
+      const advanced = runtimeDocument.querySelector('#ys-helcim-refund-advanced');
+      if (advanced) {
+        advanced.open = false;
+      }
       currentOptions = null;
       currentOperationUuid = null;
       indeterminateTerminal = false;
@@ -1492,6 +1735,13 @@
         return false;
       }
       const elements = modalElements();
+      ++optionsSequence;
+      ++paymentSequence;
+      requestedOrderId = null;
+      if (refreshTimer !== null) {
+        runtimeWindow.clearTimeout(refreshTimer);
+        refreshTimer = null;
+      }
       modalOpen = false;
       modalOrderId = null;
       if (elements.modal) {

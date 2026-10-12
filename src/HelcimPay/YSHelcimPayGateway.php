@@ -348,6 +348,8 @@ class YSHelcimPayGateway extends AbstractPaymentGateway {
 					'sdk_missing'    => __( 'The payment component has not loaded. Please refresh the page and try again.', 'ys-helcim-via-fluentcart' ),
 					'uncertain'      => __( 'The payment window closed before its result could be confirmed. To prevent a duplicate charge, refresh the page or contact the store before trying again.', 'ys-helcim-via-fluentcart' ),
 					'window_closed_retry' => __( 'The payment window was closed before finishing. You can reopen it to continue.', 'ys-helcim-via-fluentcart' ),
+					'security_check_retry' => __( 'Helcim could not complete the security check. Reopen the payment window and try again.', 'ys-helcim-via-fluentcart' ),
+					'reopen_payment' => __( 'Reopen payment window', 'ys-helcim-via-fluentcart' ),
 					'declined_verifying' => __( 'The payment was declined. Its final result is being verified. Do not retry this payment yet.', 'ys-helcim-via-fluentcart' ),
 					'still_confirming' => __( 'We are still confirming your payment. Please do not pay again. You will receive an email receipt once it is confirmed, or you can contact the store.', 'ys-helcim-via-fluentcart' ),
 					'canceled'       => __( 'The payment was canceled or failed. Please try again.', 'ys-helcim-via-fluentcart' ),

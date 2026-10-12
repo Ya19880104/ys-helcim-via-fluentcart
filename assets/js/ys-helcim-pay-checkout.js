@@ -9,7 +9,8 @@
  * 4. Register a postMessage listener -> appendHelcimPayIframe(checkoutToken) to open the Helcim modal
  * 5. SUCCESS -> parse eventMessage (nested shape aligned with the Woo build) -> AJAX confirm (fail-closed on the server)
  *    -> on success, redirect to the receipt page via redirect_url
- * 6. ABORTED / HIDE -> restore the UI; the order stays pending and can be retried
+ * 6. HIDE / security-check failure -> reopen the same server-bound session;
+ *    other unsigned ABORTED results stay locked until the server verifies them
  *
  * Contract basis (verified against fluent-cart v1.5.2 source):
  * - orderHandler is a function; on success it returns the entire order-creation response JSON (wp_send_json as-is), and a falsy value on failure
@@ -35,6 +36,7 @@
         processing: false,        // Whether a payment flow is currently in progress (guards against double clicks)
         finished: false,          // Whether this modal flow has been settled (ignore HIDE after SUCCESS/ABORTED)
         reloadRequired: false,    // Uncertain provider result: never permit another charge in this page lifecycle
+        securityCheckRetry: false, // Reopen through the server's existing-session checks after a known validation failure
         checkoutToken: null,      // HelcimPay checkoutToken for the current flow
         messageHandler: null      // The postMessage listener currently attached (prevents leaks)
     };
@@ -63,6 +65,8 @@
             declined_verifying: 'The payment was declined. Its final result is being verified. Do not retry this payment yet.',
             incomplete_data: 'The payment data was incomplete. Please try again.',
             window_closed_retry: 'The payment window was closed before finishing. You can reopen it to continue.',
+            security_check_retry: 'Helcim could not complete the security check. Reopen the payment window and try again.',
+            reopen_payment: 'Reopen payment window',
             still_confirming: 'We are still confirming your payment. Please do not pay again. You will receive an email receipt once it is confirmed, or you can contact the store.',
             decline_store: 'This payment could not be processed right now. No payment was taken. Please try again later or contact the store.',
             decline_cvv: 'The card security code (CVV) did not match. No payment was taken. Please check the code and try again.',
@@ -91,8 +95,8 @@
     ];
 
     /**
-     * Classify Helcim's decline text. HelcimPay.js only emits ABORTED for a
-     * declined attempt, so unrecognized text is still a (generic) decline.
+     * Classify a possible decline for display only after the server proves it.
+     * ABORTED also covers validation errors and is not itself proof of a decline.
      *
      * @param {*} text Helcim decline message
      * @returns {string} Decline category
@@ -147,6 +151,8 @@
             return;
         }
         container.innerHTML = '';
+        // FluentCart's custom payment container starts aria-hidden, even when visible.
+        container.removeAttribute('aria-hidden');
         var error = document.createElement('div');
         error.className = 'ys-helcim-error';
         error.style.display = 'block'; // Hidden by default in CSS; container-level errors must be shown explicitly
@@ -180,6 +186,12 @@
         }
         button.disabled = !!busy;
         button.classList.toggle('is-busy', !!busy);
+        var label = button.querySelector('.ys-helcim-pay-button__label');
+        if (label) {
+            label.textContent = state.securityCheckRetry
+                ? t('reopen_payment')
+                : (button.getAttribute('data-payment-label') || t('button_text'));
+        }
         var spinner = button.querySelector('.ys-helcim-spinner');
         if (spinner) {
             spinner.style.display = busy ? 'inline-block' : 'none';
@@ -543,6 +555,21 @@
                     confirmPayment(detail, paymentData, aborted.txData, aborted.hash);
                     return;
                 }
+                // This exact pre-payment validation error has no signed transaction
+                // result. Do not mark the operation failed or release its scope.
+                // The next click revalidates checkout on the server and resumes its
+                // existing Helcim session, just like closing and reopening the window.
+                var abortedText = typeof event.data.eventMessage === 'string'
+                    ? event.data.eventMessage.trim() : '';
+                if (abortedText === 'HelcimPay.js transaction aborted - "Could not validate ReCaptcha"') {
+                    state.securityCheckRetry = true;
+                    resetUi(detail, t('security_check_retry'));
+                    var retryButton = document.querySelector(CONTAINER_SELECTOR + ' .ys-helcim-pay-button');
+                    if (retryButton) {
+                        retryButton.focus();
+                    }
+                    return;
+                }
                 pollPaymentStatus(
                     detail,
                     paymentData,
@@ -587,6 +614,7 @@
         }
         state.processing = true;
         state.finished = false;
+        state.securityCheckRetry = false;
         showInlineError('');
         setButtonBusy(true);
 
@@ -655,12 +683,16 @@
 
         container.innerHTML = '';
 
+        // This module owns the custom content; expose its button and live errors.
+        container.removeAttribute('aria-hidden');
+
         var wrapper = document.createElement('div');
         wrapper.className = 'ys-helcim-pay-wrapper';
 
         var button = document.createElement('button');
         button.type = 'button';
         button.className = 'ys-helcim-pay-button';
+        button.setAttribute('data-payment-label', buttonText);
 
         var spinner = document.createElement('span');
         spinner.className = 'ys-helcim-spinner';
@@ -692,6 +724,10 @@
         wrapper.appendChild(status);
         wrapper.appendChild(error);
         container.appendChild(wrapper);
+        setButtonBusy(state.processing);
+        if (state.securityCheckRetry) {
+            showInlineError(t('security_check_retry'));
+        }
     }
 
     /**

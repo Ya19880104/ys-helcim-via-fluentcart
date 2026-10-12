@@ -29,6 +29,8 @@ final class YSHelcimRefundRestController {
 
 	public const PROVIDER_SYNC_ROUTE = '/orders/(?P<order_id>\d+)/sync-provider-refunds';
 
+	public const TRANSACTION_STATUS_ROUTE = '/orders/(?P<order_id>\d+)/refund-transactions/(?P<transaction_id>\d+)';
+
 	/** @var callable */
 	private $service_execute;
 
@@ -90,7 +92,8 @@ final class YSHelcimRefundRestController {
 		?callable $options_loader = null,
 		?callable $stale_scope_expirer = null,
 		?callable $provider_refund_sync = null,
-		?callable $child_operation_reader = null
+		?callable $child_operation_reader = null,
+		private ?\Closure $transaction_status_loader = null
 	) {
 		$this->service_execute    = $service_execute;
 		$this->recorder           = $recorder;
@@ -156,6 +159,43 @@ final class YSHelcimRefundRestController {
 				)
 			);
 		}
+		if ( null !== $this->transaction_status_loader ) {
+			( $this->route_registrar )(
+				self::REST_NAMESPACE,
+				self::TRANSACTION_STATUS_ROUTE,
+				array(
+					'methods'             => 'GET',
+					'callback'            => array( $this, 'transactionStatus' ),
+					'permission_callback' => array( $this, 'permissionsCheck' ),
+				)
+			);
+		}
+	}
+
+	/** Query only the order's stored payment; never accept a provider ID or token from the browser. */
+	public function transactionStatus( mixed $request ): mixed {
+		$route = is_object( $request ) && method_exists( $request, 'get_url_params' ) ? $request->get_url_params() : null;
+		$order_id = is_array( $route ) ? self::positiveInteger( $route['order_id'] ?? null ) : null;
+		$transaction_id = is_array( $route ) ? self::positiveInteger( $route['transaction_id'] ?? null ) : null;
+		if ( null === $order_id || null === $transaction_id ) {
+			$result = YSHelcimRefundTransactionStatus::error( 'context', 422 );
+		} else {
+			try {
+				$result = null === $this->transaction_status_loader
+					? YSHelcimRefundTransactionStatus::error( 'unavailable' )
+					: ( $this->transaction_status_loader )( $order_id, $transaction_id );
+			} catch ( \Throwable $exception ) {
+				unset( $exception );
+				$result = YSHelcimRefundTransactionStatus::error( 'unavailable' );
+			}
+		}
+		if ( is_wp_error( $result ) ) {
+			// Rebuild from our own reason whitelist; never expose upstream error text/data.
+			$reason = str_replace( 'ys_helcim_transaction_', '', (string) $result->get_error_code() );
+			$error = YSHelcimRefundTransactionStatus::error( $reason, self::errorStatus( $result ) );
+			return $this->response( array( 'message' => $error->get_error_message(), 'error_code' => self::safeErrorCode( $error->get_error_code() ) ), self::errorStatus( $error ) );
+		}
+		return $this->response( $result, 200 );
 	}
 
 	/**

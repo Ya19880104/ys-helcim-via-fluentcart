@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] - 2026-10-12
+
+### Changed
+
+- The refund dialog on a FluentCart order page now checks the payment with Helcim as soon as it opens. It selects the order's only Helcim payment automatically (choose one when there are several) and shows Helcim's status for it, the original amount, whether its settlement batch is still open, and the order's refund limit from the refunds FluentCart has recorded. Checking only reads: it never syncs refunds or sends a refund. When the check fails, the dialog says why and offers **Check again**.
+- The form is shorter: the amount, an optional reason and **Refund payment** — or **Cancel full payment** while the batch is still open, because Helcim only allows the full amount to be cancelled before settlement. Item and stock options and **Advanced recovery and details** stay folded away until needed.
+- Once Helcim confirms the refund or void and FluentCart has recorded it, the dialog shows the result, folds the form away and reloads the order after two seconds, so the payment status is current without closing the dialog. A refused or unknown outcome stays in the dialog, and an unknown one stays locked against a second refund.
+
+### Fixed
+
+- When Helcim's hosted payment window cannot validate its ReCaptcha check, checkout explains the problem and offers **Reopen payment window**, which resumes the same payment session through the existing server checks, instead of waiting indefinitely for a payment result. Other unconfirmed outcomes stay locked until they are verified, and no payment is marked failed on the browser's word alone.
+- The hosted payment button and its error messages are exposed to screen readers. FluentCart marks the payment container as hidden from assistive technology even while it is visible.
+- In the 1.1.4 test candidates, **Refund payment**, the payment choice and **Check again** stayed disabled after **Sync refunds from Helcim** found nothing new, until the dialog was opened again. They now return to what the payment allows.
+
+## [1.1.4-rc.5] - 2026-10-07
+
+Test candidate; not a stable release.
+
+### Fixed
+
+- The hosted payment button and its error messages are now exposed to assistive technology. FluentCart initially marks the custom payment container as hidden from screen readers even when its contents are visible.
+
+## [1.1.4-rc.4] - 2026-10-07
+
+Test candidate; not a stable release.
+
+### Fixed
+
+- When Helcim's hosted payment window reports that its ReCaptcha security check could not be validated, checkout now explains the problem and offers **Reopen payment window** instead of waiting indefinitely for a payment result. Reopening uses the existing server checks to resume the same payment session. Other unconfirmed outcomes remain locked until verified, and no payment is marked failed based on the browser message alone.
+- The recovery button keeps its label and error message when FluentCart refreshes the payment section, and receives keyboard focus when the payment window closes with this validation error.
+
+## [1.1.4-rc.3] - 2026-10-06
+
+Test candidate; not a stable release.
+
+### Changed
+
+- Simplified the order's in-page refund dialog: it selects the only Helcim payment automatically, shows the payment's current API status and settlement batch, and keeps item options and recovery tools collapsed until needed.
+- Added a permission- and nonce-protected, order-bound transaction lookup. It reads the original payment and its batch without syncing refunds or sending a payment mutation. The refund limit is explicitly based on the order's local records, not an inferred Helcim balance.
+- A failed lookup explains why and offers a read-only retry. An open batch permits only full cancellation; the existing refund service still verifies the provider result before recording anything locally.
+- A successful refund or void displays its result and refreshes the order automatically after two seconds. Failure and unknown outcomes stay in the dialog; unknown outcomes remain locked against duplicate submission.
+
 ## [1.1.3] - 2026-10-05
 
 ### Changed

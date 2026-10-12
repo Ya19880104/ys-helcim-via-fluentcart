@@ -2,6 +2,72 @@
   max-width: 960px;
 }
 
+.ys-helcim-refund-admin .ys-helcim-refund-payment {
+  padding: 16px;
+  background: #f6f8fa;
+  border: 1px solid #dcdcde;
+  border-radius: 8px;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-payment h3 {
+  font-size: 15px;
+  margin: 0 0 8px;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-payment p {
+  margin: 0 0 10px;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-payment dl {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) minmax(0, 1.4fr);
+  gap: 7px 16px;
+  margin: 10px 0 14px;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-payment dd {
+  margin: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.ys-helcim-refund-admin #ys-helcim-refund-transaction-choice {
+  display: grid;
+  gap: 8px;
+}
+
+.ys-helcim-refund-admin details > summary {
+  cursor: pointer;
+  padding: 12px 0;
+  font-weight: 600;
+}
+
+.ys-helcim-refund-admin details > summary:focus-visible {
+  outline: 2px solid #2271b1;
+  outline-offset: 2px;
+}
+
+.ys-helcim-refund-admin .ys-helcim-refund-advanced {
+  border-top: 1px solid #dcdcde;
+  margin-top: 12px;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-admin .ys-helcim-refund-context {
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  margin-top: 12px;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-actions .button-primary {
+  min-height: 40px;
+  padding: 4px 20px;
+}
+
+.ys-helcim-refund-admin input[readonly] {
+  background: #f0f0f1;
+}
+
 .ys-helcim-refund-admin .ys-helcim-refund-lookup,
 .ys-helcim-refund-admin .ys-helcim-refund-actions {
   display: flex;
@@ -254,6 +320,7 @@
 /* FluentCart 深色模式（html.fluent_theme_dark）把 h1–h6、p、code 改成淺色字，但彈窗背景固定是白色／淺黃，
    所以彈窗內這幾種元素要明確指定深色字。p.description 由 WP 自己優先權較高的規則上色，不受影響。 */
 .ys-helcim-refund-modal h2,
+.ys-helcim-refund-modal h3,
 .ys-helcim-refund-modal p:not(.description),
 .ys-helcim-refund-modal code {
   color: #1d2327;
@@ -265,6 +332,71 @@
 .ys-helcim-refund-modal #ys-helcim-refund-status:not([hidden]) {
   display: block !important;
   margin: 12px 0;
+  padding: 12px;
+  border: 1px solid #c3c4c7;
+  border-left: 4px solid #2271b1;
+  border-radius: 4px;
+  background: #f0f6fc;
+  color: #1d2327;
+}
+
+.ys-helcim-refund-modal #ys-helcim-refund-status.notice-success {
+  border-color: #00a32a;
+  background: #edfaef;
+}
+
+.ys-helcim-refund-modal #ys-helcim-refund-status.notice-error {
+  border-color: #d63638;
+  background: #fcf0f1;
+}
+
+.ys-helcim-refund-modal #ys-helcim-refund-status.notice-warning {
+  border-color: #dba617;
+  background: #fcf9e8;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-payment {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 14px;
+  padding: 14px;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-payment h3 {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: center;
+  margin: 0;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-payment p {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-payment dl {
+  grid-column: 1 / -1;
+  gap: 4px 14px;
+  margin: 4px 0 0;
+}
+
+.ys-helcim-refund-modal #ys-helcim-refund-payment-retry {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-intro {
+  margin: 12px 0;
+}
+
+.ys-helcim-refund-modal #ys-helcim-refund-amount-note {
+  margin: 0 0 6px;
+}
+
+.ys-helcim-refund-modal .ys-helcim-refund-actions {
+  justify-content: flex-end;
+  margin: 6px 0;
 }
 
 .ys-helcim-refund-modal .ys-helcim-refund-modal__close {
